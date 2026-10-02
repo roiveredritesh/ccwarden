@@ -4,11 +4,25 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 ## 1. Where things stand
 
-**M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c). What's left before M1's exit check (SPEC §8) is live:
+**M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c).
 
-1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10.
-2. Use the mod for a week.
-3. Then switch `junkGuard` to `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
+**First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
+
+- the billing format, `/ccwarden-junk` wording, Windows paths (#17–#19)
+- the limit follows `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (#20); the handoff Goal skips ccwarden's own pasted output (#21)
+- **Q13 is no:** a mod-run `/compact` skips the mod's own hook, so the pane's Compact button is gone (#22). **Q5 is yes**, so the mod now sets the engine's auto-compact window to the model's limit and the engine's own compaction is answered with the snapshot (#27)
+- Q6's first run was inconclusive (the engine had already capped and persisted the output); the probe now uses a 19k output (#23)
+- new in F1: a cache miss names its likely cause (#25); a `/compact at a break` hint past `compactAt` (55, 45 in budget mode); F2 names the handoff route (#26). The switch note says "if you switch" (#28: PreModelSwitch also fires for a cancelled picker)
+
+**Still open, all live:**
+
+1. Check #27 live: `limitOther` 100000 in `/config`, work past it, and look for `ccwarden: snapshot compaction (auto)` in the log (not the engine summary).
+2. Check #25 live: switch model, send a prompt, look for `miss: model switch` in the status.
+3. Q6 retry with `seq 1 4000 # cw-probe-trim`; Q2 on the metered machine; `/cw` vs `/usage` back to back (the first compare was 21% low, timing-confounded).
+4. Desktop UI polish: wait for the maintainer's list of what looks wrong.
+5. Use the mod for a week, then `junkGuard` → `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
+
+Not built: the full §3 advisor (break-even rule, task-done / unrelated-prompt detection, its buttons), F4's test-runner filter, and cleanup of F4's output files (the plugin API has no file delete).
 
 | Piece | State |
 |---|---|
@@ -273,8 +287,8 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 - **`userConfig`:** every field needs a `description`, and a field with `options` needs a `default` among them (or `required: true`). Values are string, number, boolean or string list only.
 - **Tests:** `test(name, { options }, body)` sets `userConfig`. Ops the mod calls (`session.usage`, `session.surfaces`, `config.list`, `ui.toast`, …) need a test hook that answers `{ value }`. `$.state` works in tests without one. `$.ui.ask` is answered through `tool.call` `AskUserQuestion` (`{ result: { questions, answers } }`, or `{ deny }` for a dismissal). See `world()` in `mod/tests/hooks.test.ts`.
 - **CI:** `npm install -g @anthropic-ai/claude-code@<version>` runs `plugin validate` and `plugin test` with no login.
-- **The test kit's `expect` has no `toBeCloseTo`.** Round instead. A mod that calls `$.env.get` needs `mock.env(on, {})` in its tests. `fs.read`, `fs.stat`, `settings.read` and `session.model` are answered with `{ value }` like other ops.
-- **A plugin's own `$.session.compact()` skips that plugin's `session.compact` hook** (the "calling one" is the whole plugin, even from a timer). To have your own hook answer, go through `$.command.run({ command: 'compact' })`. In tests, a test hook's `$` can't call `$.session.compact` (it isn't in its scanned calls), so the test body plays core with the engine's `$`.
+- **The test kit's `expect` has no `toBeCloseTo`.** Round instead. A mod that calls `$.env.get` needs an `env.get` answer in its tests; `mock.env` answers only `get`, so `world()` keeps `$.env` in a map that also answers `env.set`. `fs.read`, `fs.stat`, `settings.read` and `session.model` are answered with `{ value }` like other ops.
+- **A plugin's own `$.session.compact()` skips that plugin's `session.compact` hook** (the "calling one" is the whole plugin, even from a timer), and so does a `$.command.run({ command: 'compact' })` (Q13, live: it ran the engine summary). Only a `/compact` the person types, or the engine's own auto-compaction, reaches the hook; to compact at a limit, set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (re-read live, Q5). In tests, a test hook's `$` can't call `$.session.compact` (it isn't in its scanned calls), so the test body plays core with the engine's `$`.
 - **`$.fs.read` rejects files over 4 MiB.** Long transcripts exceed that, so anything read from the transcript must have another source to fall back on.
 
 - **`claude plugin test` doesn't validate a `tool.call` answer against the tool's output schema.** A malformed Bash result passes in a test, so schema questions (Q6) need a live session.
@@ -284,6 +298,10 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 - **No compaction mid-turn:** `$.session.compact` rejects while a turn runs, so a long agentic turn can pass the per-model limit; the engine window is the safety net.
 - **Dollar figures are list price** unless the admin set `modelPricing`; label them "est.".
 - **Desktop doesn't document a custom status line;** the mod's `$.ui.status` is the way there.
+- **`$.ui.status` draws ANSI escapes raw** (Q15, terminal): plain text and Unicode bars only, no colour.
+- **`classic.PreModelSwitch` fires before the picker is confirmed,** also for a switch then cancelled. Say "if you switch".
+- **Bash output over 30k chars is capped and persisted by the engine** before `tool.call` hooks see it (`persistedOutputPath`); the model gets the engine's file preview, not a hook's trimmed `stdout`.
+- **`git add mod` / `git add probe` picks up the engine-written `tsconfig.json`;** both are in `.gitignore` now. Add files by name.
 - **Coexisting with ccstatusline:** the mod doesn't own `statusLine`, so it works next to it.
 
 ## 8. Hooks edition: known issues (maintenance backlog)
