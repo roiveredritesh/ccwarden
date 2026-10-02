@@ -74,9 +74,9 @@ Everything runs locally. ccwarden reads your local transcripts and Claude Code's
 ## Roadmap
 
 - **M1:** the five features above, tested on the terminal and Desktop surfaces
-- **M2:** handoff command (`/handoff`) and pickup in a new session, model/effort advisor
-- **M3:** `/cw` dashboard, monthly projection, TTL advisor
-- **M4:** plugin marketplace packaging
+- **M2:** `/handoff` + pickup in a new session, background-spend watcher, model/effort advisor, setup profile
+- **M3:** `/cw` dashboard with context hogs, monthly tracking
+- **M4:** unrelated-prompt hint, plugin marketplace packaging
 
 ## License
 

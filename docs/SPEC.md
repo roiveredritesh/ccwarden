@@ -1,6 +1,6 @@
 # ccwarden: specification
 
-Status: draft 0.3 (pre-alpha), 2026-10.
+Status: draft 0.4 (pre-alpha), 2026-10. §10 records every gap found in design review and how it was resolved.
 **Platform:**
 
 - Claude Code function-hook plugins ("mods"), typed in v2.1.287 and marked *early access*
@@ -51,6 +51,23 @@ The `/cw` dashboard measures it rather than promising it.
 - **Each session:** a sanity check. Signals that contradict the setting (windows present or absent, 5m vs 1h cache writes) raise a toast; the mod never switches silently.
 - **No plan field:** the plugin API exposes no plan or account type, so the mode can't be fully automatic.
 
+## 1b. Where it runs
+
+| Surface | Supported | Loading |
+|---|---|---|
+| Claude Code CLI | ✅ | `claude --plugin-dir <mod>` or `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` `env` |
+| Desktop app, **Code** tab (local and SSH sessions) | ✅ | Same `settings.json` `env` entry; Desktop and CLI share `~/.claude/settings.json` |
+| VS Code extension | Best effort | `vscode` surface; untested |
+| Desktop **Chat** / **Cowork** tabs | ❌ | No hooks or plugin surface there |
+| Cloud sessions | ❌ | Desktop-installed plugins don't reach cloud sessions |
+
+**Using several machines with different billing:**
+
+- **Code:** install from one source (this repo, later a marketplace), so one update reaches all machines.
+- **`billing` and every other option:** live in each machine's own `~/.claude/settings.json`; nothing is shared.
+- **`$.store` history:** per machine. Spend the mod can't see is corrected with `/cw spent <amount>`: other machines, and claude.ai chat or Cowork if they count against the same cap.
+- **Handoffs:** default to the project's `.claude/handoffs/`. Point `handoffDir` at a synced folder, or commit the files, to continue a task on another machine.
+
 ## 2. Design rules
 
 | # | Rule |
@@ -83,6 +100,20 @@ At decision points (`turn.complete`, `prompt.submit`, `session.start`) the advis
 | Cache cold, large context, unrelated work | **Clear** |
 | Spend or window past budget | Budget mode (earlier suggestions, stricter guards) |
 
+**Advisor UX:**
+
+- **Buttons:** a toast plus a band with **[Compact]** **[Clear + handoff]** **[Handoff → new session]** **[Keep going]**.
+- **At most one suggestion per state change,** never mid-turn.
+- **"Keep going" mutes that suggestion** until the context grows another 20%.
+- **Learning:** every accept or reject is logged to `$.store` to tune the heuristics: task-done detection, unrelated-prompt detection, T estimation.
+- **`[Clear + handoff]`** writes a quick handoff, then runs `/clear` if a mod can (Q4); otherwise it tells the user to.
+
+**Budget mode** tightens thresholds: `compactAt` 45%, strict junk guard (`readMaxLines` 800, `bashMaxChars` 12k, test filter on), and alerts at `sessionAlertPct` 15%. It switches on:
+
+- `metered`: month-to-date reaches 80% of `monthlyBudgetUsd`
+- `window`: the 5h window reaches `budgetModeAt`%
+- or manually with `/cw budget on`
+
 **Break-even rule (compact vs continue), per model.** Let:
 
 - C = the context now; S = the size after compaction
@@ -91,6 +122,17 @@ At decision points (`turn.complete`, `prompt.submit`, `session.start`) the advis
 - p_in, p_out = the model's prices (Appendix A)
 
 Compact when T × (C − S) × r × p_in > the compaction's cost. With snapshot compaction (F3) that cost is only S × 1.25 × p_in, the re-cache of the new short conversation. With an engine summary it also includes C × r × p_in + about 3k × p_out.
+
+Worked numbers for an engine summary (warm cache, S ≈ 15k):
+
+| Model | C | Summary compaction ≈ | Saving per request ≈ | Pays off after ≈ |
+|---|---|---|---|---|
+| Haiku 4.5 | 100k | $0.04 | $0.009 | 5 requests |
+| Sonnet 5.5 | 250k | $0.12 | $0.047 | 3 requests |
+| Opus 5.5 | 250k | $0.19 | $0.047 | 4 requests |
+| Fable 5.1 | 250k | $0.40 | $0.059 | 7 requests |
+
+**What the table shows:** a large **warm** context on Opus 5.5 or Fable 5.1 is cheap to carry, because cache reads are cheap. The expensive event is a **cold rebuild**: re-caching 300K costs about $3.75 on Fable 5.1, $1.50 on Opus 5.5 and $0.75 on Sonnet at the 5m write rate. On 300K-limit models, F2 and F6 matter more than early compaction.
 
 ## 4. Features
 
@@ -112,7 +154,13 @@ window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 
 - the status segment turns red
 - one advisor suggestion
 
-It never blocks and adds nothing to context. *(First slice implemented in `mod/`.)*
+It never blocks and adds nothing to context.
+
+- **Repeats:** every further step (+$5 / +20%), or only once if `sessionAlertRepeat` is 0.
+- **Timing:** `alertTiming` is `immediate` by default, or `turnEnd` to hold the toast until the turn ends.
+- **Reset:** the count starts over on a new session or `/clear`, not on compaction.
+
+*(First slice implemented in `mod/`.)*
 
 **F2. Cold-cache guard.** On `prompt.submit`, when the cache has expired and context ≥ `coldMinTokens`, it asks before sending: "this turn re-caches ~N tokens (≈ $X)". The choices are Continue or Cancel; the advisor's suggestion is attached.
 
@@ -125,14 +173,20 @@ It never blocks and adds nothing to context. *(First slice implemented in `mod/`
   - Those messages are a snapshot plus the last 1–2 turns, kept with their engine `handle`s. The snapshot holds the goal, verbatim recent asks, open todos, files edited with a diff stat, the last error, and the branch.
   - A manual `/compact <focus>` still uses the engine summary, with the snapshot facts added to its instructions.
   - The `precompute` trigger (background pre-summarisation) is vetoed with `{ skip }` while snapshot mode is on, so it spends nothing.
-- **Safety net:** `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set by the installer to the largest limit (300000), for the case where a single long turn outgrows the limit.
+- **Safety net:** `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set by the installer to the largest limit (300000), for the case where a single long turn outgrows the limit. If the engine re-reads the env live (Q5), the mod also sets it per model with `$.env.set` on each model change.
+- **Model-switch warning:** each model has its own cache, so a switch re-reads the whole context uncached. When context exceeds the new model's limit it also compacts, and above the model's real window (more than 200K → Haiku) it must compact first. The toast shows the cost and the cheaper route, e.g. "Switch re-reads 180K on Haiku (≈ $0.23) and then compacts. Cheaper: /handoff → new Haiku session (≈ $0.02)." It shows before the switch if a mod can hook `PreModelSwitch` (Q9), otherwise right after.
+- **Done when:**
+  - an auto compaction shows no summary request in `/usage`
+  - the next turn still knows the goal and recent asks
+  - Haiku compacts at the first turn end past 120K, Sonnet past 300K and never below
+  - a mid-session model switch applies the new limit from the next turn
 
 **F4. Junk guard.**
 
 - **Reads:** a `Read` with no limit on a file over `readMaxLines` is denied with "use `Grep` for what you need, or `Read` with offset/limit".
 - **Bash output:** output over `bashMaxChars` is cut to head + tail, the full text is saved to a file, and Claude is told "`Grep` this file" (no re-run needed).
 - **Test runners:** filtered to failures only.
-- **Allowlist:** path globs to exempt.
+- **Allowlist:** path globs to exempt; commands Claude already pipes through `head`/`tail`/`grep` are left alone.
 - **Rollout:** it ships with `observe` mode, which only logs what it would have done.
 
 **F5. Subagent guard** (`agent.spawn` hook).
@@ -145,7 +199,7 @@ It never blocks and adds nothing to context. *(First slice implemented in `mod/`
 
 **F6. Keep-warm, active session only** (experimental, `metered`).
 
-- **What:** a minimal request every ~4.5 min that reads and refreshes the cached prefix.
+- **What:** a minimal request every ~4.5 min that reads and refreshes the cached prefix: `$.model.fork({ prompt: "Reply with OK." })`. It re-sends the main thread's last request, so the API serves the prefix from its cache; its own tail is never cached.
 - **When it runs, all of these must hold:**
   - a client is attached (`session.attach`/`detach`)
   - the last user prompt was within `keepWarmMaxMin` (30 min)
@@ -159,16 +213,50 @@ It never blocks and adds nothing to context. *(First slice implemented in `mod/`
 
 ### Later (M2+)
 
-- **F7. Handoff:**
-  - `/handoff quick` (zero tokens: the snapshot as a file)
-  - `/handoff` (Claude adds decisions and next steps, one short turn)
-  - pickup: `[Continue from handoff]` on the next session start
-- **F8. Background spend watcher:** turns that start without a user prompt (scheduled tasks, cross-session messages, goal check-ins) raise a toast with their cost and the setting that stops them.
-- **F9. Model / effort advisor:**
-  - routine work → a cheaper model at session start
-  - `/effort` changes mid-session; cache-safe on Opus 5.5, Sonnet 5.5 and Fable 5.1 per the docs
-- **F10. `/cw` dashboard:** this session and month, rebuilds and their causes, context hogs, guard savings.
-- **F11. Month projection** for `metered`, calibrated with `/cw spent <amount>`.
+**F7. Handoff.**
+
+- **`/handoff quick`** (zero tokens), built from the transcript and git: goal, verbatim asks, files touched + `git diff --stat`, open todos, last error, branch.
+- **`/handoff`** (full): the same facts, plus Claude writes the decisions and why, the current state, the exact next step and what to verify first. It is one short turn, cheap while the cache is warm. The advisor offers full while warm, quick when cold.
+- **Output:** a fixed template, written to `<handoffDir>/<date>-<topic>.md`.
+- **Pickup:** on `session.start` (`startup`), the newest unread handoff for the project is offered as **[Continue from handoff]**.
+- **`handoffOnCompact`:** writes a quick handoff before every compaction, as a safety net.
+
+**F8. Background spend watcher.** Turns that start without a user prompt raise a toast with their cost and the setting that stops them:
+
+- scheduled tasks and `/loop`
+- cross-session messages (`crossSessionInbound: hold`)
+- goal check-ins (`CLAUDE_CODE_GOAL_CHECKIN_MINUTES=0`)
+
+**F9. Model / effort advisor.**
+
+- **Model:** routine work → a cheaper model, suggested at session start or through a handoff, never by switching mid-session.
+- **Effort:** a lower `/effort` for routine steps. It is cache-safe mid-session on Opus 5.5, Sonnet 5.5 and Fable 5.1 per the docs; on other models, only at session start.
+
+**F10. `/cw` dashboard and context hogs.**
+
+- **Hogs:** every tool result is recorded with its estimated tokens. The top hogs per session and per month feed the dashboard and tune the F4 thresholds.
+- **Pane:**
+  - this session: context, cache hits, rebuilds with their cause, compactions, subagents
+  - guard savings
+  - month-to-date
+  - the 7-day transcript report (`hooks-edition/report.js` logic)
+- **Buttons:** [Compact] [Handoff] [Budget mode] [Copy report].
+
+**F11. Month tracking** (`metered`).
+
+- **Total:** the month-to-date estimate, calibrated with `/cw spent <amount>`.
+- **Toasts:** at 50%, 80% and 100% of `monthlyBudgetUsd`, with a projection ("at this pace $118 by month end"). The total is not in the status line, which stays per conversation.
+
+**F12. Setup profile (installer).** It writes and explains each setting:
+
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+- the subagent model setting
+- a `# Compact instructions` template for the project CLAUDE.md
+- prompt suggestions off in budget mode (each is a small extra request)
+- a reminder to disable unused MCP servers
+- `promptCacheTtl: "1h"`, only when F6/F7 data says it pays off
+
+**F13. Unrelated-prompt hint.** It compares a new prompt's keywords with the session goal and recent asks, with zero model tokens, and suggests `/clear` when overlap is near zero. Off until tuned from the advisor's accept/reject log.
 
 ## 5. Configuration (`userConfig`)
 
@@ -185,6 +273,10 @@ It never blocks and adds nothing to context. *(First slice implemented in `mod/`
 | `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | haiku / [] / 3 | F5 |
 | `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | on (metered) / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |
+| `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |
+| `alertTiming` | `immediate` | F1b |
+| `handoffDir` / `handoffOnCompact` | `.claude/handoffs` / off | F7 |
+| `topicShiftHint` | off | F13 |
 
 ## 6. State
 
@@ -205,9 +297,9 @@ docs/            this spec
 | Milestone | Scope | Exit check |
 |---|---|---|
 | **M1** | F1, F1b, F2, F3, F4 (observe → enforce), F5, F6 (after Q2) | `claude plugin validate` clean; tests on terminal + desktop × both billing modes; a week of real use on a metered and a window machine |
-| **M2** | F7, F8, F9 | Handoff round trip loses nothing needed |
+| **M2** | F7, F8, F9, F12 | Handoff round trip loses nothing needed |
 | **M3** | F10, F11 | Dashboard within 10% of `/usage` |
-| **M4** | Marketplace packaging | One-command install |
+| **M4** | F13, marketplace packaging | One-command install |
 
 ## 9. Open questions (verify in M1 week one)
 
@@ -219,6 +311,27 @@ docs/            this spec
 6. **Bash trim schema:** does a trimmed Bash result pass the tool's output schema?
 7. **Rate-limit windows:** are `rateLimits` available to mods on Team?
 8. **Desktop rendering:** do `$.ui.ask`, toasts and status look right in the Desktop Code tab?
+9. **`PreModelSwitch` from a mod:** can a mod hook it, to warn before a switch rather than after?
+10. **Plugins allowed on managed machines:** do managed settings allow loading the mod? Hooks run there, but plugins can be restricted separately. Check with a hello mod on day one.
+11. **Background tasks:** how does a mod see running background tasks (the advisor's "never mid-work")?
+12. **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate.
+
+## 10. Gaps found in design review, and resolutions
+
+| # | Gap | Resolution |
+|---|---|---|
+| G1 | No measured baseline to prove savings | Accepted: the maintainer tracks spend personally and old sessions exist. The `/cw` dashboard (F10) measures from M1 on. |
+| G2 | Model choice and effort (the largest levers) not covered | Routine work and all subagents run on **Haiku** (F5 pins it). F9 advises on model at session start and on effort mid-session, where cache-safe. |
+| G3 | Managed machines might block plugins | Hooks (e.g. graphify) already run on the maintainer's managed machine. A day-one hello-mod check confirms plugins too (Q10); the hooks edition is the fallback. |
+| G4 | Aggressive compaction has hidden costs: summary output tokens, file re-reads, lost detail | **Snapshot compaction** (F3): the mod answers `session.compact` itself, so no summary is generated, and keeps the last turns verbatim. Q3 checks the re-reads. |
+| G5 | The junk guard might cause retries (many small reads, re-runs) | Deny messages point to `Grep` / ranged `Read`; full Bash output is saved to a file Claude greps. Ships in `observe` mode first. |
+| G6 | Alert fatigue | R9: max 3 toasts/hour by priority; the rest goes to the band; "Keep going" mutes a suggestion. |
+| G7 | The cache goes cold while idle; old sessions spend in the background | Keep-warm only for the **active, attached** session, ≤ 30 min, with a $ cap (F6). The background spend watcher (F8) exposes idle turns. A 1h TTL is set by the installer only when cheaper than keep-warm. |
+| G8 | The monthly figure is an estimate (list price; other surfaces unseen) | Accepted risk: labelled "est.", calibrated with `/cw spent`, per-conversation figures stay exact. |
+| G9 | Subagent spend is invisible and their reports bloat the parent context | F5: pin to Haiku, cap the report, cap parallelism, apply limits and snapshot compaction to subagent loops, per-agent cost in the status. |
+| G10 | Heuristics (task done, unrelated prompt, turns left) unvalidated | Covered by tests plus the advisor's accept/reject log; F13 stays off until tuned. |
+| G11 | Scope creep: about 15 features for a first release | M1 limited to F1–F6 (§2b, §8); everything else waits for real-use data. |
+| G12 | Known platform limits | No compaction mid-turn (engine window as safety net); `rateLimits` on Team unknown (Q7); Desktop rendering unverified (Q8); plugin API is early access (pin the version). |
 
 ## Appendix A. List prices (per million tokens, platform.claude.com, 2026-10)
 
