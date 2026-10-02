@@ -1,4 +1,5 @@
 import type { SessionCompactTrigger, SessionMessage } from 'claude-code'
+import { relativeTo } from './paths'
 import type { Todo } from './transcript'
 
 // F3 snapshot compaction. The mod answers `session.compact` in core's place
@@ -64,7 +65,7 @@ export function snapshotText(f: SnapshotFacts, opts: { cwd?: string; maxChars?: 
   if (open.length > 0) sections.push(`## Open todos\n${open.map(t => `- [${t.status}] ${t.content}`).join('\n')}`)
   if (f.files.length > 0) {
     const shown = f.files.slice(0, MAX_FILES).map(path => {
-      const rel = relative(path, opts.cwd)
+      const rel = relativeTo(path, opts.cwd)
       const stat = statFor(f.diff, rel)
       return `- ${rel}${stat === undefined ? '' : ` (+${stat.added} -${stat.removed})`}`
     })
@@ -151,12 +152,6 @@ function statFor(diff: ReadonlyMap<string, FileStat>, rel: string): FileStat | u
   if (exact !== undefined) return exact
   for (const [path, stat] of diff) if (rel.endsWith(`/${path}`) || path.endsWith(`/${rel}`)) return stat
   return undefined
-}
-
-function relative(path: string, cwd: string | undefined): string {
-  if (cwd === undefined || cwd === '') return path
-  const root = cwd.endsWith('/') || cwd.endsWith('\\') ? cwd : `${cwd}${cwd.includes('\\') ? '\\' : '/'}`
-  return path.startsWith(root) ? path.slice(root.length) : path
 }
 
 function cut(text: string, max: number): string {

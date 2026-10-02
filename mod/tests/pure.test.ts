@@ -7,7 +7,7 @@ import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/t
 import { alertStep, isAlertDue } from '../src/alerts'
 import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
 import { familyOf, rebuildUsd } from '../src/prices'
-import { joinPath } from '../src/paths'
+import { joinPath, relativeTo } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
@@ -151,6 +151,9 @@ describe('transcript facts', () => {
     expect(facts.asks).toEqual(['Fix the login timeout bug', 'now the tests'])
     expect(facts.files).toEqual(['/p/n.ipynb', '/p/a.ts'])
     expect(facts.todos).toEqual(TODOS)
+    // Windows: one file edited via `D:\p\a.ts` and `D:/p/a.ts` is listed once
+    const win = collectFromMessages([msg('assistant', '', { toolUses: [use('Edit', { file_path: 'D:\\p\\a.ts' }), use('Edit', { file_path: 'D:/p/a.ts' })] })])
+    expect(win.files).toEqual(['D:/p/a.ts'])
   })
 })
 
@@ -287,6 +290,14 @@ describe('paths', () => {
     expect(joinPath('/p/', 'a.md')).toBe('/p/a.md')
     expect(joinPath('D:\\proj', '.claude/handoffs')).toBe('D:\\proj\\.claude\\handoffs')
     expect(joinPath('D:\\proj\\', '')).toBe('D:\\proj\\')
+  })
+
+  test('relativeTo gives git\'s form whatever the separators', () => {
+    expect(relativeTo('/p/src/a.ts', '/p')).toBe('src/a.ts')
+    expect(relativeTo('D:/New folder/p/src/a.ts', 'D:\\New folder\\p')).toBe('src/a.ts')
+    expect(relativeTo('d:\\New folder\\p\\src\\a.ts', 'D:\\New folder\\p\\')).toBe('src/a.ts')
+    expect(relativeTo('C:\\Users\\me\\x.md', 'D:\\p')).toBe('C:/Users/me/x.md')
+    expect(relativeTo('/p/a.ts', undefined)).toBe('/p/a.ts')
   })
 })
 

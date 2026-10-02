@@ -1,4 +1,4 @@
-import { joinPath } from './paths'
+import { relativeTo } from './paths'
 import { goalOf } from './snapshot'
 import type { SnapshotFacts } from './snapshot'
 
@@ -94,10 +94,4 @@ export function pickupPrompt(relPath: string): string {
 function oneLine(text: string): string {
   const flat = text.replace(/\s*\n\s*/g, ' ⏎ ')
   return flat.length <= 500 ? flat : `${flat.slice(0, 499)}…`
-}
-
-function relativeTo(path: string, cwd: string | undefined): string {
-  if (cwd === undefined || cwd === '') return path
-  const root = joinPath(cwd, '')
-  return path.startsWith(root) ? path.slice(root.length) : path
 }
