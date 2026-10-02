@@ -15,6 +15,14 @@ export type CcwardenConversation = {
   pendingAlert?: string
   /** $.clock time of the main loop's last response: the cache's last use. */
   lastResponseAt?: number
+  /** When the user last typed a prompt (F6 runs only within keepWarmMaxMin of it). */
+  lastPromptAt?: number
+  /** When a keep-warm ping last read the cache (F6). */
+  keepWarmAt?: number
+  /** The cache use a ping found already lapsed; no retry until the cache is used again. */
+  keepWarmMissedFor?: number
+  /** Keep-warm's pings, their cost and the rebuilds they avoided (est.). */
+  keepWarm?: { pings: number; spentUsd: number; savedUsd: number }
   /** The TTL of the latest cache write in the transcript. */
   observedTtl?: '5m' | '1h'
   ttlCheckedAt?: number

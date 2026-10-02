@@ -4,10 +4,16 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 ## 1. Where things stand
 
+**M1 code is complete (T0–T7, 2026-10-02).** What's left before M1's exit check (SPEC §8) is live:
+
+1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10, Q13.
+2. Use the mod for a week.
+3. Then switch `junkGuard` to `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
+
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). It validates, type-checks, and passes 94 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). T7 done: keep-warm (ships off until Q2). It validates, type-checks, and passes 107 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -204,7 +210,8 @@ Known limits:
 - In `observe` mode it only logs to `$.store`.
 - Switch to `enforce` after a week with no false positives.
 
-**T7. F6, keep-warm** (only if Q2 passes).
+**T7. F6, keep-warm** (only if Q2 passes). *Built 2026-10-02, shipped **off*** (`keepWarm` defaults to false). Once `/cw-probe wait` vs `/cw-probe fork` on the metered machine shows the fork keeps the main cache warm (Q2), turn it on in `/config`. SPEC F6 "As built" has the details.
+
 
 - `$.clock.every` ~270 s; `$.model.fork({ prompt: "Reply with OK." })`.
 - All SPEC F6 conditions; a per-session $ cap; spent and saved shown in the status.

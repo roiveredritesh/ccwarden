@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
 
@@ -49,6 +50,9 @@ function world(on: On, opts: {
     // Tool calls that reached core, and files the mod wrote.
     reads: [] as string[],
     writes: [] as { path: string; text: string }[],
+    // Keep-warm forks, and how much of the cache each read.
+    forks: [] as string[],
+    forkCacheRead: 180_000,
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -74,6 +78,11 @@ function world(on: On, opts: {
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'sess1' }))
+  on('model.fork', (_$, e) => {
+    shown.forks.push(e.prompt)
+    return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: shown.forkCacheRead, cache_creation_input_tokens: 10 } } }
+  })
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
   on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -664,5 +673,94 @@ describe('F4 junk guard', () => {
     await $.tool.call({ tool: 'Bash', command: 'cat big.log' })
     await $.command.run({ command: 'ccwarden-junk', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
     expect(w.logs.find(l => l.startsWith('ccwarden junk guard (off): 0 events'))).toBeDefined()
+  })
+})
+
+describe('F6 keep-warm', () => {
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+  // The user prompts, the turn runs and ends; the cache is warm for 5m from here.
+  async function exchange($: Engine, text = 'go') {
+    await $.prompt.submit(typed(text))
+    await $.turn.start({ text, turnId: 't' })
+    await $.turn.complete(turnDone())
+  }
+
+  for (const surface of SURFACES) {
+    test(`pings just before expiry, keeps the cache warm, and counts the rebuild avoided (${surface})`, { options: { billing: 'metered', keepWarm: true } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+      await $.session.start(start(surface))
+      await exchange($)
+
+      await w.clock.advance(4 * MIN)
+      expect(w.forks).toEqual([])
+      await w.clock.advance(MIN / 2) // 4m30s: inside the last 45s
+      expect(w.forks).toEqual(['Reply with OK.'])
+      expect(w.status.at(-1)).toContain('cache ● 5m')
+      expect(w.status.at(-1)).toMatch(/keep-warm \$0\.04 · saved \$0\.00/)
+
+      await w.clock.advance(3 * MIN) // 7m30s: cold without the ping
+      const out = await $.prompt.submit(typed('next step'))
+      expect(out.drop).toBeUndefined() // no cold-cache question: it's warm
+      expect(w.asks).toEqual([])
+      expect(w.status.at(-1)).toMatch(/saved \$0\.45/)
+    })
+  }
+
+  test('stops keepWarmMaxMin after the last prompt', { options: { billing: 'metered', keepWarm: true, keepWarmMaxMin: 12 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await exchange($)
+    await w.clock.advance(60 * MIN)
+    expect(w.forks).toHaveLength(2) // at 4m30s and 9m; the next would be past 12m
+    expect(w.status.at(-1)).toContain('cache ○ cold')
+  })
+
+  test('stops at the $ cap', { options: { billing: 'metered', keepWarm: true, keepWarmCapUsd: 0.05 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await exchange($)
+    await w.clock.advance(60 * MIN)
+    expect(w.forks).toHaveLength(1) // ~$0.04 each: a second would pass $0.05
+  })
+
+  test('never: off by default, on window billing, detached, mid-turn, or before a prompt', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await exchange($)
+    await w.clock.advance(20 * MIN)
+    expect(w.forks).toEqual([])
+  })
+
+  for (const [name, options, surfaces, midTurn] of [
+    ['window billing', { billing: 'window', keepWarm: true }, ['terminal'], false],
+    ['no client attached', { billing: 'metered', keepWarm: true }, [], false],
+    ['a turn running', { billing: 'metered', keepWarm: true }, ['terminal'], true],
+  ] as const) {
+    test(`no ping: ${name}`, { options }, async ($, on) => {
+      const w = world(on, { surfaces, usage: { tokens: 180_000 } })
+      await $.session.start(start(surfaces[0] ?? null))
+      await exchange($)
+      if (midTurn) await $.turn.start({ text: 'x', turnId: 't2' })
+      await w.clock.advance(70 * MIN)
+      expect(w.forks).toEqual([])
+    })
+  }
+
+  test('a resumed session waits for a prompt', { options: { billing: 'metered', keepWarm: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone()) // a response, but no prompt typed in this process
+    await w.clock.advance(10 * MIN)
+    expect(w.forks).toEqual([])
+  })
+
+  test("a fork that read little from the cache found it lapsed: it doesn't count as warm", { options: { billing: 'metered', keepWarm: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    w.forkCacheRead = 0
+    await $.session.start(start('terminal'))
+    await exchange($)
+    await w.clock.advance(6 * MIN)
+    expect(w.forks).toHaveLength(1)
+    expect(w.status.at(-1)).toContain('cache ○ cold')
   })
 })

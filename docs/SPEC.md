@@ -227,6 +227,13 @@ It never blocks and adds nothing to context.
 - **Example:** Sonnet, 150K context: a ping ≈ $0.03 vs a rebuild ≈ $0.38. On Fable 5.1 the gap is far wider.
 - **Instead of a 1h TTL:** on usage-billed plans, 5m TTL + keep-warm usually beats a 1h TTL, because 1h makes every write 2x instead of 1.25x. The mod measures the user's breaks and recommends a 1h TTL (written by the installer as `promptCacheTtl`) only when it would be cheaper.
 - **Not on `window` plans:** they already get a 1h TTL.
+- **As built (M1, off by default until Q2):**
+  - A 15 s timer pings once the cache has ≤ 45 s left, only while all the conditions above hold and no turn is running.
+  - The ping costs its usage at list price, and the cap is checked before each one.
+  - A ping counts as keeping the cache warm only when it read at least half the context from the cache. Otherwise the cache had lapsed, and there is no retry until the cache is used again.
+  - "Saved" is the rebuild cost of each prompt sent while the cache was warm only thanks to a ping.
+  - The status shows `keep-warm $spent · saved $saved`.
+  - Not built: measuring the user's breaks to recommend a 1h TTL instead (that needs F10's data).
 
 ### Later (M2+)
 
@@ -288,7 +295,7 @@ It never blocks and adds nothing to context.
 | `junkGuard` | `observe` → `enforce` | F4 |
 | `readMaxLines` / `bashMaxChars` / `junkAllowlist` | 2000 / 30000 / `""` (comma-separated globs) | F4 |
 | `subagentGuard` / `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | on / haiku / `""` (comma-separated types) / 3 | F5 |
-| `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | on (metered) / 30 / 0.50 | F6 |
+| `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | **off** until Q2 is confirmed, then on for metered / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |
 | `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |
 | `alertTiming` | `immediate` | F1b |
