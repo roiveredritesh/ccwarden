@@ -1,7 +1,7 @@
 // F10 context hogs: tool results big enough to matter, with their estimated
 // tokens (characters / 4). The session's top ones live in $.state; a
 // per-day tally in $.store feeds the dashboard's month view and tunes the
-// junk guard (F4). Pure: the tool.call hook in hooks/register.ts records.
+// junk guard (F4). Pure: the tool.call hook in hooks/register.tsx records.
 
 export type Hog = { tool: string; target: string; tokens: number }
 

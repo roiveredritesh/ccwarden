@@ -1,6 +1,9 @@
 import { update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
-import type { CcwardenConversation } from '../types'
+import type { CcwardenConversation, CcwardenDashboard } from '../types'
+import { dashboardSections, dashboardText, PANE_ID } from '../src/dashboard'
+import { analyze, requestsOf, ttlVerdict, weekReport } from '../src/report'
+import { hogsOver } from '../src/hogs'
 import { backgroundSource, backgroundToast } from '../src/background'
 import type { BackgroundSource } from '../src/background'
 import { handoffModelLine, startAdvice, switchNote } from '../src/advisor'
@@ -42,7 +45,8 @@ import { fiveHour, trackWindow } from '../src/window'
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
 // per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
 // F8 (the background spend watcher), F9 (model and effort advice), the
-// M3 spend ledger and context hogs, F11 month tracking and budget mode, the first-run billing question, the R9 toast budget, and the transcript path
+// M3 spend ledger and context hogs, F11 month tracking and budget mode,
+// F10 the /cw dashboard pane, the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -66,6 +70,9 @@ const transcriptPath = { plugin: 'ccwarden', key: 'transcriptPath' } as const
 const billingAsked = { plugin: 'ccwarden', key: 'billingAsked' } as const
 const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
+const dashboardRef = { plugin: 'ccwarden', key: 'dashboard' } as const
+const WEEK_MS = 7 * 24 * 60 * 60_000
+const WEEK_MAX_FILES = 20
 
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
 const TTL_RECHECK_MS = 10 * 60_000
@@ -299,7 +306,41 @@ export const register: Register = (on, options) => {
     const budget = config.monthlyBudgetUsd > 0 ? ` of your $${config.monthlyBudgetUsd.toFixed(0)} budget` : ''
     $.ui.log(`ccwarden: this month $${mtd.toFixed(2)}${budget} on this machine (est.), ~$${projectMonth(mtd, now).toFixed(0)} at this pace; budget mode ${runtime.isBudget ? 'on' : 'off'}.`)
     await refreshStatus($, config)
+    // F10: gather the figures, then open the pane that draws them.
+    await $.state.set(dashboardRef, await buildDashboard($, config, runtime))
+    if ((await $.session.surfaces()).length > 0) await $.ui.open({ id: PANE_ID, title: 'ccwarden' })
     return {}
+  })
+
+  // F10: the /cw pane. It draws what /cw gathered; Refresh gathers again.
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const d = (await $.state.get(dashboardRef)).value
+    if (d === undefined) return <Text dimColor>Run /cw to gather the figures.</Text>
+    const refresh = async () => { await $.state.set(dashboardRef, await buildDashboard($, config, runtime)) }
+    return (
+      <Box flexDirection="column" gap={1}>
+        {dashboardSections(d).map(section => (
+          <Box key={section.title} flexDirection="column">
+            <Text bold>{section.title}</Text>
+            {section.lines.map(line => <Text wrap="wrap">  {line}</Text>)}
+          </Box>
+        ))}
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Button key="refresh" hotkey="r" onPress={() => void refresh()}>Refresh</Button>
+          <Button key="compact" hotkey="c" onPress={() => void $.command.run({ command: 'compact' })}>Compact</Button>
+          <Button key="handoff" hotkey="h" onPress={() => void writeHandoff($, config, 'full')}>Handoff</Button>
+          <Button key="budget" hotkey="b" onPress={async () => {
+            await $.store.set(BUDGET_SWITCH_KEY, runtime.isBudget ? 'off' : 'on')
+            await updateBudgetMode($, config, runtime)
+            $.ui.log(budgetModeText(runtime.isBudget, 'set from /cw'))
+            await refreshStatus($, config)
+            await refresh()
+          }}>{runtime.isBudget ? 'Budget mode off' : 'Budget mode on'}</Button>
+          <Button key="copy" hotkey="y" onPress={press => void $.ui.copy({ text: dashboardText(d), surface: press.surface })}>Copy report</Button>
+        </Box>
+      </Box>
+    )
   })
 
   on('command.run', { command: 'ccwarden-junk' }, async ($) => {
@@ -407,6 +448,11 @@ export const register: Register = (on, options) => {
     if (plan === 'pass') return next(e)
     if (plan === 'skip') return { skip: 'ccwarden: snapshot compaction is on, so no summary is precomputed.' }
 
+    await update($, conversation, prev => ({
+      ...(prev ?? { alerted: 0 }),
+      compactions: (prev?.compactions ?? 0) + 1,
+      snapshots: (prev?.snapshots ?? 0) + (plan === 'snapshot' ? 1 : 0),
+    }))
     const facts = await snapshotFacts($, e.messages)
     if (config.handoffOnCompact) await writeHandoff($, config, 'quick', e.messages)
     if (plan === 'summary+facts') {
@@ -475,6 +521,74 @@ async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
   if (due.length === 0) return
   await $.store.set(MONTH_ALERTS_KEY, { month, sent: [...sent, ...due] })
   await notify($, 'spend', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
+}
+
+/**
+ * F10: the dashboard's figures: this session (live figures, plus cache hits
+ * and rebuilds from its transcript), guard savings, month to date, hogs, and
+ * the last 7 days of this project's transcripts (each one $.fs.read takes).
+ */
+async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<CcwardenDashboard> {
+  const now = await $.clock.now()
+  const usage = await $.session.usage()
+  const model = await $.session.model()
+  const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+  const month = monthKey(now)
+
+  const path = (await $.state.get(transcriptPath)).value
+  const readReport = async (file: string, size?: number) => {
+    if (size !== undefined && size > MAX_TRANSCRIPT_BYTES) return undefined
+    const text = await $.fs.read(file).catch(() => undefined)
+    return text === undefined ? undefined : analyze(requestsOf(parseJsonl(text)))
+  }
+  const current = path === undefined || path === '' ? undefined : await readReport(path)
+
+  let week: CcwardenDashboard['week']
+  if (path !== undefined && path !== '') {
+    const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    const dir = path.slice(0, cut)
+    const files = (await $.fs.list(dir).catch(() => []))
+      .filter(f => f.kind === 'file' && f.name.endsWith('.jsonl') && now - f.mtimeMs <= WEEK_MS)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, WEEK_MAX_FILES)
+    const sessions: { id: string; report: NonNullable<Awaited<ReturnType<typeof readReport>>> }[] = []
+    for (const f of files) {
+      const report = await readReport(`${dir}${path.charAt(cut)}${f.name}`, f.size)
+      if (report !== undefined) sessions.push({ id: f.name.replace(/\.jsonl$/, ''), report })
+    }
+    const w = weekReport(sessions)
+    week = { sessions: w.sessions, causes: w.causes, verdict: ttlVerdict(w) }
+  }
+
+  const junk = (((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []).filter(ev => new Date(ev.at).toISOString().startsWith(month))
+  const ledger = (await $.store.get(LEDGER_KEY)) as Ledger | undefined
+  const mtd = monthToDate(ledger, now)
+  return {
+    at: now,
+    session: {
+      model,
+      tokens: usage.context.tokens,
+      limit: Math.min(limitFor(model, config), usage.context.window),
+      usd: usage.cost?.usd,
+      hitRatio: current?.hitRatio,
+      rebuilds: current?.rebuilds ?? [],
+      compactions: conv.compactions ?? 0,
+      agentsRunning: runningCount(await $.agent.list()),
+      agentsUsd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
+      backgroundUsd: conv.background?.usd ?? 0,
+    },
+    savings: {
+      junkMode: config.junkGuard,
+      junkEvents: junk.length,
+      junkTokens: Math.round(junk.reduce((sum, ev) => sum + ev.savedChars, 0) / 4),
+      keepWarmSpent: conv.keepWarm?.spentUsd ?? 0,
+      keepWarmSaved: conv.keepWarm?.savedUsd ?? 0,
+      snapshots: conv.snapshots ?? 0,
+    },
+    month: { mtd, budget: config.monthlyBudgetUsd, projected: projectMonth(mtd, now), isBudget: runtime.isBudget, isMetered: config.billing !== 'window' },
+    hogs: { session: conv.hogs ?? [], month: hogsOver((await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined, month) },
+    week,
+  }
 }
 
 /** Budget mode (SPEC §3): by hand, or past budgetModeAt% of the month budget or 5h window; says when it switches on by itself. */

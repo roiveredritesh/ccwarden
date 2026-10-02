@@ -4,7 +4,7 @@ import type { CcwardenNote } from '../types'
 // advisor). Each priority may only use the hour's slots up to its own
 // ceiling, so a chatty advisor can never use up the room a spend alert needs.
 // A toast that doesn't fit is held for the band. Pure: `notify` in
-// hooks/register.ts applies it (the validator follows $ only within a file).
+// hooks/register.tsx applies it (the validator follows $ only within a file).
 
 export type Priority = CcwardenNote['priority']
 

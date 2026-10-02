@@ -8,7 +8,7 @@ import type { SnapshotFacts } from './snapshot'
 //         the cache is warm, and nothing added to the conversation.
 // Written to `<handoffDir>/<date>-<topic>.md`; the next session start in the
 // project offers the newest unread one. Pure: the /handoff command and the
-// pickup in hooks/register.ts write and offer them.
+// pickup in hooks/register.tsx write and offer them.
 
 export const FULL_PROMPT =
   'Write the second half of a handoff note for whoever continues this work in a fresh session ' +

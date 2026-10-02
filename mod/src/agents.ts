@@ -6,7 +6,7 @@ import { familyOf, PRICES } from './prices'
 // allowlisted, cap the report they hand back (it lands in the parent's
 // context at the parent model's price), and cap how many run at once. The
 // cap goes in the subagent's own prompt, not the parent's, so the parent's
-// cache is untouched. Pure: the agent.spawn hook in hooks/register.ts applies it.
+// cache is untouched. Pure: the agent.spawn hook in hooks/register.tsx applies it.
 
 export const REPORT_CAP =
   '\n\n[ccwarden] Keep your final report to at most ~300 words: findings and file paths ' +

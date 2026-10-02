@@ -3,7 +3,7 @@
 // each conversation's engine total (session.measure `cost`): the rise since
 // the last reading, the new total after a /clear. A resumed or reloaded
 // session starts from its current total, so nothing is counted twice. Days
-// are UTC dates. Pure: hooks/register.ts reads and writes the store.
+// are UTC dates. Pure: hooks/register.tsx reads and writes the store.
 
 export type Ledger = {
   /** `YYYY-MM-DD` → est. $ spent that day on this machine. */

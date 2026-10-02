@@ -8,7 +8,7 @@ import type { SessionMessage } from 'claude-code'
 // compaction and has mid-turn `queued_command` asks, but its format is
 // undocumented), and $.session.messages() (typed, but the newest 4096 rows
 // only, and it is not stated whether queued asks are among them). Prefer the
-// JSONL when its path is known. Pure: the reading is done in hooks/register.ts.
+// JSONL when its path is known. Pure: the reading is done in hooks/register.tsx.
 
 export type Todo = { content: string; status: string }
 export type SessionFacts = {

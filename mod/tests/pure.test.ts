@@ -10,6 +10,8 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { analyze, requestsOf, ttlVerdict, weekReport } from '../src/report'
+import { dashboardText } from '../src/dashboard'
 import { budgetConfig, isBudgetMode, monthStepsDue } from '../src/budget'
 import { addSpend, calibrate, costDelta, LEDGER_DAYS, monthToDate, projectMonth } from '../src/ledger'
 import { hogsOver, hogTarget, tallyHog, topHogs } from '../src/hogs'
@@ -561,5 +563,53 @@ describe('M3 budget', () => {
     expect(c.bashMaxChars).toBe(12_000)
     expect(c.sessionAlertPct).toBe(15)
     expect(c.compactAt).toBe(45)
+  })
+})
+
+describe('M3 report (ported from hooks-edition/report.js)', () => {
+  const t0 = Date.parse('2026-10-11T10:00:00Z')
+  const row = (id: string, min: number, u: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    ({ type: 'assistant', timestamp: new Date(t0 + min * 60_000).toISOString(), message: { id, model: 'm1', usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...u } }, ...extra })
+  test('one request per response, rebuilds by cause', () => {
+    const entries = [
+      row('a', 0, { cache_creation_input_tokens: 40_000 }),
+      row('a', 0, { cache_creation_input_tokens: 40_000 }), // the same response, another block
+      row('b', 1, { cache_read_input_tokens: 40_000 }),
+      { type: 'system', subtype: 'compact_boundary' },
+      row('c', 2, { cache_creation_input_tokens: 15_000 }),
+      row('d', 3, { cache_read_input_tokens: 15_000 }),
+      { ...row('e', 4, { cache_creation_input_tokens: 15_000 }), message: { id: 'e', model: 'm2', usage: { cache_creation_input_tokens: 15_000 } } },
+      row('f', 4, { cache_read_input_tokens: 1 }, { isSidechain: true }),
+    ]
+    const reqs = requestsOf(entries as never)
+    expect(reqs.map(r => r.write + r.read)).toEqual([40_000, 40_000, 15_000, 15_000, 15_000])
+    const report = analyze(reqs)
+    expect(report.rebuilds.map(r => r.cause)).toEqual(['compaction', 'model switch'])
+    expect(Math.round((report.hitRatio ?? 0) * 100)).toBe(44)
+  })
+  test('week: causes summed, sessions newest first, the TTL verdict', () => {
+    const idle = analyze(requestsOf([row('a', 0, { cache_creation_input_tokens: 50_000 }), row('b', 20, { cache_creation_input_tokens: 50_000 })] as never))
+    expect(idle.rebuilds[0]!.cause).toBe('expired (idle 20m)')
+    const w = weekReport([{ id: 'old', report: { ...idle, lastTs: 1 } }, { id: 'new', report: idle }])
+    expect(w.sessions.map(x => x.id)).toEqual(['new', 'old'])
+    expect(w.causes).toEqual({ expired: 100_000 })
+    expect(ttlVerdict(w)).toContain('5m is cheaper') // every write paid the 1h premium for one gap each
+    // One write, then a 20-minute gap a 1h cache survives: 1h pays off.
+    const kept = analyze(requestsOf([row('a', 0, { cache_creation_input_tokens: 50_000 }), row('b', 20, { cache_read_input_tokens: 50_000 })] as never))
+    expect(ttlVerdict(weekReport([{ id: 'k', report: kept }]))).toContain('1h would pay off')
+    expect(ttlVerdict(weekReport([]))).toBe('not enough data yet')
+  })
+  test('the copied report has every section', () => {
+    const text = dashboardText({
+      at: t0,
+      session: { model: 'opus', limit: 300_000, rebuilds: [], compactions: 0, agentsRunning: 0, agentsUsd: 0, backgroundUsd: 0 },
+      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: 30_000, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1 },
+      month: { mtd: 10, budget: 0, projected: 31, isBudget: false, isMetered: true },
+      hogs: { session: [{ tool: 'Read', target: '/a.ts', tokens: 9_000 }], month: [] },
+    })
+    for (const title of ['This session', 'Guard savings (est.)', 'Month to date (this machine, est.)', 'Context hogs']) expect(text).toContain(`\n${title}\n`)
+    expect(text).toContain('junk guard (observe): 2 events this month, ~30k tokens would be kept out')
+    expect(text).toContain('this session: 9k Read /a.ts')
+    expect(text).not.toContain('Last 7 days')
   })
 })

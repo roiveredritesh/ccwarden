@@ -285,6 +285,14 @@ It never blocks and adds nothing to context.
   - month-to-date
   - the 7-day transcript report (`hooks-edition/report.js` logic)
 - **Buttons:** [Compact] [Handoff] [Budget mode] [Copy report].
+- **As built (M3-T3):**
+  - `/cw` gathers the figures into `$.state` and opens the pane `ccwarden-cw`. Gathering is heavy (it reads transcripts), so it happens once per `/cw` or **Refresh**, never per redraw.
+  - **This session:** model, ctx/limit and $ (est.); cache hits and rebuilds with their cause from its transcript; compactions; subagents; background spend.
+  - **Guard savings:** this month's junk-guard events and est. tokens; snapshot compactions; keep-warm spent and saved.
+  - **Month to date:** with the budget, the projection and budget mode.
+  - **Hogs:** the top 3 this session and this month.
+  - **Last 7 days:** the newest 20 transcripts of this project (each ≤ 4 MiB): per-session hits and rebuilds, tokens re-cached by cause, and the TTL verdict (`report.js` logic, ported to `src/report.ts`).
+  - **Buttons, all on terminal and desktop:** Refresh, Compact (runs `/compact`), Handoff, Budget mode on/off, and Copy report (the whole dashboard as text, via `$.ui.copy`).
 
 **F11. Month tracking** (`metered`).
 
@@ -349,7 +357,7 @@ M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handof
 
 ```
 hooks-edition/   v0.1, documented hooks + status line (works today)
-mod/             the plugin: .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.ts (all hooks and $ calls),
+mod/             the plugin: .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.tsx (all hooks and $ calls),
                  src/ (pure logic), types/index.d.ts ($.state contract), tests/
 probe/           dev-only day-one probe for §9 (never shipped)
 docs/            this spec

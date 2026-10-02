@@ -4,7 +4,7 @@ import type { Todo } from './transcript'
 // F3 snapshot compaction. The mod answers `session.compact` in core's place
 // with a snapshot of the session's facts plus the last turns kept by their
 // engine handles, so no summary request is made and no summary tokens are
-// spent. Pure: the hook in hooks/register.ts gathers the facts and answers.
+// spent. Pure: the hook in hooks/register.tsx gathers the facts and answers.
 
 export type FileStat = { added: number; removed: number }
 

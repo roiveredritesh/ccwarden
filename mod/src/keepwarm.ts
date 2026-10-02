@@ -6,7 +6,7 @@ import { familyOf, PRICES } from './prices'
 // ($.model.fork) reads the cached prefix, which should refresh its TTL (Q2,
 // unverified: the feature is off by default until it is). It runs only while
 // every condition below holds, within a per-session $ cap, and reports what
-// it spent and what it saved. Pure: the timer in hooks/register.ts pings.
+// it spent and what it saved. Pure: the timer in hooks/register.tsx pings.
 
 export const PING_PROMPT = 'Reply with OK.'
 /** Ping when the cache has at most this long left. */
