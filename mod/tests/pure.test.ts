@@ -4,6 +4,11 @@ import { billingFrom, billingRow, BILLING_OPTIONS } from '../src/billing'
 import { DEFAULTS, limitFor, readConfig } from '../src/config'
 import { admit } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
+import { alertStep, isAlertDue } from '../src/alerts'
+import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
+import { familyOf, rebuildUsd } from '../src/prices'
+import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
+import { fiveHour, trackWindow } from '../src/window'
 
 describe('config', () => {
   test('empty options read as the defaults, billing unset', () => {
@@ -130,5 +135,90 @@ describe('transcript facts', () => {
     expect(facts.asks).toEqual(['Fix the login timeout bug', 'now the tests'])
     expect(facts.files).toEqual(['/p/n.ipynb', '/p/a.ts'])
     expect(facts.todos).toEqual(TODOS)
+  })
+})
+
+describe('T2 pure logic', () => {
+  const MIN = 60_000
+
+  const cents = (n: number | undefined) => (n === undefined ? n : Math.round(n * 100) / 100)
+
+  test('prices: family and rebuild cost at the TTL write rate', () => {
+    expect(familyOf('claude-opus-5-5')).toBe('opus')
+    expect(familyOf('Sonnet')).toBe('sonnet')
+    expect(familyOf('gpt')).toBeUndefined()
+    // SPEC §3: re-caching 300K ≈ $3.75 on Fable 5.1, $1.50 Opus 5.5, $0.75 Sonnet at the 5m rate
+    expect(cents(rebuildUsd(300_000, 'claude-fable-5-1', '5m'))).toBe(3.75)
+    expect(cents(rebuildUsd(300_000, 'claude-opus-5-5', '5m'))).toBe(1.5)
+    expect(cents(rebuildUsd(300_000, 'claude-sonnet-5-5', '5m'))).toBe(0.75)
+    expect(cents(rebuildUsd(300_000, 'claude-sonnet-5-5', '1h'))).toBe(1.2)
+    expect(rebuildUsd(1, 'mystery', '5m')).toBeUndefined()
+  })
+
+  test('cache: TTL sources in order, warm and cold', () => {
+    expect(inferTtl({ observed: '1h', override: '5m', billing: 'metered' })).toEqual({ ttl: '1h', source: 'observed' })
+    expect(inferTtl({ override: '1h', billing: 'metered' })).toEqual({ ttl: '1h', source: 'override' })
+    expect(inferTtl({ billing: 'window' }).ttl).toBe('1h')
+    expect(inferTtl({ billing: undefined }).ttl).toBe('5m')
+    expect(parseTtl('1h')).toBe('1h')
+    expect(parseTtl('60m')).toBeUndefined()
+
+    expect(cacheView(undefined, '5m', 0)).toEqual({ kind: 'none' })
+    expect(cacheView(0, '5m', 2 * MIN)).toEqual({ kind: 'warm', msLeft: 3 * MIN })
+    expect(cacheView(0, '5m', 7 * MIN)).toEqual({ kind: 'cold', msCold: 2 * MIN })
+
+    expect(ttlContradicts('metered', '1h', undefined)).toBe(true)
+    expect(ttlContradicts('metered', '1h', '1h')).toBe(false)
+    expect(ttlContradicts('window', '5m', undefined)).toBe(true)
+    expect(ttlContradicts(undefined, '5m', undefined)).toBe(false)
+  })
+
+  test('cache: the latest main-loop write in the transcript decides', () => {
+    const row = (w5m: number, w1h: number, extra = {}) =>
+      ({ type: 'assistant', message: { usage: { cache_creation: { ephemeral_5m_input_tokens: w5m, ephemeral_1h_input_tokens: w1h } } }, ...extra })
+    expect(latestWriteTtl([row(10, 0), row(0, 10)])).toBe('1h')
+    expect(latestWriteTtl([row(0, 10), row(10, 0), row(0, 0)])).toBe('5m') // a pure read writes nothing
+    expect(latestWriteTtl([row(10, 0), row(0, 10, { isSidechain: true })])).toBe('5m')
+    expect(latestWriteTtl([])).toBeUndefined()
+  })
+
+  test('window: the share since the baseline, across a reset', () => {
+    const at = (percentUsed: number, resetsAt = 'A') => ({ kind: 'five_hour', percentUsed, resetsAt })
+    let t = trackWindow(undefined, at(50))
+    expect(t.chatPct).toBe(0)
+    t = trackWindow(t, at(58.5))
+    expect(t.chatPct).toBe(8.5)
+    t = trackWindow(t, at(4, 'B')) // the window reset: 4% since
+    expect(t.chatPct).toBe(12.5)
+    t = trackWindow(t, at(3, 'B')) // never negative
+    expect(t.chatPct).toBe(15.5)
+    expect(fiveHour([{ kind: 'seven_day', percentUsed: 1 }, at(2)])?.percentUsed).toBe(2)
+  })
+
+  test('alerts: the step in the billing unit, and repeats', () => {
+    const metered = readConfig({ billing: 'metered' })
+    const window = readConfig({ billing: 'window' })
+    expect(alertStep(metered, { usd: 10.2, chatPct: 90 })).toBe(2)
+    expect(alertStep(window, { usd: 10.2, chatPct: 41 })).toBe(2)
+    expect(alertStep(window, { usd: 10.2 })).toBe(0)
+    expect(isAlertDue(1, 0, false)).toBe(true)
+    expect(isAlertDue(2, 1, false)).toBe(false)
+    expect(isAlertDue(2, 1, true)).toBe(true)
+    expect(isAlertDue(1, 1, true)).toBe(false)
+  })
+
+  test('status: durations and token counts', () => {
+    expect(fmtDuration(30_000)).toBe('1m')
+    expect(fmtDuration(0)).toBe('<1m')
+    expect(fmtDuration(101 * MIN)).toBe('1h 41m')
+    expect(fmtTokens(262_400)).toBe('262k')
+    expect(fmtTokens(1_200_000)).toBe('1.2M')
+    expect(formatStatus({
+      billing: 'metered', model: 'claude-fable-5-1', tokens: 262_000, limit: 300_000, ttl: '5m',
+      cache: { kind: 'cold', msCold: 12 * MIN }, rebuildUsd: 3.3, usd: 5.12, now: 0, isAlerted: true,
+    })).toBe('Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠')
+    expect(formatStatus({
+      billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
+    })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
   })
 })

@@ -7,7 +7,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. Also the first F1/F1b slice: this conversation's $ in the status line, and a toast every `sessionAlertUsd`. It validates, type-checks, and passes 23 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). It validates, type-checks, and passes 41 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -134,7 +134,17 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 - **Toast budget:** a helper that enforces R9 (max 3/hour, priority).
 - **Port the transcript helpers** from `hooks-edition/lib.js`: verbatim asks (incl. `queued_command` attachments), edited files, TodoWrite todos. Read the transcript with `$.fs`, or better `$.session.messages()` where it suffices.
 
-**T2. F1 + F1b, finished.**
+**T2. F1 + F1b, finished.** *Done 2026-10-02* (code and tests). Still to do live:
+
+- Check the status figures against `/usage` on both machines.
+- Check that the observed TTL matches Q1.
+
+Known limits:
+
+- The window share is an upper bound when several sessions share the 5h window.
+- On a brand-new process, the first turn's share is missed, because `rateLimits` is empty until a response arrives.
+- TTL observation is skipped for transcripts over 4 MiB. The override and billing sources then decide.
+
 
 - Model and per-model limit in the status line.
 - Cache warm/cold and time left. TTL is inferred from the 5m/1h split of the last turn's cache writes.
@@ -202,6 +212,8 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 - **`userConfig`:** every field needs a `description`, and a field with `options` needs a `default` among them (or `required: true`). Values are string, number, boolean or string list only.
 - **Tests:** `test(name, { options }, body)` sets `userConfig`. Ops the mod calls (`session.usage`, `session.surfaces`, `config.list`, `ui.toast`, …) need a test hook that answers `{ value }`. `$.state` works in tests without one. `$.ui.ask` is answered through `tool.call` `AskUserQuestion` (`{ result: { questions, answers } }`, or `{ deny }` for a dismissal). See `world()` in `mod/tests/hooks.test.ts`.
 - **CI:** `npm install -g @anthropic-ai/claude-code@<version>` runs `plugin validate` and `plugin test` with no login.
+- **The test kit's `expect` has no `toBeCloseTo`.** Round instead. A mod that calls `$.env.get` needs `mock.env(on, {})` in its tests. `fs.read`, `fs.stat`, `settings.read` and `session.model` are answered with `{ value }` like other ops.
+- **`$.fs.read` rejects files over 4 MiB.** Long transcripts exceed that, so anything read from the transcript must have another source to fall back on.
 
 - **`claude plugin test` doesn't validate a `tool.call` answer against the tool's output schema.** A malformed Bash result passes in a test, so schema questions (Q6) need a live session.
 - **In tests, the engine's `$` has only event nouns.** There's no `$.store` to read back, and `ui.log`, `ui.status` and `command.register` need a test-level hook beneath, or the plugin's call fails with "no implementation". See `world()` in `probe/hooks/probe.test.ts`.
