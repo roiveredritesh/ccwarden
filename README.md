@@ -45,15 +45,21 @@ The hooks edition (below) doesn't need the env var: it uses only documented hook
 ### Install
 
 ```bash
+claude plugin marketplace add roiveredritesh/ccwarden
+claude plugin install ccwarden@ccwarden
+```
+
+Update later with `claude plugin marketplace update ccwarden`. The install covers the CLI and the Desktop Code tab.
+
+Optional: the setup script sets the engine's compaction window as a safety net, plus a few opt-ins (see [Setup](#setup-setupsetupjs)). It sees the marketplace install and doesn't load the plugin a second time.
+
+```bash
 git clone https://github.com/roiveredritesh/ccwarden && cd ccwarden
-
-# Try it for one session, nothing installed:
-claude --plugin-dir ./mod
-
-# Or install it for the CLI and the Desktop Code tab:
 node setup/setup.js --dry-run     # shows each change and why
 node setup/setup.js
 ```
+
+To try it for one session from a clone instead, with nothing installed: `claude --plugin-dir ./mod`. If you ran the setup script before the marketplace existed, run `node setup/setup.js --uninstall` first, then install from the marketplace and run the setup script again, so the plugin isn't loaded twice.
 
 To check that it loaded, run `claude plugin list`: `ccwarden` should show `Status: ✔ loaded`.
 
@@ -93,7 +99,7 @@ On the first start, the plugin asks once how this machine is billed: **metered**
 
 | Flag | What it does |
 |---|---|
-| *(none)* | Loads the plugin in the CLI and the Desktop app, and sets the engine's compaction window to 300000 as a safety net |
+| *(none)* | Sets the engine's compaction window to 300000 as a safety net, and loads the plugin in the CLI and the Desktop app unless it's installed from the marketplace |
 | `--dry-run` | Shows what it would change, and why, without writing anything |
 | `--project <dir>` | Also adds `# Compact instructions` to that repo's `CLAUDE.md` |
 | `--compact-window <n>` | Engine compaction window (100000–1000000) |

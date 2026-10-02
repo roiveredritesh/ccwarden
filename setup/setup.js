@@ -72,8 +72,12 @@ function plan(settings, args, ctx) {
     changes.push({ where, key, from, to: value, why });
   };
 
-  set('env', 'CLAUDE_CODE_PLUGIN_DIRS', withModDir(next.env && next.env.CLAUDE_CODE_PLUGIN_DIRS, ctx.modDir, ctx.delimiter),
-    'loads the ccwarden mod in every CLI session and in the Desktop app\'s Code tab (which reads this env block)');
+  // A marketplace install already loads the mod; a plugin-dirs copy too would run every hook twice.
+  const fromMarketplace = Object.keys(next.enabledPlugins || {}).some((k) => k.startsWith('ccwarden@'));
+  if (!fromMarketplace) {
+    set('env', 'CLAUDE_CODE_PLUGIN_DIRS', withModDir(next.env && next.env.CLAUDE_CODE_PLUGIN_DIRS, ctx.modDir, ctx.delimiter),
+      'loads the ccwarden mod in every CLI session and in the Desktop app\'s Code tab (which reads this env block)');
+  }
   set('env', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', String(args.compactWindow),
     'the engine\'s own compaction window, as a safety net: the mod compacts at turn end against per-model limits, but can\'t mid-turn');
   if (args.subagentModel) {
