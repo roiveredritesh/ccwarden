@@ -61,6 +61,14 @@ One plugin for the Claude Code CLI and the Desktop app's Code tab. Planned first
 4. **Subagent guard**: pins subagents to a cheaper model, caps their report size and how many run at once.
 5. **Cold-cache guard + keep-warm** for the active session only.
 
+Later milestones, also in `mod/`:
+
+- `/handoff` notes for a fresh session.
+- A background spend watcher.
+- Model advice at session start.
+- Month tracking with a budget mode.
+- The `/cw` dashboard: this session, guard savings, month to date, context hogs and a 7-day cache report.
+
 Set it up (Node 18+). This loads the mod in the CLI and the Desktop app's Code tab, and sets the engine's own compaction window to 300000 as a safety net for very long turns. Each setting is explained as it is written, a backup is kept, and `--uninstall` puts your old values back:
 
 ```bash

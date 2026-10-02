@@ -6,7 +6,7 @@ import type { Family } from './prices'
 // switches and advises only where it is free: at a fresh start, before the
 // first prompt (nothing cached yet), and in a handoff for the next session.
 // Effort is cache-safe mid-session on Opus 5.5, Sonnet 5.5 and Fable 5.1
-// (docs). Pure: the hooks in hooks/register.ts show it.
+// (docs). Pure: the hooks in hooks/register.tsx show it.
 
 const CHEAPER: Partial<Record<Family, Family[]>> = {
   fable: ['opus', 'sonnet', 'haiku'],

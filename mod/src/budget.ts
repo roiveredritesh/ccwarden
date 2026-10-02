@@ -6,7 +6,7 @@ import type { Billing, Config } from './config'
 // month on this machine, with a projection. Budget mode tightens the guards
 // once the month reaches `budgetModeAt`% of the budget (metered) or the 5h
 // window reaches `budgetModeAt`% (window), or when switched on by hand.
-// Pure: hooks/register.ts tracks and applies it.
+// Pure: hooks/register.tsx tracks and applies it.
 
 export const MONTH_STEPS = [50, 80, 100] as const
 

@@ -4,7 +4,7 @@ import { fmtDuration, fmtTokens } from './status'
 // F2 cold-cache guard: before a prompt is sent over an expired cache with a
 // large context, ask whether to re-cache it all. Asked once per cold spell
 // (keyed by the last response's time), so sending again goes through. Pure:
-// the prompt.submit hook in hooks/register.ts asks.
+// the prompt.submit hook in hooks/register.tsx asks.
 
 export const COLD_CONTINUE = 'Continue'
 export const COLD_CANCEL = 'Cancel'

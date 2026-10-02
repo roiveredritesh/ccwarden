@@ -4,7 +4,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 ## 1. Where things stand
 
-**M1 and M2 code is complete (M1 T0–T7, M2-T1–T4, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). What's left before M1's exit check (SPEC §8) is live:
+**M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c). What's left before M1's exit check (SPEC §8) is live:
 
 1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10, Q13.
 2. Use the mod for a week.
@@ -129,8 +129,8 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 
 **T1. Foundation.** *Done 2026-10-02.* Notes for what follows:
 
-- `src/` is pure, and every hook and `$` call is in `hooks/register.ts` (see the §7 gotcha).
-- `sessionFacts($, path)` is in `register.ts`, ready for T3. It takes the path from `$.state` `transcriptPath`, which `classic.SessionStart` keeps current.
+- `src/` is pure, and every hook and `$` call is in `hooks/register.tsx` (see the §7 gotcha).
+- `sessionFacts($, path)` is in `register.tsx`, ready for T3. It takes the path from `$.state` `transcriptPath`, which `classic.SessionStart` keeps current.
 - A toast that R9 holds back is kept in `$.state` `heldNote` for the band (T2+).
 - Not yet live-checked: whether `$.config.set` on `<plugin>.billing` writes `~/.claude/settings.json` for a `--plugin-dir` plugin (the row's key is looked up, not assumed), and how `$.ui.ask` looks in Desktop (Q8).
 
@@ -242,7 +242,7 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 - Toasts at 50/80/100% with a projection.
 - Budget mode at `budgetModeAt`% of the month budget (metered) or of the 5h window (window), or `/cw budget on|off`. It tightens `compactAt`, the junk guard thresholds and `sessionAlertPct` (SPEC §3).
 
-**M3-T3. F10 `/cw` dashboard.**
+**M3-T3. F10 `/cw` dashboard.** *Done 2026-10-02* (SPEC F10 "As built"). Still to do live: M3's exit check, the dashboard within 10% of `/usage`.
 
 - A pane with: this session (context, cache hits, rebuilds and their cause, compactions, subagents), guard savings, month-to-date, top hogs, and the 7-day transcript report (`report.js` logic, ported).
 - Buttons: [Compact] [Handoff] [Budget mode] [Copy report].
@@ -268,7 +268,7 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 
 ## 7. Gotchas learned the hard way
 
-- **`$` can't cross an import.** `claude plugin validate` follows `$` only into functions declared in the same file. So every `$` call lives in `hooks/register.ts`, and `src/` is pure logic, which also makes it easy to test.
+- **`$` can't cross an import.** `claude plugin validate` follows `$` only into functions declared in the same file. So every `$` call lives in `hooks/register.tsx`, and `src/` is pure logic, which also makes it easy to test.
 - **A `$.state` reference is a `const` used only as a `$.state` argument.** Reading one in a helper function that nothing calls yet failed validation ("what it holds at the call could not be listed"). Pass the value in instead.
 - **`userConfig`:** every field needs a `description`, and a field with `options` needs a `default` among them (or `required: true`). Values are string, number, boolean or string list only.
 - **Tests:** `test(name, { options }, body)` sets `userConfig`. Ops the mod calls (`session.usage`, `session.surfaces`, `config.list`, `ui.toast`, …) need a test hook that answers `{ value }`. `$.state` works in tests without one. `$.ui.ask` is answered through `tool.call` `AskUserQuestion` (`{ result: { questions, answers } }`, or `{ deny }` for a dismissal). See `world()` in `mod/tests/hooks.test.ts`.
@@ -300,4 +300,4 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 - `docs/SPEC.md`: features, config, milestones
 - `hooks-edition/lib.js`: transcript parsing to port
 - `hooks-edition/report.js`: rebuild-cause logic (dedupe, gap and model-switch detection) for the future dashboard
-- `mod/hooks/register.ts`: the first slice; extend from here
+- `mod/hooks/register.tsx`: every hook and `$` call (the logic is in `mod/src/`)

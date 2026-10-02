@@ -5,7 +5,7 @@ import type { PromptOrigin } from 'claude-code'
 // background task's notification, a plugin) still costs a full request over
 // the whole context. Each kind is named once per conversation in a toast,
 // with what it cost and the setting that stops it; the running total stays
-// in the status line. Pure: the turn hooks in hooks/register.ts track it.
+// in the status line. Pure: the turn hooks in hooks/register.tsx track it.
 
 export type BackgroundSource = { kind: string; label: string; stop: string }
 

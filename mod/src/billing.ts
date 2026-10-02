@@ -3,7 +3,7 @@ import type { Billing } from './config'
 
 // First run (SPEC §1): one question, saved with $.config.set into this
 // machine's settings. The plugin API exposes no plan or account type, so
-// the mode can't be detected. Pure: `askBilling` in hooks/register.ts asks.
+// the mode can't be detected. Pure: `askBilling` in hooks/register.tsx asks.
 
 export const BILLING_QUESTION = 'ccwarden: how is Claude Code billed on this machine?'
 export const BILLING_HEADER = 'Billing'

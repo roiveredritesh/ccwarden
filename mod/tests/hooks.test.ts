@@ -25,6 +25,7 @@ function world(on: On, opts: {
   bashOut?: { stdout: string; persistedOutputPath?: string }
   isWriteRefused?: boolean
   store?: Record<string, unknown>
+  mtimes?: Record<string, number>
 } = {}) {
   const clock = mock.clock(on)
   // $.store in memory, readable by the test (mock.store's isn't).
@@ -57,6 +58,9 @@ function world(on: On, opts: {
     // Tool calls that reached core, and files the mod wrote.
     reads: [] as string[],
     writes: [] as { path: string; text: string }[],
+    // Panes opened, text copied.
+    opened: [] as string[],
+    copied: [] as { text: string; surface?: string }[],
     // Keep-warm forks, and how much of the cache each read.
     forks: [] as string[],
     forkCacheRead: 180_000,
@@ -87,11 +91,13 @@ function world(on: On, opts: {
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'sess1' }))
+  on('ui.open', (_$, e) => { shown.opened.push(e.id); return { value: { requestId: e.id } as never } })
+  on('ui.copy', (_$, e) => { shown.copied.push({ text: e.text, surface: e.surface }); return { value: { isCopied: true } } })
   on('session.root', () => ({ value: '/p' }))
   on('fs.list', (_$, e) => {
     const dir = `${e.path}/`
     const names = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
-    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false })) }
+    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })) }
   })
   on('model.fork', (_$, e) => {
     shown.forks.push(e.prompt)
@@ -1111,5 +1117,73 @@ describe('F11 month tracking and budget mode', () => {
     w.usage.rateLimits = [fiveHour(81)]
     await $.session.measure(measure(w))
     expect(w.toasts.at(-1)).toBe('ccwarden: budget mode on (the 5h window is at 81%): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
+  })
+})
+
+describe('F10 /cw dashboard', () => {
+  const NOW = Date.parse('2026-10-11T12:00:00Z')
+  const cw = (args = '') => ({ command: 'cw', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } })
+  const paneProps = { title: 'ccwarden', isFocused: true, bodyColumns: 100, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 40 }, view: {} }
+  const row = (id: string, minute: number, usage: Record<string, unknown>, extra: Record<string, unknown> = {}) => JSON.stringify({
+    type: 'assistant', timestamp: new Date(NOW - 60 * MIN + minute * MIN).toISOString(),
+    message: { id, model: 'claude-sonnet-5-5', usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...usage } }, ...extra,
+  })
+  // The current session: a warm stretch, then a 20-minute idle gap that lapsed the 5m cache.
+  const current = [
+    row('a', 0, { cache_creation_input_tokens: 50_000, cache_creation: { ephemeral_5m_input_tokens: 50_000, ephemeral_1h_input_tokens: 0 } }),
+    row('b', 2, { cache_read_input_tokens: 50_000, cache_creation_input_tokens: 1_000 }),
+    row('c', 22, { cache_creation_input_tokens: 51_000 }),
+  ].join('\n')
+  const files = { '/proj/s1.jsonl': current, '/proj/old.jsonl': row('z', 0, { cache_read_input_tokens: 5 }) }
+  const mtimes = { '/proj/s1.jsonl': NOW, '/proj/old.jsonl': NOW - 10 * 24 * 60 * MIN }
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`/cw gathers the figures and opens a pane that draws them (${surface}, ${billing})`, { options: { billing, monthlyBudgetUsd: 100 } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], files, mtimes, usage: { tokens: 51_000, usd: 1.5 }, store: { ledger: { days: { '2026-10-05': 20 } } } })
+        await w.clock.advance(NOW)
+        await $.classic.SessionStart({ source: 'resume', transcript_path: '/proj/s1.jsonl' })
+        await $.session.start(start(surface))
+        await $.command.run(cw())
+        expect(w.opened).toEqual(['ccwarden-cw'])
+
+        const pane = await $.ui.mount({ plugin: 'ccwarden', surface, component: 'Pane', props: paneProps, requestId: 'ccwarden-cw' })
+        const texts = (await pane.findAll({ type: 'Text' })).map(t => t.text)
+        expect(texts).toContain('This session')
+        expect(texts.some(t => t.includes('Sonnet') || t.includes('claude-sonnet-5-5'))).toBe(true)
+        expect(texts.some(t => /cache hits \d+% · 1 rebuild: \d\d:\d\d 51k expired \(idle 20m\)/.test(t))).toBe(true)
+        expect(texts.some(t => t.includes('$20.00 of $100'))).toBe(true)
+        expect(texts.some(t => t.startsWith('Last 7 days (1 session in this project)'))).toBe(true)
+        expect(texts.some(t => t.includes('re-cached: expired 51k'))).toBe(true)
+
+        await pane.press({ key: 'copy' })
+        expect(w.copied).toHaveLength(1)
+        expect(w.copied[0]!.text).toMatch(/^ccwarden report, 2026-10-11 12:00 UTC\n\nThis session\n/)
+        expect(w.copied[0]!.surface).toBe(surface)
+      })
+    }
+  }
+
+  test('the pane buttons: budget mode toggles, compact runs /compact, handoff writes a note', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 1_000 } })
+    w.messages = [{ role: 'user', text: 'Ship it', toolUses: [] }]
+    await $.session.start(start('terminal'))
+    await $.command.run(cw())
+    const pane = await $.ui.mount({ plugin: 'ccwarden', surface: 'terminal', component: 'Pane', props: paneProps, requestId: 'ccwarden-cw' })
+    await pane.press({ key: 'budget' })
+    expect(w.logs).toContain('ccwarden: budget mode on (set from /cw): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
+    expect(w.status.at(-1)).toContain('budget mode')
+    expect((await pane.find({ key: 'budget' }))?.text).toBe('Budget mode off')
+    await pane.press({ key: 'compact' })
+    expect(w.commandsRun).toEqual(['compact'])
+    await pane.press({ key: 'handoff' })
+    expect(w.writes.some(f => f.path.includes('/.claude/handoffs/'))).toBe(true)
+  })
+
+  test('before /cw has run, the pane says how to fill it', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['desktop'] })
+    await $.session.start(start('desktop'))
+    const pane = await $.ui.mount({ plugin: 'ccwarden', surface: 'desktop', component: 'Pane', props: paneProps, requestId: 'ccwarden-cw' })
+    expect((await pane.find({ type: 'Text' }))?.text).toBe('Run /cw to gather the figures.')
   })
 })

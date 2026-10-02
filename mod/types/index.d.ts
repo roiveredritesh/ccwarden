@@ -40,8 +40,34 @@ export type CcwardenConversation = {
   ledgerUsd?: number
   /** The conversation's biggest tool results (F10), largest first. */
   hogs?: { tool: string; target: string; tokens: number }[]
+  /** Compactions in this conversation, and how many were snapshots (F3, for the dashboard). */
+  compactions?: number
+  snapshots?: number
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
+}
+
+export type CcwardenHog = { tool: string; target: string; tokens: number }
+
+/** What the /cw pane draws (F10): gathered when /cw opens or Refresh is pressed. */
+export type CcwardenDashboard = {
+  at: number
+  session: {
+    model: string
+    tokens?: number
+    limit: number
+    usd?: number
+    hitRatio?: number
+    rebuilds: { at: number; tokens: number; cause: string }[]
+    compactions: number
+    agentsRunning: number
+    agentsUsd: number
+    backgroundUsd: number
+  }
+  savings: { junkMode: string; junkEvents: number; junkTokens: number; keepWarmSpent: number; keepWarmSaved: number; snapshots: number }
+  month: { mtd: number; budget: number; projected: number; isBudget: boolean; isMetered: boolean }
+  hogs: { session: CcwardenHog[]; month: CcwardenHog[] }
+  week?: { sessions: { id: string; lastTs: number; requests: number; hitRatio?: number; rebuilds: number }[]; causes: Record<string, number>; verdict: string }
 }
 
 declare module 'claude-code' {
@@ -57,6 +83,8 @@ declare module 'claude-code' {
       billingAsked: boolean
       /** Budget mode is on (SPEC §3), as last worked out. */
       budgetMode: boolean
+      /** The /cw pane's figures (F10). */
+      dashboard: CcwardenDashboard
       /** This conversation's figures (F1, F1b). */
       conversation: CcwardenConversation
     }

@@ -6,7 +6,7 @@
 //         saved to a file Claude can grep (no re-run needed).
 // `observe` mode only records what it would have done (in $.store), so the
 // thresholds can be checked for false positives before `enforce`. Pure: the
-// tool.call hooks in hooks/register.ts apply it.
+// tool.call hooks in hooks/register.tsx apply it.
 
 export type JunkMode = 'observe' | 'enforce' | 'off'
 
