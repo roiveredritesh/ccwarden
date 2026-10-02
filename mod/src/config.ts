@@ -21,6 +21,7 @@ export type Config = {
   junkGuard: 'observe' | 'enforce' | 'off'
   readMaxLines: number
   bashMaxChars: number
+  subagentGuard: boolean
   subagentModel: string
   subagentAllowlist: string[]
   maxParallelAgents: number
@@ -44,6 +45,7 @@ export const DEFAULTS: Config = {
   junkGuard: 'observe',
   readMaxLines: 2_000,
   bashMaxChars: 30_000,
+  subagentGuard: true,
   subagentModel: 'haiku',
   subagentAllowlist: [],
   maxParallelAgents: 3,
@@ -85,6 +87,7 @@ export function readConfig(options: PluginOptions): Config {
     junkGuard: pick('junkGuard', ['observe', 'enforce', 'off'], DEFAULTS.junkGuard),
     readMaxLines: num('readMaxLines'),
     bashMaxChars: num('bashMaxChars'),
+    subagentGuard: bool('subagentGuard'),
     subagentModel: typeof options.subagentModel === 'string' && options.subagentModel !== '' ? options.subagentModel : DEFAULTS.subagentModel,
     subagentAllowlist: (typeof allowlist === 'string' ? allowlist.split(',') : Array.isArray(allowlist) ? allowlist : [])
       .map(s => s.trim())

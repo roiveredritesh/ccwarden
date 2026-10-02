@@ -203,7 +203,7 @@ It never blocks and adds nothing to context.
 - **Report size:** appends a report cap to the subagent's own prompt ("≤ 300 words, findings + paths, no file dumps"). The report lands in the parent context at the parent model's price, so this saves there. The cap goes in the subagent's context, not the parent's, so it doesn't break the parent's cache.
 - **Concurrency:** caps how many run at once; past the cap the spawn is denied with a reason.
 - **Limits:** applies the per-model limits and snapshot compaction to subagent loops (`session.compact` with `agentId`).
-- **Shows:** `agents: 2 running · $0.40` in the status, and a toast for any subagent over $1.
+- **Shows:** `agents 2 running · $0.40` in the status, and a toast for any subagent over $1. A subagent's cost is its turns' usage at list price, with cache writes at the 5m rate (subagents get 5m).
 
 **F6. Keep-warm, active session only** (experimental, `metered`).
 
@@ -278,7 +278,7 @@ It never blocks and adds nothing to context.
 | `compactAt` | 55 (% of the model limit) | §3 |
 | `junkGuard` | `observe` → `enforce` | F4 |
 | `readMaxLines` / `bashMaxChars` | 2000 / 30000 | F4 |
-| `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | haiku / `""` (comma-separated types) / 3 | F5 |
+| `subagentGuard` / `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | on / haiku / `""` (comma-separated types) / 3 | F5 |
 | `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | on (metered) / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |
 | `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |

@@ -93,6 +93,12 @@
       "default": 30000,
       "description": "Longer Bash output is cut to head and tail; the full text is saved to a file Claude can grep."
     },
+    "subagentGuard": {
+      "type": "boolean",
+      "title": "Subagent guard",
+      "description": "Pin subagents to the subagent model, cap their report at ~300 words, and limit how many run at once.",
+      "default": true
+    },
     "subagentModel": {
       "type": "string",
       "title": "Subagent model",
