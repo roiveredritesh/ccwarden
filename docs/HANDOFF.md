@@ -216,6 +216,18 @@ Known limits:
 - `$.clock.every` ~270 s; `$.model.fork({ prompt: "Reply with OK." })`.
 - All SPEC F6 conditions; a per-session $ cap; spent and saved shown in the status.
 
+## 5b. M2 task list (do in order; SPEC §8: F7, F8, F9, F12)
+
+Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']` × `['metered', 'window']`, `claude plugin validate` clean.
+
+**M2-T1. F7, handoff.** *Done 2026-10-02.* `/handoff` (full while warm, else quick) and `/handoff quick`, the pickup offer on a fresh start, and `handoffOnCompact`. SPEC F7 "As built" has the details. Unverified live: the fork's reply quality, and whether `$.prompt.fill` lands when it runs at startup.
+
+**M2-T2. F8, background spend watcher.** A turn that starts without the user's prompt gets a toast with its cost and the setting that stops it. Such turns are scheduled tasks, `/loop`, peer messages and channel deliveries. The `prompt.submit` origin says which.
+
+**M2-T3. F9, model/effort advisor.** At session start, before the first prompt (when a switch is free), suggest a cheaper model for routine work. A lower `/effort` is cache-safe on Opus 5.5, Sonnet 5.5 and Fable 5.1. No guard on `/model` (rejected in §3). The handoff note names the suggested model.
+
+**M2-T4. F12, setup profile.** A Node installer outside the mod, so it can also set `CLAUDE_CODE_PLUGIN_DIRS`. It writes and explains each setting, with `--dry-run`, a backup and `--uninstall`. Only settings that are documented, or present in the pinned binary and listed in SPEC §9.
+
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 
 `probe/` runs each check below; its README maps each one to a `/cw-probe` command.

@@ -10,6 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
@@ -414,5 +415,39 @@ describe('T7 keep-warm', () => {
     expect(avoidedRebuild({ ...f, now: 3 * MIN })).toBe(0) // warm anyway
     expect(avoidedRebuild({ ...f, now: 12 * MIN })).toBe(0) // cold despite the ping
     expect(avoidedRebuild({ ...f, keepWarmAt: undefined })).toBe(0)
+  })
+})
+
+describe('M2 F7 handoff', () => {
+  test('topic and file name', () => {
+    expect(handoffTopic('Fix the login timeout bug in the auth service, please!')).toBe('fix-the-login-timeout-bug-in')
+    expect(handoffTopic('   ')).toBe('session')
+    expect(handoffTopic(undefined)).toBe('session')
+    expect(handoffTopic('ठीक करो')).toBe('session')
+    expect(handoffFileName(Date.parse('2026-10-02T07:46:38Z'), 'x')).toBe('2026-10-02-0746-x.md')
+  })
+  test('the newest name not yet offered', () => {
+    const names = ['2026-10-01-0900-a.md', '2026-10-02-0746-b.md', 'README.md', '2026-10-02-0746-b.md.bak']
+    expect(newestUnread(names, [])).toBe('2026-10-02-0746-b.md')
+    expect(newestUnread(names, ['2026-10-02-0746-b.md'])).toBe('2026-10-01-0900-a.md')
+    expect(newestUnread(names, ['2026-10-02-0746-b.md', '2026-10-01-0900-a.md'])).toBeUndefined()
+  })
+  test('full sections: from the first heading, or nothing', () => {
+    expect(fullSections('Here:\n## Decisions and why\nx\n## Next step\ny')).toBe('## Decisions and why\nx\n## Next step\ny')
+    expect(fullSections('## Decisions and why only')).toBeUndefined()
+  })
+  test('the note: verbatim asks on one line, open todos, files with diff stat, last error', () => {
+    const md = handoffMarkdown({
+      asks: ['Fix login', 'keep\nthe cookie'], todos: [{ content: 'retry', status: 'in_progress' }, { content: 'done', status: 'completed' }],
+      files: ['/p/src/a.ts'], diff: new Map([['src/a.ts', { added: 3, removed: 1 }]]), lastError: 'Bash: exit 1',
+      model: 'opus', writtenAt: 0,
+    }, { cwd: '/p' })
+    expect(md).toContain('## Goal\nFix login')
+    expect(md).toContain('1. keep ⏎ the cookie')
+    expect(md).toContain('- [ ] retry (in progress)')
+    expect(md).not.toContain('done')
+    expect(md).toContain('- `src/a.ts` (+3 -1)')
+    expect(md).toContain('## Last error\n```\nBash: exit 1\n```')
+    expect(md.match(/quick handoff: run \/handoff/g)).toHaveLength(4)
   })
 })

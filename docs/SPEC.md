@@ -244,6 +244,14 @@ It never blocks and adds nothing to context.
 - **Output:** a fixed template, written to `<handoffDir>/<date>-<topic>.md`.
 - **Pickup:** on `session.start` (`startup`), the newest unread handoff for the project is offered as **[Continue from handoff]**.
 - **`handoffOnCompact`:** writes a quick handoff before every compaction, as a safety net.
+- **As built (M2):**
+  - The full handoff's four sections come from one `$.model.fork`. It is tool-less, reads the cached prefix and adds nothing to the conversation.
+  - `/handoff` writes a quick handoff instead, and says why, when:
+    - the cache is cold
+    - the fork's estimate passes `handoffMaxUsd`
+    - the reply isn't the four sections
+  - Names are `YYYY-MM-DD-HHMM-<topic>.md` in UTC, so they sort by time on every machine. The topic is the goal's first words.
+  - Pickup is offered only on a `startup` session start (from `classic.SessionStart`). Each file is offered once (`$.store`), and **[Continue from handoff]** prefills the prompt box rather than sending anything.
 
 **F8. Background spend watcher.** Turns that start without a user prompt raise a toast with their cost and the setting that stops them:
 
@@ -299,7 +307,7 @@ It never blocks and adds nothing to context.
 | `monthlyBudgetUsd` | unset | F11 |
 | `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |
 | `alertTiming` | `immediate` | F1b |
-| `handoffDir` / `handoffOnCompact` | `.claude/handoffs` / off | F7 |
+| `handoffDir` / `handoffOnCompact` / `handoffMaxUsd` | `.claude/handoffs` / off / 0.50 | F7 |
 | `topicShiftHint` | off | F13 |
 
 M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.

@@ -31,6 +31,9 @@ export type Config = {
   keepWarmCapUsd: number
   budgetModeAt: number
   alertTiming: 'immediate' | 'turnEnd'
+  handoffDir: string
+  handoffOnCompact: boolean
+  handoffMaxUsd: number
 }
 
 export const DEFAULTS: Config = {
@@ -56,6 +59,9 @@ export const DEFAULTS: Config = {
   keepWarmCapUsd: 0.5,
   budgetModeAt: 80,
   alertTiming: 'immediate',
+  handoffDir: '.claude/handoffs',
+  handoffOnCompact: false,
+  handoffMaxUsd: 0.5,
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -101,6 +107,9 @@ export function readConfig(options: PluginOptions): Config {
     keepWarmCapUsd: num('keepWarmCapUsd'),
     budgetModeAt: num('budgetModeAt'),
     alertTiming: pick('alertTiming', ['immediate', 'turnEnd'], DEFAULTS.alertTiming),
+    handoffDir: typeof options.handoffDir === 'string' && options.handoffDir.trim() !== '' ? options.handoffDir.trim() : DEFAULTS.handoffDir,
+    handoffOnCompact: bool('handoffOnCompact'),
+    handoffMaxUsd: num('handoffMaxUsd'),
   }
 }
 

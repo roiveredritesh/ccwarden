@@ -2,7 +2,8 @@ import { update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
 import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
-import { avoidedRebuild, PING_PROMPT, pingVerdict, TICK_MS } from '../src/keepwarm'
+import { avoidedRebuild, PING_PROMPT, pingUsd, pingVerdict, TICK_MS } from '../src/keepwarm'
+import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread, pickupPrompt } from '../src/handoff'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
 import { cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
@@ -30,7 +31,7 @@ import { fiveHour, trackWindow } from '../src/window'
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
-// per-agent cost), F6 (keep-warm, off by default until Q2), the first-run billing question, the R9 toast budget, and the transcript path
+// per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -48,6 +49,8 @@ const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
 const TTL_RECHECK_MS = 10 * 60_000
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024 // what one $.fs.read takes
 const JUNK_LOG_KEY = 'junkLog' // $.store: what the junk guard did or would have done
+const HANDOFFS_OFFERED_KEY = 'handoffsOffered' // $.store: handoff paths already offered at a start
+const HANDOFF_CONTINUE = 'Continue from handoff'
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -69,6 +72,7 @@ export const register: Register = (on, options) => {
         ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }),
       })
     }
+    await $.command.register({ name: 'handoff', description: 'ccwarden: write a handoff note for a fresh session (full while the cache is warm)', argumentHint: '[quick]' })
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
@@ -82,7 +86,16 @@ export const register: Register = (on, options) => {
   // transcript file (and raises no session.start).
   on('classic.SessionStart', async ($, e, next) => {
     if (e.transcript_path !== '') await $.state.set(transcriptPath, e.transcript_path)
+    // F7: a fresh start offers the newest handoff not offered before.
+    if (e.source === 'startup') {
+      $.clock.after(0, () => void offerHandoff($, config).catch((err: unknown) => $.ui.log(`ccwarden: handoff pickup failed: ${String(err)}`, { to: 'debug' })))
+    }
     return next(e)
+  })
+
+  on('command.run', { command: 'handoff' }, async ($, e) => {
+    await writeHandoff($, config, e.args.trim() === 'quick' ? 'quick' : 'full')
+    return {}
   })
 
   // /clear ends the conversation: its figures start over, a held alert is
@@ -290,6 +303,7 @@ export const register: Register = (on, options) => {
     if (plan === 'skip') return { skip: 'ccwarden: snapshot compaction is on, so no summary is precomputed.' }
 
     const facts = await snapshotFacts($, e.messages)
+    if (config.handoffOnCompact) await writeHandoff($, config, 'quick', e.messages)
     if (plan === 'summary+facts') {
       const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: 0 })
       return next({ ...e, instructions: summaryInstructions(e.instructions, text) })
@@ -334,6 +348,60 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
     lastError: lastError(messages),
     lastAnswer: lastAnswer(messages),
   }
+}
+
+/**
+ * F7: writes a handoff note and says where. `full` asks one fork of the
+ * main thread for the decisions, state, next step and checks; it falls back
+ * to quick when the cache is cold (the fork would re-read everything), the
+ * estimate passes handoffMaxUsd, or the reply isn't the four sections.
+ */
+async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?: readonly SessionMessage[]): Promise<string | undefined> {
+  const messages = known ?? (await $.session.messages())
+  const facts = await snapshotFacts($, messages)
+  const model = await $.session.model()
+  const now = await $.clock.now()
+  let full: string | undefined
+  let why = ''
+  if (mode === 'full') {
+    const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+    const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
+    const isWarm = cacheView(lastCacheUse(conv), ttl, now).kind === 'warm'
+    const estimate = pingUsd((await $.session.usage()).context.tokens ?? 0, model) ?? 0
+    if (!isWarm) why = 'the cache is cold, so a full one would re-read the whole conversation'
+    else if (estimate > config.handoffMaxUsd) why = `a full one would cost ~$${estimate.toFixed(2)} (handoffMaxUsd is $${config.handoffMaxUsd})`
+    else {
+      const reply = await $.model.fork({ prompt: FULL_PROMPT }).catch(() => undefined)
+      full = reply?.isAnswered === true ? fullSections(reply.text) : undefined
+      if (full === undefined) why = "the fork didn't return the four sections"
+    }
+  }
+  const root = await $.session.root()
+  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : `${root}/${config.handoffDir}`
+  const path = `${dir}/${handoffFileName(now, handoffTopic(facts.goal ?? facts.asks[0]))}`
+  const text = handoffMarkdown({ ...facts, model, writtenAt: now }, { cwd: root, full })
+  const written = await $.fs.write(path, text).then(() => true, () => false)
+  $.ui.log(!written
+    ? `ccwarden: couldn't write the handoff to ${path}.`
+    : `ccwarden: ${full === undefined ? 'quick' : 'full'} handoff written to ${path}${why === '' ? '' : ` (quick: ${why})`}.`)
+  return written ? path : undefined
+}
+
+/** F7 pickup: offers the newest handoff in the project not offered before, once. */
+async function offerHandoff($: $, config: Config): Promise<void> {
+  if ((await $.session.surfaces()).length === 0) return
+  const root = await $.session.root()
+  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : `${root}/${config.handoffDir}`
+  const entries = await $.fs.list(dir).catch(() => [])
+  const offered = ((await $.store.get(HANDOFFS_OFFERED_KEY)) as string[] | undefined) ?? []
+  const name = newestUnread(entries.filter(f => f.kind === 'file').map(f => f.name), offered.filter(p => p.startsWith(`${dir}/`)).map(p => p.slice(dir.length + 1)))
+  if (name === undefined) return
+  const path = `${dir}/${name}`
+  await $.store.set(HANDOFFS_OFFERED_KEY, [...offered, path].slice(-200))
+  const answer = await $.ui.ask(`ccwarden: continue from the handoff ${name}?`, { header: 'Handoff', options: [HANDOFF_CONTINUE, 'Not now'] }).catch(() => undefined)
+  if (answer !== HANDOFF_CONTINUE) return
+  const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+  await $.prompt.fill({ text: pickupPrompt(rel), mode: 'replace' })
 }
 
 /** Adds one junk-guard event to the log in $.store (machine-wide, kept for review before `enforce`). */
