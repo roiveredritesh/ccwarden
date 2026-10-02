@@ -174,6 +174,12 @@
       "title": "Full handoff: max estimated cost ($)",
       "description": "A full /handoff is one fork of the conversation; above this estimate it writes a quick one instead.",
       "default": 0.5
+    },
+    "backgroundWatch": {
+      "type": "boolean",
+      "title": "Background spend watcher",
+      "description": "Name each kind of turn you didn't type (scheduled tasks, /loop, other sessions, channels) once per conversation, with its cost and the setting that stops it.",
+      "default": true
     }
   }
 }

@@ -9,6 +9,7 @@ import { familyOf } from './prices'
 //   window:  Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
 //   with subagents (F5): … · agents 2 running · $0.40
 //   with keep-warm (F6): … · keep-warm $0.06 · saved $0.38
+//   with turns the user didn't type (F8): … · background $0.12
 
 export type StatusFacts = {
   billing: Billing | undefined
@@ -25,6 +26,8 @@ export type StatusFacts = {
   isAlerted: boolean
   /** Keep-warm (F6): what its pings cost and the rebuilds they avoided (est.). */
   keepWarm?: { spentUsd: number; savedUsd: number; pings: number }
+  /** Turns the user didn't type (F8): what they cost (est.). */
+  backgroundUsd?: number
   /** This conversation's subagents: how many run now and what they cost (est.). */
   agents?: { running: number; usd: number }
 }
@@ -43,6 +46,7 @@ export function formatStatus(f: StatusFacts): string {
   } else if (f.usd !== undefined) {
     parts.push(`this chat $${f.usd.toFixed(2)}${flag}`)
   }
+  if (f.backgroundUsd !== undefined && f.backgroundUsd > 0) parts.push(`background $${f.backgroundUsd.toFixed(2)}`)
   if (f.keepWarm !== undefined && f.keepWarm.pings > 0) {
     parts.push(`keep-warm $${f.keepWarm.spentUsd.toFixed(2)} · saved $${f.keepWarm.savedUsd.toFixed(2)}`)
   }

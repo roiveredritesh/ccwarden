@@ -1,6 +1,8 @@
 import { update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
+import { backgroundSource, backgroundToast } from '../src/background'
+import type { BackgroundSource } from '../src/background'
 import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
 import { avoidedRebuild, PING_PROMPT, pingUsd, pingVerdict, TICK_MS } from '../src/keepwarm'
 import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread, pickupPrompt } from '../src/handoff'
@@ -31,13 +33,22 @@ import { fiveHour, trackWindow } from '../src/window'
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
-// per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs), the first-run billing question, the R9 toast budget, and the transcript path
+// per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
+// F8 (the background spend watcher), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
 
 /** What the module tracks between events; a reload starts it over, harmlessly. */
-type Runtime = { isCompacting: boolean; isTurnRunning: boolean; isPinging: boolean }
+type Runtime = {
+  isCompacting: boolean
+  isTurnRunning: boolean
+  isPinging: boolean
+  /** F8: prompts submitted while idle, oldest first, each with what sent it (undefined: the user). */
+  queued: { text: string; source?: BackgroundSource }[]
+  /** F8: what started the running turn, when the user didn't. */
+  turnSource?: BackgroundSource
+}
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
 const heldNote = { plugin: 'ccwarden', key: 'heldNote' } as const
@@ -58,7 +69,7 @@ const CHARS_PER_TOKEN = 4
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false }
+  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false, queued: [] }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -134,6 +145,10 @@ export const register: Register = (on, options) => {
   // F2: before a typed prompt goes out over a cold cache with a large
   // context, ask. Cancel keeps the prompt: it goes back into the box.
   on('prompt.submit', async ($, e, next) => {
+    // F8: a prompt the user didn't type, starting a turn of its own.
+    const source = backgroundSource(e.origin)
+    if (e.turnId === undefined) runtime.queued = [...runtime.queued, { text: e.text, source }].slice(-20)
+    if (source !== undefined) return next(e)
     if (e.origin.kind !== 'composer' || e.turnId !== undefined) return next(e)
     const now = await $.clock.now()
     const usage = await $.session.usage()
@@ -230,6 +245,10 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     runtime.isTurnRunning = true
+    // The turn's prompt, matched by text; a turn no queued prompt matches is the user's.
+    const i = runtime.queued.findIndex(q => q.text === e.text)
+    runtime.turnSource = i === -1 ? undefined : runtime.queued[i]!.source
+    if (i !== -1) runtime.queued = runtime.queued.filter((_, j) => j !== i)
     return next(e)
   })
 
@@ -260,6 +279,9 @@ export const register: Register = (on, options) => {
       await refreshStatus($, config, conv)
       return result
     }
+    const source = runtime.turnSource
+    runtime.turnSource = undefined
+    if (source !== undefined && config.backgroundWatch && e.usage !== undefined) await watchBackground($, source, turnUsd(e.usage) ?? 0)
     const now = await $.clock.now()
     let pending: string | undefined
     const conv = await update($, conversation, prev => {
@@ -350,6 +372,23 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
   }
 }
 
+/** F8: adds a background turn's cost; names its kind in a toast once per conversation. */
+async function watchBackground($: $, source: BackgroundSource, usd: number): Promise<void> {
+  let isFirst = false
+  await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    const bg = { usd: (c.background?.usd ?? 0) + usd, toasted: [...(c.background?.toasted ?? [])] }
+    if (!bg.toasted.includes(source.kind)) {
+      bg.toasted.push(source.kind)
+      isFirst = true
+    }
+    c.background = bg
+    return c
+  })
+  $.ui.log(`ccwarden: background turn (${source.label}) ~$${usd.toFixed(3)}`, { to: 'debug' })
+  if (isFirst) await notify($, 'advisor', backgroundToast(source, usd))
+}
+
 /**
  * F7: writes a handoff note and says where. `full` asks one fork of the
  * main thread for the decisions, state, next step and checks; it falls back
@@ -433,6 +472,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     now,
     isAlerted: conv.alerted > 0,
     keepWarm: conv.keepWarm,
+    backgroundUsd: conv.background?.usd,
     agents: {
       running: runningCount(await $.agent.list()),
       usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),

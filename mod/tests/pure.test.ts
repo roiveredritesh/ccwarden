@@ -10,6 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { backgroundSource, backgroundToast } from '../src/background'
 import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
@@ -449,5 +450,20 @@ describe('M2 F7 handoff', () => {
     expect(md).toContain('- `src/a.ts` (+3 -1)')
     expect(md).toContain('## Last error\n```\nBash: exit 1\n```')
     expect(md.match(/quick handoff: run \/handoff/g)).toHaveLength(4)
+  })
+})
+
+describe('M2 F8 background sources', () => {
+  test("the user's own turns are not background", () => {
+    for (const kind of ['composer', 'bridge', 'sdk', 'auto-continuation'] as const) expect(backgroundSource({ kind } as never)).toBeUndefined()
+  })
+  test('each other kind names a source and a way to stop it', () => {
+    expect(backgroundSource({ kind: 'scheduled-trigger' } as never)?.kind).toBe('scheduled')
+    expect(backgroundSource({ kind: 'peer' } as never)?.stop).toContain('"crossSessionInbound": "hold"')
+    expect(backgroundSource({ kind: 'peer-send-message' } as never)?.kind).toBe('peer')
+    expect(backgroundSource({ kind: 'channel' } as never)?.kind).toBe('channel')
+    expect(backgroundSource({ kind: 'plugin', name: 'x' } as never)).toMatchObject({ kind: 'plugin:x', label: 'the x plugin' })
+    expect(backgroundSource({ kind: 'unclassified' } as never)?.stop).toContain('CLAUDE_CODE_GOAL_CHECKIN_MINUTES=0')
+    expect(backgroundToast({ kind: 'k', label: 'L', stop: 'S' }, 0.123)).toBe('ccwarden: a turn started by L cost ~$0.12 (est.). To stop these, S.')
   })
 })

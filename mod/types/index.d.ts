@@ -34,6 +34,8 @@ export type CcwardenConversation = {
   goal?: string
   /** Subagents (F5): what each cost so far (est.), and which were warned about. */
   agents?: { byId: Record<string, number>; warned: string[] }
+  /** Turns the user didn't type (F8): their cost (est.) and the kinds already named in a toast. */
+  background?: { usd: number; toasted: string[] }
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
 }

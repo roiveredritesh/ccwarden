@@ -259,6 +259,13 @@ It never blocks and adds nothing to context.
 - cross-session messages (`crossSessionInbound: hold`)
 - goal check-ins (`CLAUDE_CODE_GOAL_CHECKIN_MINUTES=0`)
 
+**As built (M2):**
+
+- A turn counts when it starts from a `prompt.submit` whose origin isn't the user's own (`composer`, `bridge`, `sdk`, `auto-continuation`). A delivery folded into a running turn doesn't count. Prompts queued while idle are matched to their turn by text, so a background prompt and the user's own, queued together, each go to the right turn.
+- Its cost is the turn's usage at list price. Each kind is named once per conversation in an advisor-priority toast (under R9).
+- The status line keeps a running `background $X`. The `backgroundWatch` toggle switches it off.
+- Goal check-ins have no origin kind of their own in the types, so they fall under the generic "other" text.
+
 **F9. Model / effort advisor.**
 
 - **Model:** routine work → a cheaper model, suggested at session start or through a handoff, never by switching mid-session.
