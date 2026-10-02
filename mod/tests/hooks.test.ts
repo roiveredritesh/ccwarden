@@ -197,6 +197,12 @@ describe('F1 status line', () => {
     expect(w.status.at(-1)).toContain('150k/200k')
   })
 
+  test('the limit is the compact window when CLAUDE_CODE_AUTO_COMPACT_WINDOW is smaller', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000, window: 1_000_000 }, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
+    await $.session.start(start('terminal'))
+    expect(w.status.at(-1)).toContain('100k/150k')
+  })
+
   test('a subagent turn leaves the main cache clock alone', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 1_000 } })
     await $.session.start(start('terminal'))

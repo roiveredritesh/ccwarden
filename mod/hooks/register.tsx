@@ -426,7 +426,7 @@ export const register: Register = (on, options) => {
     // summary. The engine's own window stays the safety net.
     const usage = await $.session.usage()
     const model = await $.session.model()
-    const limit = Math.min(limitFor(model, config), usage.context.window)
+    const limit = await limitOf($, model, config, usage.context.window)
     const tokens = usage.context.tokens ?? 0
     if (tokens > limit && !runtime.isCompacting) {
       runtime.isCompacting = true
@@ -462,7 +462,7 @@ export const register: Register = (on, options) => {
     }
 
     const usage = await $.session.usage()
-    const limit = Math.min(limitFor(await $.session.model(), config), usage.context.window)
+    const limit = await limitOf($, await $.session.model(), config, usage.context.window)
     const { tail, turns } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
     const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: turns })
     $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
@@ -569,7 +569,7 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
     session: {
       model,
       tokens: usage.context.tokens,
-      limit: Math.min(limitFor(model, config), usage.context.window),
+      limit: await limitOf($, model, config, usage.context.window),
       usd: usage.cost?.usd,
       hitRatio: current?.hitRatio,
       rebuilds: current?.rebuilds ?? [],
@@ -707,7 +707,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     billing: config.billing,
     model,
     tokens,
-    limit: Math.min(limitFor(model, config), usage.context.window),
+    limit: await limitOf($, model, config, usage.context.window),
     cache,
     ttl,
     rebuildUsd: cache.kind === 'cold' && tokens !== undefined ? rebuildUsd(tokens, model, ttl) : undefined,
@@ -724,6 +724,17 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
       usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
     },
   }))
+}
+
+/**
+ * The limit the mod measures a conversation against: its per-model limit, the
+ * model window, and the compact window the user sets with
+ * CLAUDE_CODE_AUTO_COMPACT_WINDOW (Q5: the engine re-reads it live), so the
+ * status never says 300k while the engine compacts at 150k.
+ */
+async function limitOf($: $, model: string, config: Config, window: number): Promise<number> {
+  const compactWindow = Number(await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))
+  return Math.min(limitFor(model, config), window, compactWindow > 0 ? compactWindow : Infinity)
 }
 
 /** The cache's last use: the main loop's last response, or a later keep-warm ping. */
