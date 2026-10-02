@@ -32,7 +32,7 @@ const HELP = `/cw-probe <check>
   newchat       Q4 run /clear from the mod, then prefill the prompt box
   report        print every finding and write ~/.claude/ccwarden-probe.jsonl
   clear         forget stored findings
-Q6: ask Claude to run \`seq 1 100000 ${TRIM_MARKER}\`; Q9: switch /model.`
+Q6: ask Claude to run \`seq 1 4000 ${TRIM_MARKER}\` (about 19k chars: the engine already persists and previews anything over 30k); Q9: switch /model.`
 
 export const register: Register = on => {
   // Module state is fine for a probe: a reload only drops an armed check.
@@ -124,7 +124,7 @@ export const register: Register = on => {
     if (!e.command.includes(TRIM_MARKER) || ran.deny !== undefined || ran.isError) return ran
     const { stdout } = ran.result
     if (stdout.length <= TRIM_KEEP_CHARS) return ran
-    await record($, 'Q6', { trimmedFrom: stdout.length, to: TRIM_KEEP_CHARS })
+    await record($, 'Q6', { trimmedFrom: stdout.length, to: TRIM_KEEP_CHARS, persistedOutputPath: ran.result.persistedOutputPath })
     return { result: { ...ran.result, stdout: `${stdout.slice(0, TRIM_KEEP_CHARS)}\n[cw-probe: trimmed ${stdout.length - TRIM_KEEP_CHARS} chars]` } }
   })
 
