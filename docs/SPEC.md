@@ -332,7 +332,7 @@ It never blocks and adds nothing to context.
 
 **As built (M4):** `topicShiftHint`, off by default.
 
-- **Asked for:** the same prompts F2 asks about (typed while idle, interactive), when F2 didn't ask: its cold question already names `/clear`. The context must be ≥ 40k tokens and the prompt must have ≥ 4 keywords and not be a slash command.
+- **Asked for:** the same prompts F2 asks about (typed while idle, interactive), when F2 didn't ask: its cold question already names `/clear`. The context must be ≥ 40k tokens and the prompt must have ≥ 2 keywords and not be a slash command.
 - **Keywords:** lowercased alphanumeric words of 3+ characters, minus English and Hinglish filler, cut to 6 characters (a crude stem). The history is the goal, the last 5 asks and Claude's last answer. A shift is ≤ 10% of the prompt's keywords seen there.
 - **The question:** Send, Clear or Handoff + clear. Clear drops the prompt, runs `/clear` with `$.command.run` (queued until the session is idle), resets the conversation's figures itself (a plugin's own command may skip its own `session.end` hook, as `/compact` did in Q13), and puts the prompt back with `$.prompt.fill`. Handoff + clear writes a quick handoff first. A dismissal keeps the prompt in the box.
 - **Mute:** any answer mutes the hint until the context grows 20%, so sending the same prompt again goes through.

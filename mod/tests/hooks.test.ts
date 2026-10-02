@@ -1394,11 +1394,12 @@ describe('F13 unrelated-prompt hint', () => {
     await warm($, w, 'terminal')
     await $.prompt.submit(typed('now make the snapshot keep todos for sonnet too'))
     await $.prompt.submit(typed('ok ship it'))
+    await $.prompt.submit(typed('the haiku limit?'))
     await $.prompt.submit(typed('/handoff quick please now'))
     w.usage.tokens = 30_000
     await $.prompt.submit(typed(UNRELATED))
     expect(w.asks).toEqual([])
-    expect(w.sent).toHaveLength(4)
+    expect(w.sent).toHaveLength(5)
   })
 
   test('off by default', { options: { billing: 'metered' } }, async ($, on) => {

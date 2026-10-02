@@ -7,8 +7,8 @@ import { fmtTokens } from './status'
 
 /** Below this context a /clear saves too little to ask about (SPEC §3). */
 export const TOPIC_MIN_TOKENS = 40_000
-/** Fewer keywords than this and the prompt says too little to judge ("yes", "go on"). */
-export const TOPIC_MIN_KEYWORDS = 4
+/** Fewer keywords than this and the prompt says too little to judge ("yes", "ship it"). 2 catches "what is the capital of india?". */
+export const TOPIC_MIN_KEYWORDS = 2
 /** "Near zero": at most this share of the prompt's keywords seen before. */
 export const TOPIC_MAX_OVERLAP = 0.1
 /** "Send" mutes the hint until the context grows this much (SPEC §3 "Keep going"). */

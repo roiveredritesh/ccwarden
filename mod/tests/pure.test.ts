@@ -724,7 +724,10 @@ describe('F13 topic shift', () => {
   test('overlap is the share of prompt keywords seen before', () => {
     expect(topicOverlap('snapshot compaction weather python', ['fix the snapshot compaction'])).toEqual({ overlap: 0.5, count: 4 })
   })
-  test('a candidate: 40k+ context, 4+ keywords, not a slash command, not muted', () => {
+  test('a candidate: 40k+ context, 2+ keywords, not a slash command, not muted', () => {
+    expect([...keywords('What is the capital of india?')]).toEqual(['capita', 'india'])
+    expect(isTopicCandidate({ text: 'What is the capital of india?', tokens: 90_000 })).toBe(true)
+    expect(isTopicCandidate({ text: 'yes go on', tokens: 90_000 })).toBe(false)
     const text = 'write a python scraper for weather data'
     expect(isTopicCandidate({ text, tokens: 40_000 })).toBe(true)
     expect(isTopicCandidate({ text, tokens: 39_999 })).toBe(false)
