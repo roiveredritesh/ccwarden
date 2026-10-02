@@ -8,6 +8,7 @@ import { familyOf } from './prices'
 //   metered: Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
 //   window:  Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
 //   with subagents (F5): … · agents 2 running · $0.40
+//   with keep-warm (F6): … · keep-warm $0.06 · saved $0.38
 
 export type StatusFacts = {
   billing: Billing | undefined
@@ -22,6 +23,8 @@ export type StatusFacts = {
   fiveHour?: SessionRateLimit
   now: number
   isAlerted: boolean
+  /** Keep-warm (F6): what its pings cost and the rebuilds they avoided (est.). */
+  keepWarm?: { spentUsd: number; savedUsd: number; pings: number }
   /** This conversation's subagents: how many run now and what they cost (est.). */
   agents?: { running: number; usd: number }
 }
@@ -39,6 +42,9 @@ export function formatStatus(f: StatusFacts): string {
     parts.push(`5h ${f.fiveHour.percentUsed}%${Number.isFinite(resetsIn) && resetsIn > 0 ? ` (resets ${fmtDuration(resetsIn)})` : ''}`)
   } else if (f.usd !== undefined) {
     parts.push(`this chat $${f.usd.toFixed(2)}${flag}`)
+  }
+  if (f.keepWarm !== undefined && f.keepWarm.pings > 0) {
+    parts.push(`keep-warm $${f.keepWarm.spentUsd.toFixed(2)} · saved $${f.keepWarm.savedUsd.toFixed(2)}`)
   }
   if (f.agents !== undefined && (f.agents.running > 0 || f.agents.usd > 0)) {
     parts.push(`agents ${f.agents.running} running · $${f.agents.usd.toFixed(2)}`)

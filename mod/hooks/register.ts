@@ -2,9 +2,10 @@ import { update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
 import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
+import { avoidedRebuild, PING_PROMPT, pingVerdict, TICK_MS } from '../src/keepwarm'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
-import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
+import { cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
 import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
@@ -29,10 +30,13 @@ import { fiveHour, trackWindow } from '../src/window'
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
-// per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
+// per-agent cost), F6 (keep-warm, off by default until Q2), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
+
+/** What the module tracks between events; a reload starts it over, harmlessly. */
+type Runtime = { isCompacting: boolean; isTurnRunning: boolean; isPinging: boolean }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
 const heldNote = { plugin: 'ccwarden', key: 'heldNote' } as const
@@ -51,8 +55,7 @@ const CHARS_PER_TOKEN = 4
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  // One limit compaction at a time; a reload forgets it, which is harmless.
-  let isCompacting = false
+  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -68,6 +71,7 @@ export const register: Register = (on, options) => {
     }
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
+    if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
     await refreshStatus($, config)
@@ -118,13 +122,26 @@ export const register: Register = (on, options) => {
   // context, ask. Cancel keeps the prompt: it goes back into the box.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind !== 'composer' || e.turnId !== undefined) return next(e)
-    if ((await $.session.surfaces()).length === 0) return next(e)
-    const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+    const now = await $.clock.now()
     const usage = await $.session.usage()
     const model = await $.session.model()
-    const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
-    const cache = cacheView(conv.lastResponseAt, ttl, await $.clock.now())
+    const before = (await $.state.get(conversation)).value ?? { alerted: 0 }
+    const { ttl } = inferTtl({ observed: before.observedTtl, override: await ttlOverride($), billing: config.billing })
     const tokens = usage.context.tokens
+    // F6: the prompt keep-warm waits for; and the rebuild a ping avoided, if any.
+    const saved = avoidedRebuild({
+      now, lastResponseAt: before.lastResponseAt, keepWarmAt: before.keepWarmAt, ttlMs: TTL_MS[ttl],
+      rebuildUsd: tokens === undefined ? undefined : rebuildUsd(tokens, model, ttl),
+    })
+    const conv = await update($, conversation, prev => {
+      const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }), lastPromptAt: now }
+      if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
+      return c
+    })
+    if (saved > 0) await refreshStatus($, config, conv)
+
+    if ((await $.session.surfaces()).length === 0) return next(e)
+    const cache = cacheView(lastCacheUse(conv), ttl, now)
     const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor })
     if (!isDue || cache.kind !== 'cold' || tokens === undefined) return next(e)
 
@@ -198,8 +215,14 @@ export const register: Register = (on, options) => {
     return started
   })
 
+  on('turn.start', async ($, e, next) => {
+    runtime.isTurnRunning = true
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) runtime.isTurnRunning = false
     if (e.agentId !== undefined) {
       // A subagent's turn: its cost, and one toast if it passes AGENT_WARN_USD.
       // Its requests don't touch the main cache.
@@ -245,12 +268,12 @@ export const register: Register = (on, options) => {
     const model = await $.session.model()
     const limit = Math.min(limitFor(model, config), usage.context.window)
     const tokens = usage.context.tokens ?? 0
-    if (tokens > limit && !isCompacting) {
-      isCompacting = true
+    if (tokens > limit && !runtime.isCompacting) {
+      runtime.isCompacting = true
       $.ui.log(`ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}; compacting.`)
       $.clock.after(0, async () => {
         const ran = await $.command.run({ command: 'compact' }).catch((err: unknown) => ({ error: String(err) }))
-        isCompacting = false
+        runtime.isCompacting = false
         if ('error' in ran) $.ui.log(`ccwarden: compaction didn't run: ${ran.error}`)
         await refreshStatus($, config)
       })
@@ -326,7 +349,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
   const model = await $.session.model()
   const now = await $.clock.now()
   const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
-  const cache = cacheView(conv.lastResponseAt, ttl, now)
+  const cache = cacheView(lastCacheUse(conv), ttl, now)
   const tokens = usage.context.tokens
   $.ui.status(formatStatus({
     billing: config.billing,
@@ -341,11 +364,61 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     fiveHour: fiveHour(usage.rateLimits),
     now,
     isAlerted: conv.alerted > 0,
+    keepWarm: conv.keepWarm,
     agents: {
       running: runningCount(await $.agent.list()),
       usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
     },
   }))
+}
+
+/** The cache's last use: the main loop's last response, or a later keep-warm ping. */
+function lastCacheUse(conv: CcwardenConversation): number | undefined {
+  if (conv.lastResponseAt === undefined) return conv.keepWarmAt
+  return Math.max(conv.lastResponseAt, conv.keepWarmAt ?? 0)
+}
+
+/**
+ * F6: just before the cache expires, while every condition holds, one fork
+ * of the main thread's last request reads the cached prefix. A fork that
+ * read (almost) nothing from the cache found it lapsed: it isn't counted as
+ * keeping it warm.
+ */
+async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<void> {
+  if (runtime.isPinging) return
+  const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+  const now = await $.clock.now()
+  const usage = await $.session.usage()
+  const model = await $.session.model()
+  const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
+  const lastUse = lastCacheUse(conv)
+  if (lastUse !== undefined && conv.keepWarmMissedFor === lastUse) return // this cache already lapsed
+  const verdict = pingVerdict({
+    keepWarm: config.keepWarm, billing: config.billing,
+    isAttached: (await $.session.surfaces()).length > 0, isTurnRunning: runtime.isTurnRunning,
+    now, lastPromptAt: conv.lastPromptAt, expiresAt: lastUse === undefined ? undefined : lastUse + TTL_MS[ttl],
+    maxMin: config.keepWarmMaxMin, spentUsd: conv.keepWarm?.spentUsd ?? 0, capUsd: config.keepWarmCapUsd,
+    tokens: usage.context.tokens, model,
+  })
+  if (!verdict.isDue) return
+
+  runtime.isPinging = true
+  const reply = await $.model.fork({ prompt: PING_PROMPT }).catch(() => undefined)
+  runtime.isPinging = false
+  if (reply === undefined || !('usage' in reply)) return
+  const spent = turnUsd({ ...reply.usage, model }) ?? 0
+  const didRead = reply.usage.cache_read_input_tokens >= (usage.context.tokens ?? 0) * 0.5
+  const at = await $.clock.now()
+  const after = await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    const kw = c.keepWarm ?? { pings: 0, spentUsd: 0, savedUsd: 0 }
+    c.keepWarm = { ...kw, pings: kw.pings + 1, spentUsd: kw.spentUsd + spent }
+    if (didRead) c.keepWarmAt = at
+    else c.keepWarmMissedFor = lastUse
+    return c
+  })
+  $.ui.log(`ccwarden keep-warm: ping read ${reply.usage.cache_read_input_tokens} cached tokens for ~$${spent.toFixed(3)}${didRead ? '' : ' (the cache had lapsed)'}.`, { to: 'debug' })
+  await refreshStatus($, config, after)
 }
 
 /** The documented TTL override: CLAUDE_CODE_PROMPT_CACHE_TTL, else the `promptCacheTtl` setting. */

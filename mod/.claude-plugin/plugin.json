@@ -125,9 +125,9 @@
     },
     "keepWarm": {
       "type": "boolean",
-      "title": "Keep-warm (metered, experimental)",
-      "description": "Refresh the active session's prompt cache while you are briefly away, within a $ cap.",
-      "default": true
+      "title": "Keep-warm (metered, experimental; off until Q2 is confirmed)",
+      "description": "Just before the active session's prompt cache expires, one tiny fork of the last request reads it to keep it warm, within keepWarmCapUsd. Turn on once /cw-probe fork shows it works (SPEC §9 Q2).",
+      "default": false
     },
     "keepWarmMaxMin": {
       "type": "number",

@@ -51,7 +51,7 @@ export const DEFAULTS: Config = {
   subagentModel: 'haiku',
   subagentAllowlist: [],
   maxParallelAgents: 3,
-  keepWarm: true,
+  keepWarm: false, // until Q2 confirms a fork refreshes the main cache
   keepWarmMaxMin: 30,
   keepWarmCapUsd: 0.5,
   budgetModeAt: 80,

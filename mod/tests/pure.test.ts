@@ -10,6 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
@@ -27,7 +28,7 @@ describe('config', () => {
     expect(c.limitHaiku).toBe(120_000)
     expect(c.coldMinTokens).toBe(0)
     expect(c.junkGuard).toBe('observe')
-    expect(c.keepWarm).toBe(true)
+    expect(c.keepWarm).toBe(false) // off until Q2 is confirmed
   })
 
   test('the subagent allowlist is a comma list', () => {
@@ -378,5 +379,40 @@ describe('T6 junk guard', () => {
     for (let i = 0; i < JUNK_LOG_MAX + 5; i++) log = appendJunk(log, { ...ev, at: i })
     expect(log).toHaveLength(JUNK_LOG_MAX)
     expect(log.at(-1)!.at).toBe(JUNK_LOG_MAX + 4)
+  })
+})
+
+describe('T7 keep-warm', () => {
+  const MIN = 60_000
+  const base = {
+    keepWarm: true, billing: 'metered' as const, isAttached: true, isTurnRunning: false, now: 10 * MIN,
+    lastPromptAt: 6 * MIN, expiresAt: 10 * MIN + 30_000, maxMin: 30, spentUsd: 0, capUsd: 0.5, tokens: 150_000, model: 'claude-sonnet-5-5',
+  }
+  test('due only when every condition holds', () => {
+    expect(pingVerdict(base)).toEqual({ isDue: true })
+    const why = (over: Partial<typeof base> | Record<string, unknown>) => {
+      const v = pingVerdict({ ...base, ...over })
+      return v.isDue ? 'due' : v.why
+    }
+    expect(why({ keepWarm: false })).toBe('off')
+    expect(why({ billing: 'window' })).toBe('off')
+    expect(why({ isAttached: false })).toBe('no client attached')
+    expect(why({ isTurnRunning: true })).toBe('a turn is running')
+    expect(why({ lastPromptAt: undefined })).toBe('no prompt within keepWarmMaxMin')
+    expect(why({ lastPromptAt: -21 * MIN })).toBe('no prompt within keepWarmMaxMin')
+    expect(why({ expiresAt: 9 * MIN })).toBe('cache already cold')
+    expect(why({ expiresAt: 10 * MIN + PING_LEAD_MS + 1 })).toBe('not yet')
+    expect(why({ tokens: 0 })).toBe("a rebuild wouldn't cost more")
+    expect(why({ spentUsd: 0.49 })).toBe('keepWarmCapUsd reached')
+  })
+  test('a ping costs a cache read; SPEC F6 example: Sonnet 150K ≈ $0.03', () => {
+    expect(Math.round((pingUsd(150_000, 'claude-sonnet-5-5') ?? 0) * 100) / 100).toBe(0.03)
+  })
+  test('a rebuild is counted as avoided only when the ping made the difference', () => {
+    const f = { now: 8 * MIN, lastResponseAt: 0, keepWarmAt: 4.5 * MIN, ttlMs: 5 * MIN, rebuildUsd: 0.38 }
+    expect(avoidedRebuild(f)).toBe(0.38)
+    expect(avoidedRebuild({ ...f, now: 3 * MIN })).toBe(0) // warm anyway
+    expect(avoidedRebuild({ ...f, now: 12 * MIN })).toBe(0) // cold despite the ping
+    expect(avoidedRebuild({ ...f, keepWarmAt: undefined })).toBe(0)
   })
 })
