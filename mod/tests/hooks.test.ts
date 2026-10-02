@@ -612,8 +612,8 @@ describe('F2 cold-cache guard', () => {
         const out = await $.prompt.submit(typed('continue with the refactor'))
         expect(w.asks).toHaveLength(1)
         expect(w.asks[0]).toBe(billing === 'window'
-          ? 'ccwarden: the prompt cache went cold 5m ago, so this prompt re-caches ~180k tokens (≈ $0.72 est.). Unrelated work? /clear first is cheaper. Send it anyway?'
-          : 'ccwarden: the prompt cache went cold 12m ago, so this prompt re-caches ~180k tokens (≈ $0.45 est.). Unrelated work? /clear first is cheaper. Send it anyway?')
+          ? 'ccwarden: the prompt cache went cold 5m ago, so this prompt re-caches ~180k tokens (≈ $0.72 est.). Same task? /handoff, then a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?'
+          : 'ccwarden: the prompt cache went cold 12m ago, so this prompt re-caches ~180k tokens (≈ $0.45 est.). Same task? /handoff, then a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?')
         expect(out.drop).toContain("~180k tokens weren't re-cached")
         expect(w.sent).toEqual([])
         await w.clock.advance(0)

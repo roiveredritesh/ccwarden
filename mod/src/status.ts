@@ -7,6 +7,7 @@ import { familyOf } from './prices'
 //   metered: Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache ● 3m · this chat $1.84
 //   metered: Fable · ctx ▓▓▓▓▓▓▓▓▓░ 87% 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
 //   window:  Haiku · ctx ▓▓▓▓▓░░░░░ 53% 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
+//   past compactAt:    … · ctx ▓▓▓▓▓▓░░░░ 58% 174k/300k · /compact at a break · cache ● 3m · …
 //   after a re-cache:  … · cache ● 59m · miss: model switch, re-cached 111k
 //   with subagents (F5): … · agents 2 running · $0.40
 //   with keep-warm (F6): … · keep-warm $0.06 · saved $0.38
@@ -17,6 +18,8 @@ export type StatusFacts = {
   model: string
   tokens?: number
   limit: number
+  /** % of the limit where a /compact at a break is worth it (SPEC §3; 45 in budget mode). */
+  compactAt?: number
   cache: CacheView
   ttl: Ttl
   rebuildUsd?: number
@@ -41,6 +44,7 @@ export function formatStatus(f: StatusFacts): string {
   const family = familyOf(f.model)
   const parts = [family === undefined ? f.model : family[0]!.toUpperCase() + family.slice(1)]
   parts.push(ctxSegment(f.tokens, f.limit))
+  if (f.compactAt !== undefined && f.tokens !== undefined && f.limit > 0 && (f.tokens / f.limit) * 100 >= f.compactAt) parts.push('/compact at a break')
   parts.push(cacheSegment(f))
   if (f.miss !== undefined) parts.push(`miss: ${f.miss.cause}, re-cached ${fmtTokens(f.miss.tokens)}`)
 

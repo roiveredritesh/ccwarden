@@ -235,6 +235,15 @@ describe('T2 pure logic', () => {
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
   })
+
+  test('status: the /compact hint from compactAt (55, or 45 in budget mode)', () => {
+    const at = (tokens: number, compactAt: number) => formatStatus({
+      billing: 'metered', model: 'claude-sonnet-5-5', tokens, limit: 300_000, compactAt, ttl: '5m', cache: { kind: 'none' }, now: 0, isAlerted: false,
+    })
+    expect(at(150_000, 55)).not.toContain('/compact at a break') // 50%
+    expect(at(165_000, 55)).toContain('ctx ▓▓▓▓▓▓░░░░ 55% 165k/300k · /compact at a break · cache –')
+    expect(at(150_000, 45)).toContain('/compact at a break') // budget mode
+  })
 })
 
 describe('cacheMiss', () => {
