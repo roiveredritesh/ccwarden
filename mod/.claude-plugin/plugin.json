@@ -180,6 +180,12 @@
       "title": "Background spend watcher",
       "description": "Name each kind of turn you didn't type (scheduled tasks, /loop, other sessions, channels) once per conversation, with its cost and the setting that stops it.",
       "default": true
+    },
+    "modelAdvisor": {
+      "type": "boolean",
+      "title": "Model and effort advice",
+      "description": "At a fresh start, before the first prompt (when a switch is free), suggest a cheaper model for routine work; note it in handoffs; say before a switch when the context is past the new model's limit. Never switches.",
+      "default": true
     }
   }
 }

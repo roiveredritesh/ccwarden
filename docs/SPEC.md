@@ -270,6 +270,11 @@ It never blocks and adds nothing to context.
 
 - **Model:** routine work → a cheaper model, suggested at session start or through a handoff, never by switching mid-session.
 - **Effort:** a lower `/effort` for routine steps. It is cache-safe mid-session on Opus 5.5, Sonnet 5.5 and Fable 5.1 per the docs; on other models, only at session start.
+- **As built (M2):**
+  - **At a fresh start (`classic.SessionStart` `startup`, before the first prompt, when a switch is free):** one advisor toast gives the cheaper families' price per token as a % of the current one, plus the effort tip where effort is cache-safe. Nothing on Haiku, resume or `/clear`.
+  - **Handoffs:** each note carries a "Next session: start on haiku" line.
+  - **`classic.PreModelSwitch`:** a dim note when the context is past the new model's limit. It is never a guard, because a guard on `/model` was rejected (HANDOFF §3).
+  - **`modelAdvisor`** switches all of it off.
 
 **F10. `/cw` dashboard and context hogs.**
 

@@ -10,6 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { handoffModelLine, isEffortCacheSafe, startAdvice, switchNote } from '../src/advisor'
 import { backgroundSource, backgroundToast } from '../src/background'
 import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
@@ -465,5 +466,27 @@ describe('M2 F8 background sources', () => {
     expect(backgroundSource({ kind: 'plugin', name: 'x' } as never)).toMatchObject({ kind: 'plugin:x', label: 'the x plugin' })
     expect(backgroundSource({ kind: 'unclassified' } as never)?.stop).toContain('CLAUDE_CODE_GOAL_CHECKIN_MINUTES=0')
     expect(backgroundToast({ kind: 'k', label: 'L', stop: 'S' }, 0.123)).toBe('ccwarden: a turn started by L cost ~$0.12 (est.). To stop these, S.')
+  })
+})
+
+describe('M2 F9 advisor', () => {
+  test('effort is cache-safe on Opus 5.5, Sonnet 5.5 and Fable 5.1 only', () => {
+    expect(isEffortCacheSafe('claude-opus-5-5')).toBe(true)
+    expect(isEffortCacheSafe('claude-sonnet-5-5')).toBe(true)
+    expect(isEffortCacheSafe('claude-fable-5-1')).toBe(true)
+    expect(isEffortCacheSafe('claude-haiku-4-5-20251001')).toBe(false)
+    expect(isEffortCacheSafe('claude-sonnet-5')).toBe(false)
+  })
+  test('start advice by family', () => {
+    expect(startAdvice('claude-fable-5-1')).toContain('Opus 40%, Sonnet 20%, Haiku 10% of Fable')
+    expect(startAdvice('claude-sonnet-5-5')).toContain('Haiku 50% of Sonnet')
+    expect(startAdvice('claude-haiku-4-5')).toBeUndefined()
+    expect(startAdvice('mystery')).toBeUndefined()
+  })
+  test('handoff line and switch note', () => {
+    expect(handoffModelLine('claude-haiku-4-5')).toBeUndefined()
+    expect(handoffModelLine('opus')).toContain('start on haiku')
+    expect(switchNote({ toModel: 'h', contextTokens: 100, limit: 200 })).toBeUndefined()
+    expect(switchNote({ toModel: 'h', contextTokens: 201_000, limit: 120_000 })).toContain("201k tokens is past h's 120k limit")
   })
 })

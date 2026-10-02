@@ -41,7 +41,7 @@ export function handoffFileName(writtenAt: number, topic: string): string {
 }
 
 /** The note. `full` is the fork's four sections; without it the note says how to get them. */
-export function handoffMarkdown(f: HandoffFacts, opts: { cwd?: string; full?: string }): string {
+export function handoffMarkdown(f: HandoffFacts, opts: { cwd?: string; full?: string; modelLine?: string }): string {
   const goal = f.goal ?? f.asks[0]
   const out: string[] = [
     `# Handoff: ${handoffTopic(goal).replace(/-/g, ' ')}`,
@@ -49,6 +49,7 @@ export function handoffMarkdown(f: HandoffFacts, opts: { cwd?: string; full?: st
     `_Written by ccwarden on ${new Date(f.writtenAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` +
       ` (${opts.full === undefined ? 'quick: from the transcript and git' : 'full'}); model ${f.model}` +
       `${f.branch === undefined ? '' : `, branch \`${f.branch}\``}._`,
+    ...(opts.modelLine === undefined ? [] : ['', `_${opts.modelLine}_`]),
     '',
     '## Goal',
     goal ?? '_(no request recorded)_',
