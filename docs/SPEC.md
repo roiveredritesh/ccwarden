@@ -172,6 +172,10 @@ It never blocks and adds nothing to context.
 
 **F2. Cold-cache guard.** On `prompt.submit`, when the cache has expired and context ≥ `coldMinTokens`, it asks before sending: "this turn re-caches ~N tokens (≈ $X)". The choices are Continue or Cancel; the advisor's suggestion is attached.
 
+- **Asked for:** only prompts the user typed while the session was idle. Not prompts typed mid-turn, prompts from plugins or other sessions, headless runs, or before the first response.
+- **Once per cold spell:** sending the same prompt again goes through.
+- **Cancel or dismissal:** returns `{ drop }` with the reason, and puts the prompt back with `$.prompt.fill`.
+
 **F3. Snapshot compaction + per-model limits.**
 
 - **Limits:** `modelLimits` (default Haiku 120K; Sonnet / Opus / Fable 300K), capped at the model's real window. The model is detected from the last turn.

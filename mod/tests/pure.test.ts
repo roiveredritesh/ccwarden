@@ -9,6 +9,7 @@ import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '.
 import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
+import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
@@ -319,5 +320,23 @@ describe('T4 subagents', () => {
 
   test('running count', () => {
     expect(runningCount([{ status: 'running' }, { status: 'completed' }, { status: 'running' }, { status: 'killed' }])).toBe(2)
+  })
+})
+
+describe('T5 cold-cache guard', () => {
+  const cold = { kind: 'cold' as const, msCold: 12 * 60_000 }
+  test('due: cold, large, and not yet asked for this cold spell', () => {
+    const base = { cache: cold, tokens: 60_000, coldMinTokens: 50_000, lastResponseAt: 100, askedFor: undefined }
+    expect(isColdAskDue(base)).toBe(true)
+    expect(isColdAskDue({ ...base, askedFor: 100 })).toBe(false)
+    expect(isColdAskDue({ ...base, askedFor: 50 })).toBe(true) // an earlier cold spell
+    expect(isColdAskDue({ ...base, tokens: 40_000 })).toBe(false)
+    expect(isColdAskDue({ ...base, tokens: undefined })).toBe(false)
+    expect(isColdAskDue({ ...base, cache: { kind: 'warm', msLeft: 1 } })).toBe(false)
+  })
+  test('texts', () => {
+    expect(coldQuestion({ msCold: 12 * 60_000, tokens: 262_000, rebuildUsd: 3.3 })).toContain('re-caches ~262k tokens (≈ $3.30 est.)')
+    expect(coldQuestion({ msCold: 60_000, tokens: 1_000 })).not.toContain('$')
+    expect(coldDropReason(180_000)).toContain('Your prompt is back in the box')
   })
 })
