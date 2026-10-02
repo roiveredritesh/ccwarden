@@ -6,7 +6,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 **M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c). What's left before M1's exit check (SPEC §8) is live:
 
-1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10, Q13.
+1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10.
 2. Use the mod for a week.
 3. Then switch `junkGuard` to `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
 
@@ -160,7 +160,7 @@ Known limits:
 
 **T3. F3, snapshot compaction + per-model limits.** *Done 2026-10-02* (code and tests). Notes:
 
-- The limit compaction runs `/compact` through `$.command.run`, not `$.session.compact`, because a plugin's own call skips its own `session.compact` hook. That `/compact` reaches the hook is unverified (SPEC §9 Q13). The probe's Q3 check now goes the same way.
+- Past the limit F3 only toasts "type /compact": a mod-run `/compact` (`$.command.run`) or `$.session.compact` skips the mod's own `session.compact` hook, so it got the engine summary (SPEC §9 Q13, live test). Only a typed `/compact` is a snapshot. The pane's Compact button was removed for the same reason.
 - The snapshot is a user message: the goal (kept in `$.state` across compactions), the last 5 asks verbatim, open todos, edited files with `git diff --numstat HEAD`, the branch, and the last error. It is followed by the last 2 turns by handle (1 if they don't fit 15% of the limit; with none, the last answer goes in the snapshot).
 - A snapshot followed by a kept user prompt makes two user messages in a row; that the engine accepts this is part of Q3.
 - Compaction of subagent loops (`agentId`) passes through untouched, for T4.

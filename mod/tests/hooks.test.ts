@@ -399,22 +399,22 @@ describe('F3 per-model limits and snapshot compaction', () => {
 
   for (const surface of SURFACES) {
     for (const billing of BILLINGS) {
-      test(`Haiku compacts past 120k with a snapshot, no summary request (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+      test(`Haiku past 120k advises /compact, and that /compact is a snapshot, no summary request (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
         const w = world(on, { surfaces: [surface], model: 'claude-haiku-4-5-20251001', usage: { tokens: 125_000, window: 200_000 } })
         await $.session.start(start(surface))
         await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
         await w.clock.advance(0)
 
-        expect(w.commandsRun).toEqual(['compact'])
+        expect(w.commandsRun).toEqual([]) // a mod-run /compact skips its own hook (Q13), so it only advises
         await $.session.compact({ trigger: 'manual', messages: history() }) // what core's /compact raises
         expect(w.coreCompactions).toEqual([]) // answered in core's place
-        expect(w.logs).toContain('ccwarden: 125k tokens is past the 120k limit for claude-haiku-4-5-20251001; compacting.')
+        expect(w.logs).toContain('ccwarden: 125k tokens is past the 120k limit for claude-haiku-4-5-20251001. Type /compact: it keeps a snapshot, no summary request.')
         expect(w.logs.at(-1)).toMatch(/^ccwarden: snapshot compaction \(manual\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; no summary request\.$/)
       })
     }
   }
 
-  test('Sonnet keeps going at 250k and compacts past 300k', { options: { billing: 'metered' } }, async ($, on) => {
+  test('Sonnet keeps going at 250k and is advised past 300k, once', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 250_000 } })
     await $.session.start(start('terminal'))
     await $.turn.complete(turnDone())
@@ -423,8 +423,10 @@ describe('F3 per-model limits and snapshot compaction', () => {
 
     w.usage.tokens = 301_000
     await $.turn.complete(turnDone())
+    await $.turn.complete(turnDone())
     await w.clock.advance(0)
-    expect(w.commandsRun).toEqual(['compact'])
+    expect(w.commandsRun).toEqual([])
+    expect(w.logs.filter(l => l.includes('Type /compact'))).toHaveLength(1)
   })
 
   test('a model switch applies the new limit from the next turn', { options: { billing: 'metered' } }, async ($, on) => {
@@ -437,7 +439,7 @@ describe('F3 per-model limits and snapshot compaction', () => {
     w.model = 'claude-haiku-4-5-20251001'
     await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
     await w.clock.advance(0)
-    expect(w.commandsRun).toEqual(['compact'])
+    expect(w.logs.some(l => l.includes('Type /compact'))).toBe(true)
   })
 
   test('the snapshot: goal, verbatim asks, files with diff stat, branch, last error, then the last turns by handle', { options: { billing: 'metered' } }, async ($, on) => {
@@ -1180,7 +1182,7 @@ describe('F10 /cw dashboard', () => {
     }
   }
 
-  test('the pane buttons: budget mode toggles, compact runs /compact, handoff writes a note', { options: { billing: 'metered' } }, async ($, on) => {
+  test('the pane buttons: budget mode toggles, handoff writes a note', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 1_000 } })
     w.messages = [{ role: 'user', text: 'Ship it', toolUses: [] }]
     await $.session.start(start('terminal'))
@@ -1190,8 +1192,6 @@ describe('F10 /cw dashboard', () => {
     expect(w.logs).toContain('ccwarden: budget mode on (set from /cw): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
     expect(w.status.at(-1)).toContain('budget mode')
     expect((await pane.find({ key: 'budget' }))?.text).toBe('Budget mode off')
-    await pane.press({ key: 'compact' })
-    expect(w.commandsRun).toEqual(['compact'])
     await pane.press({ key: 'handoff' })
     expect(w.writes.some(f => f.path.includes('/.claude/handoffs/'))).toBe(true)
   })

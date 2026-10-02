@@ -179,7 +179,7 @@ It never blocks and adds nothing to context.
 **F3. Snapshot compaction + per-model limits.**
 
 - **Limits:** `modelLimits` (default Haiku 120K; Sonnet / Opus / Fable 300K), capped at the model's real window. The model is detected from the last turn.
-- **Trigger:** on `turn.complete` past the limit (or on an advisor accept), `$.command.run({ command: 'compact' })`, queued for when the session is idle. It is not `$.session.compact()`: a plugin's own call skips that plugin's `session.compact` hook (the recursion skip, seen in `claude plugin test`), so it would get the engine summary. A plain `/compact` (manual, no focus) is answered with the snapshot too.
+- **Trigger:** on `turn.complete` past the limit, the mod toasts once "type `/compact`" (again only after the context drops back under the limit). It cannot run the compaction itself: `$.command.run({ command: 'compact' })` and `$.session.compact()` both skip the plugin's own `session.compact` hook (Q13, seen live; the engine ran its summary instead). A `/compact` the person types (manual, no focus) is answered with the snapshot.
 - **Snapshot compaction:**
   - The mod's `session.compact` hook answers *in core's place*: it returns its own `messages` instead of calling `next`, so **no summary request is made and no summary tokens are spent**. The types state that a hook answer means core made no model request.
   - Those messages are a snapshot plus the last 1–2 turns, kept with their engine `handle`s. The snapshot holds the goal, verbatim recent asks, open todos, files edited with a diff stat, the last error, and the branch.
@@ -284,7 +284,7 @@ It never blocks and adds nothing to context.
   - guard savings
   - month-to-date
   - the 7-day transcript report (`hooks-edition/report.js` logic)
-- **Buttons:** [Compact] [Handoff] [Budget mode] [Copy report].
+- **Buttons:** [Handoff] [Budget mode] [Copy report].
 - **As built (M3-T3):**
   - `/cw` gathers the figures into `$.state` and opens the pane `ccwarden-cw`. Gathering is heavy (it reads transcripts), so it happens once per `/cw` or **Refresh**, never per redraw.
   - **This session:** model, ctx/limit and $ (est.); cache hits and rebuilds with their cause from its transcript; compactions; subagents; background spend.
@@ -292,7 +292,7 @@ It never blocks and adds nothing to context.
   - **Month to date:** with the budget, the projection and budget mode.
   - **Hogs:** the top 3 this session and this month.
   - **Last 7 days:** the newest 20 transcripts of this project (each ≤ 4 MiB): per-session hits and rebuilds, tokens re-cached by cause, and the TTL verdict (`report.js` logic, ported to `src/report.ts`).
-  - **Buttons, all on terminal and desktop:** Refresh, Compact (runs `/compact`), Handoff, Budget mode on/off, and Copy report (the whole dashboard as text, via `$.ui.copy`).
+  - **Buttons, all on terminal and desktop:** Refresh, Handoff, Budget mode on/off, and Copy report (the whole dashboard as text, via `$.ui.copy`).
 
 **F11. Month tracking** (`metered`).
 
@@ -390,7 +390,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 10 | **Plugins allowed on managed machines:** do managed settings allow loading the mod? Hooks run there, but plugins can be restricted separately. | Not answerable from the types. `$.settings.read({ source: 'policy' })` shows the managed settings. | open: load `mod/` + `probe/` |
 | 11 | **Background tasks:** how does a mod see running background tasks (the advisor's "never mid-work")? | **Answered.** `classic.Stop` and `classic.SubagentStop` carry `background_tasks` (shell, subagent, monitor, workflow: `id`, `type`, `status`, `description`, `command?`) and the scheduled crons that will wake the session. `$.agent.list()` gives subagents with `status` (`running`, `completed`, `failed`, `killed`, …). | confirm once |
 | 12 | **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate. | **No $ figure.** `usage().cost.usd` is this session's total only. The one account-level reading is a gateway's `spend_limit` rate-limit kind, which gives `percentUsed` and no dollars. F11 stays an estimate. | confirm: `/cw-probe info` on `metered` |
-| 13 | **Mod-run `/compact`:** does `$.command.run({ command: 'compact' })` reach the mod's own `session.compact` hook (trigger `manual`)? F3's limit compaction depends on it. | `$.command.run` "runs a slash command as if the person typed" it, and the engine's command raises `session.compact` from its own call site. The test kit can't run core's `/compact`, so this is unverified. A plugin's own `$.session.compact` does **not** reach its own hook. | open: `/cw-probe compact` (now goes through `/compact`) |
+| 13 | **Mod-run `/compact`:** does `$.command.run({ command: 'compact' })` reach the mod's own `session.compact` hook? | **No** (live test: the `/cw` Compact button ran the engine's own summary compaction, no snapshot log). A plugin's own `$.session.compact` skips its hook too. A `/compact` the person types does reach it. | closed: F3 only advises `/compact`; the pane's Compact button is removed |
 | 14 | **Setting names not in the docs read for this spec:** `CLAUDE_CODE_SUBAGENT_MODEL`, `promptSuggestionEnabled`, `crossSessionInbound`, `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`. | All four are strings in the 2.1.287 binary. The setup offers the first two only as opt-in flags, and F8's texts name the last two. | open: check code.claude.com/docs (settings, model-config) |
 
 ## 10. Gaps found in design review, and resolutions
