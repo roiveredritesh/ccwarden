@@ -22,7 +22,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 4. Desktop UI polish: wait for the maintainer's list of what looks wrong.
 5. Use the mod for a week, then `junkGuard` → `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
 
-Not built: the full §3 advisor (break-even rule, task-done / unrelated-prompt detection, its buttons), F4's test-runner filter, and cleanup of F4's output files (the plugin API has no file delete).
+Not built: the full §3 advisor (break-even rule, task-done / unrelated-prompt detection, its buttons), and cleanup of F4's output files (the plugin API has no file delete).
 
 | Piece | State |
 |---|---|
@@ -217,7 +217,7 @@ Known limits:
 
 - What is built and what is left out is in SPEC F4 "As built". `/ccwarden-junk` shows the observe log.
 - The switch to `enforce` is the maintainer's, after a week of use: `/config` → `junkGuard`.
-- Unverified live: Q6, whether a trimmed Bash `{ result }` passes the engine's output-schema check (`stdout` stays a string, so it should).
+- Unverified live: Q6, whether a trimmed Bash `{ result }` passes the engine's output-schema check (`stdout` stays a string, so it should). The same goes for a failed test run, which the filter turns into a plain `{ result }` that says it failed.
 
 
 - `tool.call` on Read/Bash as in SPEC.

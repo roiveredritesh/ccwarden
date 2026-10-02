@@ -23,6 +23,7 @@ function world(on: On, opts: {
   git?: { branch?: string; numstat?: string }
   files?: Record<string, string>
   bashOut?: { stdout: string; persistedOutputPath?: string }
+  bashError?: string
   isWriteRefused?: boolean
   store?: Record<string, unknown>
   mtimes?: Record<string, number>
@@ -112,7 +113,7 @@ function world(on: On, opts: {
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
   on('tool.call', { tool: 'Grep' }, (_$, e) => ({ result: { mode: 'content' } as never, text: (e as unknown as { pattern: string }).pattern === 'big' ? 'x'.repeat(40_000) : 'small' }))
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
+  on('tool.call', { tool: 'Bash' }, () => opts.bashError !== undefined ? { isError: true, result: opts.bashError, text: opts.bashError } : ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
   on('agent.list', () => ({ value: shown.agents }))
@@ -729,12 +730,39 @@ describe('F4 junk guard', () => {
       const w = world(on, { surfaces: [surface], bashOut: { stdout: out }, env: { HOME: '/home/u' } })
       await $.session.start(start(surface))
 
-      const ran = await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'tu1' })
+      const ran = await $.tool.call({ tool: 'Bash', command: 'cat build.log', tool_use_id: 'tu1' })
       const stdout = (ran.result as { stdout: string }).stdout
       expect(w.writes).toEqual([{ path: '/home/u/.claude/ccwarden/outputs/sess1-tu1.txt', text: out }])
       expect(stdout.startsWith('a'.repeat(18_000) + '\n\n[ccwarden junk guard: 20000 characters cut')).toBe(true)
       expect(stdout).toContain('The full output is in /home/u/.claude/ccwarden/outputs/sess1-tu1.txt: use Grep on that file')
       expect(stdout.endsWith('b'.repeat(12_000))).toBe(true)
+    })
+
+    // A long passing run: 2000 "ok" lines, one flaky warning, the summary.
+    const passing = Array.from({ length: 2000 }, (_, i) => `ok ${i} - case ${i} passes fine`).join('\n') + '\n# tests 2000\n# pass 2000\n# fail 0'
+    test(`enforce: a long test run keeps only its failure lines and summary (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], bashOut: { stdout: passing }, env: { HOME: '/home/u' } })
+      await $.session.start(start(surface))
+
+      const stdout = ((await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'tu2' })).result as { stdout: string }).stdout
+      expect(w.writes).toEqual([{ path: '/home/u/.claude/ccwarden/outputs/sess1-tu2.txt', text: passing }])
+      expect(stdout.startsWith('[ccwarden junk guard: Kept the failure lines and the summary')).toBe(true)
+      expect(stdout).not.toContain('ok 100 ')
+      expect(stdout.endsWith('# fail 0')).toBe(true)
+    })
+
+    test(`enforce: a failed test run comes back as a plain result that says it failed (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+      const failing = 'Exit code 1\n' + passing.replace('ok 1500 - case 1500 passes fine', 'not ok 1500 - case 1500 failed\n  expected: 2\n  received: 3')
+      const w = world(on, { surfaces: [surface], bashError: failing, env: { HOME: '/home/u' } })
+      await $.session.start(start(surface))
+
+      const ran = await $.tool.call({ tool: 'Bash', command: 'node --test', tool_use_id: 'tu3' })
+      const stdout = (ran.result as { stdout: string }).stdout
+      expect(ran.isError).toBeUndefined()
+      expect(w.writes).toEqual([{ path: '/home/u/.claude/ccwarden/outputs/sess1-tu3.txt', text: failing }])
+      expect(stdout.startsWith('[ccwarden junk guard: This test run FAILED (exit code 1).')).toBe(true)
+      expect(stdout).toContain('not ok 1500 - case 1500 failed\n  expected: 2\n  received: 3')
+      expect(stdout).not.toContain('ok 100 ')
     })
   }
 

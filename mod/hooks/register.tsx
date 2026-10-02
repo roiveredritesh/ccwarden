@@ -19,7 +19,7 @@ import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
-import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, trimmedOutput } from '../src/junk'
+import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
 import { addSpend, calibrate, costDelta, dayKey, monthKey, monthToDate, projectMonth } from '../src/ledger'
 import { budgetConfig, budgetModeText, isBudgetMode, monthAlertText, monthStepsDue } from '../src/budget'
@@ -269,16 +269,27 @@ export const register: Register = (on, options) => {
   // any output whose full text couldn't be saved.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (config.junkGuard === 'off' || ran.deny !== undefined || ran.isError || isAlreadyFiltered(e.command)) return ran
+    if (config.junkGuard === 'off' || ran.deny !== undefined || isAlreadyFiltered(e.command)) return ran
+    // A test run, passed or failed, keeps only its failure lines and summary.
+    // A failed one goes back as a plain result: a hook can't shorten an error.
+    if (isTestCommand(e.command)) {
+      const failed = ran.isError === true
+      const text = failed ? (ran.text ?? '') : [ran.result.stdout, ran.result.stderr].filter(s => s !== '').join('\n')
+      if ((!failed && ran.result.persistedOutputPath !== undefined) || text.length <= eff().bashMaxChars) return ran
+      await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: text.length, savedChars: text.length - eff().bashMaxChars })
+      if (config.junkGuard === 'observe') return ran
+      const path = await saveOutput($, e.tool_use_id, text)
+      if (path === undefined) return ran
+      $.ui.log(`ccwarden junk guard: test output cut from ${text.length} characters to its failures and summary; the full text is in ${path}.`)
+      return { result: { stdout: testOutput(text, eff().bashMaxChars, path, failed), stderr: '', interrupted: false } }
+    }
+    if (ran.isError) return ran
     const { stdout } = ran.result
     if (ran.result.persistedOutputPath !== undefined || stdout.length <= eff().bashMaxChars) return ran
     await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
     if (config.junkGuard === 'observe') return ran
-    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
-    if (home === undefined) return ran
-    const path = outputPath(home, await $.session.id(), e.tool_use_id)
-    const saved = await $.fs.write(path, stdout).then(() => true, () => false)
-    if (!saved) return ran
+    const path = await saveOutput($, e.tool_use_id, stdout)
+    if (path === undefined) return ran
     $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${eff().bashMaxChars} characters; the full text is in ${path}.`)
     return { result: { ...ran.result, stdout: trimmedOutput(stdout, eff().bashMaxChars, path) } }
   })
@@ -718,6 +729,14 @@ async function offerHandoff($: $, config: Config): Promise<void> {
 async function recordJunk($: $, event: JunkEvent): Promise<void> {
   await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, event))
   $.ui.log(`ccwarden junk guard (${event.mode}): ${event.tool} ${event.target}`, { to: 'debug' })
+}
+
+/** Saves a tool's full output under the home folder for Claude to grep; undefined when it couldn't. */
+async function saveOutput($: $, toolUseId: string, text: string): Promise<string | undefined> {
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+  if (home === undefined) return undefined
+  const path = outputPath(home, await $.session.id(), toolUseId)
+  return $.fs.write(path, text).then(() => path, () => undefined)
 }
 
 /** Redraws the status line from the engine's figures and the conversation's state. */
