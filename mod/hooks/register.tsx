@@ -727,11 +727,13 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
   const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
   const cache = cacheView(lastCacheUse(conv), ttl, now)
   const tokens = usage.context.tokens
+  const isBudget = (await $.state.get(budgetModeRef)).value === true
   $.ui.status(formatStatus({
     billing: config.billing,
     model,
     tokens,
     limit: await limitOf($, model, config, usage.context.window),
+    compactAt: (isBudget ? budgetConfig(config) : config).compactAt,
     cache,
     ttl,
     rebuildUsd: cache.kind === 'cold' && tokens !== undefined ? rebuildUsd(tokens, model, ttl) : undefined,
@@ -742,7 +744,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     isAlerted: conv.alerted > 0,
     keepWarm: conv.keepWarm,
     miss: conv.lastMiss,
-    isBudget: (await $.state.get(budgetModeRef)).value === true,
+    isBudget,
     backgroundUsd: conv.background?.usd,
     agents: {
       running: runningCount(await $.agent.list()),

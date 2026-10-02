@@ -156,6 +156,7 @@ window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 
   3. the billing default: `window` 1h, `metered` 5m
 
   A cold cache shows the rebuild cost: context × the TTL's write price. An observed TTL that contradicts the billing setting, with no override to explain it, raises one advisor toast per conversation (§1).
+- **Compact hint:** past `compactAt`% of the limit (55; 45 in budget mode) the status adds `/compact at a break`. Status only, no toast; the §3 break-even rule and task detection aren't built, so it is a plain threshold.
 - **Cache miss:** a turn's first main-loop request that writes ≥ 20k tokens and more than it reads (its `turn.step` usage) re-cached the conversation. The status adds `miss: <cause>, re-cached 111k` until a turn the cache serves, and the log says the same. The cause, best guess first: `compaction` (one since the last request), `model switch` (each model has its own cache), `expired (idle 1h 5m)` (past the TTL), else `prefix changed (CLAUDE.md, tools, MCP or settings)`. The engine's own `last_miss_cause` (statusline JSON) is not in the plugin API, so this is inferred.
 
 **F1b. Spend alert.** Every `sessionAlertUsd` ($5) in `metered`, or every `sessionAlertPct` (20%) of the 5h window in `window`:
@@ -177,6 +178,7 @@ It never blocks and adds nothing to context.
 - **Asked for:** only prompts the user typed while the session was idle. Not prompts typed mid-turn, prompts from plugins or other sessions, headless runs, or before the first response.
 - **Once per cold spell:** sending the same prompt again goes through.
 - **Cancel or dismissal:** returns `{ drop }` with the reason, and puts the prompt back with `$.prompt.fill`.
+- **The suggestion (as built):** the question names both cheaper routes from §3: same task → `/handoff`, then a new session (re-reads ~3k); unrelated work → `/clear` first. No buttons for them yet.
 
 **F3. Snapshot compaction + per-model limits.**
 

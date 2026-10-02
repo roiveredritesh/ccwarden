@@ -23,10 +23,10 @@ export function coldQuestion(f: { msCold: number; tokens: number; rebuildUsd?: n
   const cost = f.rebuildUsd === undefined ? '' : ` (≈ $${f.rebuildUsd.toFixed(2)} est.)`
   return (
     `ccwarden: the prompt cache went cold ${fmtDuration(f.msCold)} ago, so this prompt re-caches ~${fmtTokens(f.tokens)} tokens${cost}. ` +
-    'Unrelated work? /clear first is cheaper. Send it anyway?'
+    'Same task? /handoff, then a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?'
   )
 }
 
 export function coldDropReason(tokens: number): string {
-  return `ccwarden: not sent, so ~${fmtTokens(tokens)} tokens weren't re-cached. Your prompt is back in the box; /clear first for unrelated work, or send it again to go ahead.`
+  return `ccwarden: not sent, so ~${fmtTokens(tokens)} tokens weren't re-cached. Your prompt is back in the box. Same task: /handoff, then a new session. Unrelated work: /clear first. Or send it again to go ahead.`
 }
