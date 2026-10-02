@@ -34,11 +34,15 @@ function world(on: On, opts: {
   on('store.set', (_$, e) => { store.set(e.key, JSON.parse(JSON.stringify(e.value))); return { value: undefined } })
   on('store.delete', (_$, e) => { store.delete(e.key); return { value: undefined } })
   on('store.keys', () => ({ value: [...store.keys()] }))
-  mock.env(on, opts.env ?? {})
+  // $.env in memory, so a test reads what the mod set.
+  const env = new Map<string, string>(Object.entries(opts.env ?? {}))
+  on('env.get', (_$, e) => ({ value: env.get(e.name) }))
+  on('env.set', (_$, e) => { if (e.value === undefined) env.delete(e.name); else env.set(e.name, e.value); return { value: undefined } })
   const usage: Usage = { window: 1_000_000, usd: 0, rateLimits: [], ...opts.usage }
   const shown = {
     clock,
     store,
+    env,
     usage,
     model: opts.model ?? 'claude-sonnet-5-5',
     toasts: [] as string[],
@@ -222,10 +226,15 @@ describe('F1 status line', () => {
     expect(w.status.at(-1)).not.toContain('miss')
   })
 
-  test('the limit is the compact window when CLAUDE_CODE_AUTO_COMPACT_WINDOW is smaller', { options: { billing: 'metered' } }, async ($, on) => {
+  test("the engine's auto-compact window follows the model's limit, so the engine compacts there", { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000, window: 1_000_000 }, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
     await $.session.start(start('terminal'))
-    expect(w.status.at(-1)).toContain('100k/150k')
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('300000') // limitOther, over the hand-set value
+    expect(w.status.at(-1)).toContain('100k/300k')
+
+    w.model = 'claude-haiku-4-5-20251001'
+    await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('120000')
   })
 
   test('a subagent turn leaves the main cache clock alone', { options: { billing: 'metered' } }, async ($, on) => {
