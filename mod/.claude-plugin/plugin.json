@@ -45,13 +45,13 @@
     "limitHaiku": {
       "type": "number",
       "title": "Context limit: Haiku (tokens)",
-      "description": "Snapshot-compact Haiku conversations past this size.",
+      "description": "Snapshot-compact Haiku conversations past this size (100000 at least, the engine's floor).",
       "default": 120000
     },
     "limitOther": {
       "type": "number",
       "title": "Context limit: Sonnet, Opus, Fable (tokens)",
-      "description": "Snapshot-compact other models' conversations past this size.",
+      "description": "Snapshot-compact other models' conversations past this size (100000 at least, the engine's floor).",
       "default": 300000
     },
     "compactMode": {
