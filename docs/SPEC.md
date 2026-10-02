@@ -199,7 +199,12 @@ It never blocks and adds nothing to context.
 - **Bash output:** output over `bashMaxChars` is cut to head + tail, the full text is saved to a file, and Claude is told "`Grep` this file" (no re-run needed).
 - **Test runners:** filtered to failures only.
 - **Allowlist:** path globs to exempt; commands Claude already pipes through `head`/`tail`/`grep` are left alone.
-- **Rollout:** it ships with `observe` mode, which only logs what it would have done.
+- **Rollout:** it ships with `observe` mode, which only logs what it would have done (to `$.store`; `/ccwarden-junk` lists the latest events and the tokens saved, est.). Switch `junkGuard` to `enforce` in `/config` once a week of the log shows no false positives.
+- **As built (M1):**
+  - A Read is checked only when it reads a whole text file: no offset, limit or pages, and not an image or PDF. Files of at most `readMaxLines` bytes are skipped without being read, and so are files over 4 MiB (what one `$.fs.read` takes).
+  - A trimmed output keeps 60% head and 40% tail. The full text goes to `~/.claude/ccwarden/outputs/<session>-<tool_use_id>.txt`.
+  - Output is left alone when it is an error, when the engine already persisted it (`persistedOutputPath`), when the command already pipes through `head`/`tail`/`grep`/…, or when the file couldn't be written.
+  - Not built yet: the test-runner failure filter, and cleanup of old output files.
 
 **F5. Subagent guard** (`agent.spawn` hook).
 
@@ -281,7 +286,7 @@ It never blocks and adds nothing to context.
 | `compactMode` | `snapshot` (`summary` for manual `/compact <focus>`) | F3 |
 | `compactAt` | 55 (% of the model limit) | §3 |
 | `junkGuard` | `observe` → `enforce` | F4 |
-| `readMaxLines` / `bashMaxChars` | 2000 / 30000 | F4 |
+| `readMaxLines` / `bashMaxChars` / `junkAllowlist` | 2000 / 30000 / `""` (comma-separated globs) | F4 |
 | `subagentGuard` / `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | on / haiku / `""` (comma-separated types) / 3 | F5 |
 | `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | on (metered) / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |

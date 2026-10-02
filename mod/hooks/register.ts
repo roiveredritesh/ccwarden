@@ -10,6 +10,8 @@ import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
 import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
+import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, trimmedOutput } from '../src/junk'
+import type { JunkEvent } from '../src/junk'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
 import { formatStatus } from '../src/status'
@@ -26,7 +28,8 @@ import { fiveHour, trackWindow } from '../src/window'
 // So far: F1 (the status line: model, context against the per-model limit,
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
-// snapshot compaction), F5 (the subagent guard and per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
+// snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
+// per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -40,11 +43,14 @@ const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
 const TTL_RECHECK_MS = 10 * 60_000
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024 // what one $.fs.read takes
+const JUNK_LOG_KEY = 'junkLog' // $.store: what the junk guard did or would have done
+const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
+  const junkAllowlist = parseGlobs(config.junkAllowlist)
   // One limit compaction at a time; a reload forgets it, which is harmless.
   let isCompacting = false
 
@@ -60,6 +66,7 @@ export const register: Register = (on, options) => {
         ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }),
       })
     }
+    await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
@@ -128,6 +135,53 @@ export const register: Register = (on, options) => {
     // After the drop has settled, so the box isn't cleared over the refill.
     $.clock.after(0, () => void $.prompt.fill({ text: e.text, mode: 'replace' }))
     return { drop: coldDropReason(tokens) }
+  })
+
+  // F4: a whole-file Read of a long text file is denied with a pointer to
+  // Grep or a ranged Read. Files under `readMaxLines` bytes can't be that
+  // long and aren't read; files one $.fs.read can't take are left alone.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    if (config.junkGuard === 'off' || !isWholeTextRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
+    const stat = await $.fs.stat(e.file_path).catch(() => undefined)
+    if (stat === undefined || stat.kind !== 'file' || stat.size <= config.readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
+    const text = await $.fs.read(e.file_path).catch(() => undefined)
+    const lines = text === undefined ? 0 : countLines(text)
+    if (lines <= config.readMaxLines) return next(e)
+    await recordJunk($, { at: await $.clock.now(), tool: 'Read', mode: config.junkGuard, target: e.file_path, size: lines, savedChars: stat.size })
+    if (config.junkGuard === 'observe') return next(e)
+    const reason = readDenyText(e.file_path, lines, config.readMaxLines)
+    $.ui.log(reason)
+    return { deny: reason }
+  })
+
+  // F4: Bash output over `bashMaxChars` is cut to head + tail and the whole
+  // of it saved to a file Claude can grep. Output Claude already filtered,
+  // errors, and output the engine itself persisted are left alone; so is
+  // any output whose full text couldn't be saved.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (config.junkGuard === 'off' || ran.deny !== undefined || ran.isError || isAlreadyFiltered(e.command)) return ran
+    const { stdout } = ran.result
+    if (ran.result.persistedOutputPath !== undefined || stdout.length <= config.bashMaxChars) return ran
+    await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - config.bashMaxChars })
+    if (config.junkGuard === 'observe') return ran
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+    if (home === undefined) return ran
+    const path = outputPath(home, await $.session.id(), e.tool_use_id)
+    const saved = await $.fs.write(path, stdout).then(() => true, () => false)
+    if (!saved) return ran
+    $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${config.bashMaxChars} characters; the full text is in ${path}.`)
+    return { result: { ...ran.result, stdout: trimmedOutput(stdout, config.bashMaxChars, path) } }
+  })
+
+  on('command.run', { command: 'ccwarden-junk' }, async ($) => {
+    const log = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
+    const saved = log.reduce((sum, ev) => sum + ev.savedChars, 0)
+    $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} events, ~${Math.round(saved / 4 / 1000)}k tokens kept out of context (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
+    for (const ev of log.slice(-JUNK_SHOWN)) {
+      $.ui.log(`  ${new Date(ev.at).toISOString()} ${ev.mode} ${ev.tool} ${ev.tool === 'Read' ? `${ev.size} lines` : `${ev.size} chars`}: ${ev.target}`)
+    }
+    return {}
   })
 
   // F5: pin the model, cap the report, cap how many run at once.
@@ -257,6 +311,12 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
     lastError: lastError(messages),
     lastAnswer: lastAnswer(messages),
   }
+}
+
+/** Adds one junk-guard event to the log in $.store (machine-wide, kept for review before `enforce`). */
+async function recordJunk($: $, event: JunkEvent): Promise<void> {
+  await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, event))
+  $.ui.log(`ccwarden junk guard (${event.mode}): ${event.tool} ${event.target}`, { to: 'debug' })
 }
 
 /** Redraws the status line from the engine's figures and the conversation's state. */

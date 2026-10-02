@@ -9,6 +9,7 @@ import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '.
 import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
+import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
 import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
@@ -338,5 +339,44 @@ describe('T5 cold-cache guard', () => {
     expect(coldQuestion({ msCold: 12 * 60_000, tokens: 262_000, rebuildUsd: 3.3 })).toContain('re-caches ~262k tokens (≈ $3.30 est.)')
     expect(coldQuestion({ msCold: 60_000, tokens: 1_000 })).not.toContain('$')
     expect(coldDropReason(180_000)).toContain('Your prompt is back in the box')
+  })
+})
+
+describe('T6 junk guard', () => {
+  test('which Reads are checked', () => {
+    expect(isWholeTextRead({ file_path: '/a.ts' })).toBe(true)
+    expect(isWholeTextRead({ file_path: '/a.ts', limit: 10 })).toBe(false)
+    expect(isWholeTextRead({ file_path: '/a.ts', offset: 10 })).toBe(false)
+    expect(isWholeTextRead({ file_path: '/a.pdf' })).toBe(false)
+    expect(isWholeTextRead({ file_path: '/a.PNG' })).toBe(false)
+  })
+  test('lines, filtered commands, trimming', () => {
+    expect(countLines('')).toBe(0)
+    expect(countLines('a')).toBe(1)
+    expect(countLines('a\nb\n')).toBe(2)
+    expect(countLines('a\nb\nc')).toBe(3)
+    expect(isAlreadyFiltered('npm test 2>&1 | tail -40')).toBe(true)
+    expect(isAlreadyFiltered('git log | grep fix')).toBe(true)
+    expect(isAlreadyFiltered('npm test')).toBe(false)
+    expect(isAlreadyFiltered('echo "a|b"')).toBe(false)
+    expect(trimOutput('abcdefghij', 20)).toEqual({ head: 'abcdefghij', tail: '', cut: 0 })
+    expect(trimOutput('abcdefghij', 5)).toEqual({ head: 'abc', tail: 'ij', cut: 5 })
+  })
+  test('allowlist globs', () => {
+    const globs = parseGlobs(' **/*.lock, docs/**, *.min.js ')
+    expect(isAllowlisted('/p/yarn.lock', globs)).toBe(true)
+    expect(isAllowlisted('/p/docs/a/b.md', globs)).toBe(true)
+    expect(isAllowlisted('C:\\p\\app.min.js', globs)).toBe(true)
+    expect(isAllowlisted('/p/src/app.js', globs)).toBe(false)
+    expect(parseGlobs('')).toEqual([])
+  })
+  test('output path and log cap', () => {
+    expect(outputPath('/home/u/', 's 1', 'toolu/9')).toBe('/home/u/.claude/ccwarden/outputs/s_1-toolu_9.txt')
+    expect(outputPath('C:\\Users\\u', 's', 't')).toBe('C:\\Users\\u\\.claude\\ccwarden\\outputs\\s-t.txt')
+    const ev = { at: 0, tool: 'Read' as const, mode: 'observe' as const, target: 'x', size: 1, savedChars: 1 }
+    let log = appendJunk(undefined, ev)
+    for (let i = 0; i < JUNK_LOG_MAX + 5; i++) log = appendJunk(log, { ...ev, at: i })
+    expect(log).toHaveLength(JUNK_LOG_MAX)
+    expect(log.at(-1)!.at).toBe(JUNK_LOG_MAX + 4)
   })
 })

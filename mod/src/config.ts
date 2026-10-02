@@ -21,6 +21,7 @@ export type Config = {
   junkGuard: 'observe' | 'enforce' | 'off'
   readMaxLines: number
   bashMaxChars: number
+  junkAllowlist: string
   subagentGuard: boolean
   subagentModel: string
   subagentAllowlist: string[]
@@ -45,6 +46,7 @@ export const DEFAULTS: Config = {
   junkGuard: 'observe',
   readMaxLines: 2_000,
   bashMaxChars: 30_000,
+  junkAllowlist: '',
   subagentGuard: true,
   subagentModel: 'haiku',
   subagentAllowlist: [],
@@ -85,8 +87,9 @@ export function readConfig(options: PluginOptions): Config {
     compactMode: pick('compactMode', ['snapshot', 'summary'], DEFAULTS.compactMode),
     compactAt: num('compactAt'),
     junkGuard: pick('junkGuard', ['observe', 'enforce', 'off'], DEFAULTS.junkGuard),
-    readMaxLines: num('readMaxLines'),
-    bashMaxChars: num('bashMaxChars'),
+    readMaxLines: pos('readMaxLines'),
+    bashMaxChars: pos('bashMaxChars'),
+    junkAllowlist: typeof options.junkAllowlist === 'string' ? options.junkAllowlist : '',
     subagentGuard: bool('subagentGuard'),
     subagentModel: typeof options.subagentModel === 'string' && options.subagentModel !== '' ? options.subagentModel : DEFAULTS.subagentModel,
     subagentAllowlist: (typeof allowlist === 'string' ? allowlist.split(',') : Array.isArray(allowlist) ? allowlist : [])
