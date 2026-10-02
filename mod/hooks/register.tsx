@@ -249,7 +249,10 @@ export const register: Register = (on, options) => {
     const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
     // After the drop has settled, so the box isn't cleared over the refill.
     $.clock.after(0, () => void $.prompt.fill({ text: e.text, mode: 'replace' }))
-    return { drop: coldDropReason(tokens, handoffPath) }
+    // The drop reason isn't kept in the conversation; the log line is.
+    const reason = coldDropReason(tokens, handoffPath)
+    $.ui.log(reason)
+    return { drop: reason }
   })
 
   // F4: a whole-file Read of a long text file is denied with a pointer to

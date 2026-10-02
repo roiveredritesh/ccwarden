@@ -671,6 +671,7 @@ describe('F2 cold-cache guard', () => {
     const path = w.writes.find(f => f.path.includes('/.claude/handoffs/'))?.path
     expect(path).toBeDefined()
     expect(out.drop).toContain(`Handoff written to ${path}`)
+    expect(w.logs).toContain(out.drop)
     await w.clock.advance(0)
     expect(w.fills).toEqual(['go'])
   })
