@@ -75,7 +75,7 @@ describe('/cw-probe', () => {
 
       await $.session.start({ cwd: '/', surface, isInteractive: true })
       expect(shown.commands).toEqual(['cw-probe'])
-      expect(shown.status).toEqual(['ccwarden-probe loaded'])
+      expect(shown.status).toEqual([])
 
       const out = await $.command.run({
         command: 'cw-probe',

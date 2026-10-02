@@ -169,14 +169,14 @@ describe('F1 status line', () => {
     test(`metered: model, ctx against the limit, cache countdown, this chat $ (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
       const w = world(on, { surfaces: [surface], usage: { tokens: 140_000, usd: 1.84 } })
       await $.session.start(start(surface))
-      expect(w.status.at(-1)).toBe('Sonnet · ctx 140k/300k · cache – · this chat $1.84')
+      expect(w.status.at(-1)).toBe('Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache – · this chat $1.84')
 
       await $.turn.complete(turnDone())
       await w.clock.advance(2 * MIN) // the minute tick redraws the countdown
-      expect(w.status.at(-1)).toBe('Sonnet · ctx 140k/300k · cache ● 3m · this chat $1.84')
+      expect(w.status.at(-1)).toBe('Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache ● 3m · this chat $1.84')
 
       await w.clock.advance(15 * MIN)
-      expect(w.status.at(-1)).toBe('Sonnet · ctx 140k/300k · cache ○ cold 12m (rebuild ≈ $0.35) · this chat $1.84')
+      expect(w.status.at(-1)).toBe('Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache ○ cold 12m (rebuild ≈ $0.35) · this chat $1.84')
     })
 
     test(`window: this chat's share of the 5h window, 1h cache (${surface})`, { options: { billing: 'window' } }, async ($, on) => {
@@ -185,14 +185,14 @@ describe('F1 status line', () => {
       await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
       w.usage.rateLimits = [fiveHour(62)]
       await $.session.measure(measure(w))
-      expect(w.status.at(-1)).toBe('Haiku · ctx 64k/120k · cache ● 1h 0m · this chat 9% of 5h · 5h 62% (resets 1h 20m)')
+      expect(w.status.at(-1)).toBe('Haiku · ctx ▓▓▓▓▓░░░░░ 53% 64k/120k · cache ● 1h 0m · this chat 9% of 5h · 5h 62% (resets 1h 20m)')
     })
   }
 
   test('the limit is the model window when that is smaller', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 150_000, window: 200_000 } })
     await $.session.start(start('terminal'))
-    expect(w.status.at(-1)).toContain('ctx 150k/200k')
+    expect(w.status.at(-1)).toContain('150k/200k')
   })
 
   test('a subagent turn leaves the main cache clock alone', { options: { billing: 'metered' } }, async ($, on) => {
