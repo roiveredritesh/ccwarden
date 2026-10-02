@@ -6,6 +6,8 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 **M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c).
 
+**M4 started (2026-10-02).** Marketplace packaging is done: `.claude-plugin/marketplace.json` at the repo root lists `./mod`, so `claude plugin marketplace add roiveredritesh/ccwarden` + `claude plugin install ccwarden@ccwarden` installs it (tested from a local directory source in an isolated `CLAUDE_CONFIG_DIR`). `setup.js` skips `CLAUDE_CODE_PLUGIN_DIRS` when `enabledPlugins` has `ccwarden@…`, so the mod never loads twice. Left for M4: F13 (unrelated-prompt hint), off by default.
+
 **First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
 
 - the billing format, `/ccwarden-junk` wording, Windows paths (#17–#19)

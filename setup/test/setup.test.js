@@ -29,6 +29,11 @@ test('plugin dirs: the mod is added once, other dirs kept', () => {
   assert.equal(withModDir('/other:/repo/mod/', '/repo/mod', ':'), '/other:/repo/mod/');
 });
 
+test('plan: a marketplace install skips the plugin-dirs copy', () => {
+  const { changes } = plan({ enabledPlugins: { 'ccwarden@ccwarden': true } }, parseArgs([]), ctx);
+  assert.deepEqual(changes.map((c) => c.key), ['CLAUDE_CODE_AUTO_COMPACT_WINDOW']);
+});
+
 test('plan: documented settings by default, each with why; opt-ins only when asked', () => {
   const { next, changes } = plan({ env: { KEEP: '1' }, model: 'opus' }, parseArgs([]), ctx);
   assert.deepEqual(next, { env: { KEEP: '1', CLAUDE_CODE_PLUGIN_DIRS: '/repo/mod', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, model: 'opus' });
