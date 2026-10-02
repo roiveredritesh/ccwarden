@@ -1,0 +1,8 @@
+{
+  "compactHintPct": 50,
+  "coldGuard": "warn",
+  "coldGuardMinTokens": 50000,
+  "recentPrompts": 5,
+  "maxRestoreChars": 6000,
+  "stateMaxAgeDays": 7
+}

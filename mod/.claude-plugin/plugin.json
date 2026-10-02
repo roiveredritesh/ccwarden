@@ -1,0 +1,6 @@
+{
+  "name": "ccwarden",
+  "version": "0.1.0",
+  "author": { "name": "roiveredritesh" },
+  "description": "Cost and context guard for Claude Code: per-conversation spend alerts, smarter compaction, prompt-cache protection."
+}
