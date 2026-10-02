@@ -53,6 +53,8 @@ function world(on: On, opts: {
     // Keep-warm forks, and how much of the cache each read.
     forks: [] as string[],
     forkCacheRead: 180_000,
+    messages: [] as SessionMessage[],
+    forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -78,9 +80,15 @@ function world(on: On, opts: {
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'sess1' }))
+  on('session.root', () => ({ value: '/p' }))
+  on('fs.list', (_$, e) => {
+    const dir = `${e.path}/`
+    const names = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
+    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false })) }
+  })
   on('model.fork', (_$, e) => {
     shown.forks.push(e.prompt)
-    return { value: { isAnswered: true, text: 'OK', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: shown.forkCacheRead, cache_creation_input_tokens: 10 } } }
+    return { value: { isAnswered: true, text: e.prompt.startsWith('Write the second half') ? shown.forkHandoff : 'OK', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: shown.forkCacheRead, cache_creation_input_tokens: 10 } } }
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
@@ -95,7 +103,7 @@ function world(on: On, opts: {
     shown.agents.push({ id: `a${shown.agents.length + 1}`, description: e.description, type: e.subagentType, status: 'running' })
     return { model: e.model ?? e.parentModel, agentId: `a${shown.agents.length}` }
   })
-  on('session.messages', () => ({ value: [] }))
+  on('session.messages', () => ({ value: shown.messages }))
   on('process.run', (_$, e) => {
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
     return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -762,5 +770,96 @@ describe('F6 keep-warm', () => {
     await w.clock.advance(6 * MIN)
     expect(w.forks).toHaveLength(1)
     expect(w.status.at(-1)).toContain('cache ○ cold')
+  })
+})
+
+describe('F7 handoff', () => {
+  const msg = (role: 'user' | 'assistant', text: string): SessionMessage => ({ role, text, toolUses: [] })
+  const history = [msg('user', 'Fix the login timeout bug'), msg('assistant', 'Done.'), msg('user', 'also keep the old cookie name'), msg('assistant', 'Kept.')]
+  const run = (args: string) => ({ command: 'handoff', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } })
+  const START = Date.parse('2026-10-02T07:46:00Z')
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`/handoff while warm: a full note from one fork, nothing added to the conversation (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], usage: { tokens: 50_000 }, git: { branch: 'fix/login' } })
+        w.messages = history
+        await w.clock.advance(START)
+        await $.session.start(start(surface))
+        await $.turn.complete(turnDone())
+
+        const out = await $.command.run(run(''))
+        expect(out.text).toBeUndefined()
+        expect(w.forks).toHaveLength(1)
+        expect(w.writes).toHaveLength(1)
+        const { path, text } = w.writes[0]!
+        expect(path).toBe('/p/.claude/handoffs/2026-10-02-0746-fix-the-login-timeout-bug.md')
+        expect(text).toContain('# Handoff: fix the login timeout bug')
+        expect(text).toContain('(full); model claude-sonnet-5-5, branch `fix/login`')
+        expect(text).toContain('## Goal\nFix the login timeout bug')
+        expect(text).toContain('1. also keep the old cookie name')
+        expect(text).toContain('## Next step\nShip it.')
+        expect(w.logs.at(-1)).toBe(`ccwarden: full handoff written to ${path}.`)
+      })
+    }
+  }
+
+  test('a cold cache gets a quick note and says why; /handoff quick never forks', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 50_000 } })
+    w.messages = history
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.command.run(run('quick'))
+    await w.clock.advance(10 * MIN)
+    await $.command.run(run(''))
+    expect(w.forks).toEqual([])
+    expect(w.writes).toHaveLength(2)
+    expect(w.writes[1]!.text).toContain('_(quick handoff: run /handoff while the cache is warm to have this written)_')
+    expect(w.logs.at(-1)).toMatch(/quick: the cache is cold, so a full one would re-read the whole conversation\)\.$/)
+  })
+
+  test('a fork that answers off-format falls back to quick', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 50_000 } })
+    w.forkHandoff = 'Sure! Here is a summary.'
+    w.messages = history
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.command.run(run(''))
+    expect(w.forks).toHaveLength(1)
+    expect(w.writes[0]!.text).toContain('(quick: from the transcript and git)')
+  })
+
+  for (const surface of SURFACES) {
+    test(`a fresh start offers the newest unread handoff once; Continue prefills the prompt (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const files = {
+        '/p/.claude/handoffs/2026-10-01-0900-old-task.md': '# old',
+        '/p/.claude/handoffs/2026-10-02-0746-fix-login.md': '# new',
+        '/p/.claude/handoffs/notes.txt': 'not a handoff',
+      }
+      const w = world(on, { surfaces: [surface], answer: 'Continue from handoff', files })
+      await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl' })
+      await $.session.start(start(surface))
+      await w.clock.advance(0)
+      expect(w.asks).toEqual(['ccwarden: continue from the handoff 2026-10-02-0746-fix-login.md?'])
+      expect(w.fills).toEqual(['Continue from the handoff in .claude/handoffs/2026-10-02-0746-fix-login.md: read it first, then verify what it says to verify before the next step.'])
+
+      await $.classic.SessionStart({ source: 'startup', transcript_path: '/t2.jsonl' })
+      await w.clock.advance(0)
+      expect(w.asks).toHaveLength(2)
+      expect(w.asks[1]).toContain('2026-10-01-0900-old-task.md') // the next unread one
+
+      await $.classic.SessionStart({ source: 'resume', transcript_path: '/t3.jsonl' })
+      await w.clock.advance(0)
+      expect(w.asks).toHaveLength(2) // only a fresh start offers
+    })
+  }
+
+  test('handoffOnCompact writes a quick note before the compaction', { options: { billing: 'metered', handoffOnCompact: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: [{ ...history[0]!, handle: 'h1' }, { ...history[1]!, handle: 'h2' }] })
+    expect(w.writes).toHaveLength(1)
+    expect(w.writes[0]!.text).toContain('(quick: from the transcript and git)')
+    expect(w.forks).toEqual([])
   })
 })

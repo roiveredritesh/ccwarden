@@ -156,6 +156,24 @@
       ],
       "default": "immediate",
       "description": "immediate: as soon as the step is crossed. turnEnd: held until the turn ends."
+    },
+    "handoffDir": {
+      "type": "string",
+      "title": "Handoff folder",
+      "description": "Where /handoff writes its notes, relative to the project root (or absolute). Point it at a synced folder, or commit the notes, to continue on another machine.",
+      "default": ".claude/handoffs"
+    },
+    "handoffOnCompact": {
+      "type": "boolean",
+      "title": "Quick handoff before every compaction",
+      "description": "A safety net: writes a quick (zero-token) handoff each time the conversation is compacted.",
+      "default": false
+    },
+    "handoffMaxUsd": {
+      "type": "number",
+      "title": "Full handoff: max estimated cost ($)",
+      "description": "A full /handoff is one fork of the conversation; above this estimate it writes a quick one instead.",
+      "default": 0.5
     }
   }
 }
