@@ -5,6 +5,7 @@ import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
 import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
+import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
 import type { Billing, Config } from '../src/config'
@@ -24,8 +25,8 @@ import { fiveHour, trackWindow } from '../src/window'
 //
 // So far: F1 (the status line: model, context against the per-model limit,
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
-// (spend alerts), F3 (per-model limits and snapshot compaction), F5 (the
-// subagent guard and per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
+// (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
+// snapshot compaction), F5 (the subagent guard and per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -104,6 +105,29 @@ export const register: Register = (on, options) => {
     if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
     await refreshStatus($, config, conv)
     return result
+  })
+
+  // F2: before a typed prompt goes out over a cold cache with a large
+  // context, ask. Cancel keeps the prompt: it goes back into the box.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind !== 'composer' || e.turnId !== undefined) return next(e)
+    if ((await $.session.surfaces()).length === 0) return next(e)
+    const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+    const usage = await $.session.usage()
+    const model = await $.session.model()
+    const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
+    const cache = cacheView(conv.lastResponseAt, ttl, await $.clock.now())
+    const tokens = usage.context.tokens
+    const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor })
+    if (!isDue || cache.kind !== 'cold' || tokens === undefined) return next(e)
+
+    await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
+    const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
+    const answer = await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_CANCEL] }).catch(() => COLD_CANCEL)
+    if (answer !== COLD_CANCEL) return next(e)
+    // After the drop has settled, so the box isn't cleared over the refill.
+    $.clock.after(0, () => void $.prompt.fill({ text: e.text, mode: 'replace' }))
+    return { drop: coldDropReason(tokens) }
   })
 
   // F5: pin the model, cap the report, cap how many run at once.

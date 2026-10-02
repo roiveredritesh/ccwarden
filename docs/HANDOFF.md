@@ -7,7 +7,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. It validates, type-checks, and passes 70 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. It validates, type-checks, and passes 79 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -183,7 +183,12 @@ Known limits:
 - Per-agent cost in the status.
 - Done when a spawned Explore runs on Haiku, its report is ≤ ~300 words, and the 4th parallel spawn is denied with a reason.
 
-**T5. F2, cold-cache guard.**
+**T5. F2, cold-cache guard.** *Done 2026-10-02* (code and tests). Notes:
+
+- A prompt the user types while idle, over a cold cache with a context ≥ `coldMinTokens`, gets one `$.ui.ask`. It names the cold time, the tokens and the re-cache cost (est.), and suggests `/clear`.
+- Cancel or a dismissal drops the prompt with a reason and refills the box via `$.prompt.fill`. Sending again in the same cold spell goes through.
+- Unverified live: that the refill lands after the drop clears the box (Q4-adjacent), and how `ui.ask` looks in Desktop (Q8).
+
 
 - On `prompt.submit` with a cold cache and large context: `$.ui.ask` with the re-cache cost, Continue or Cancel.
 - Done when Cancel keeps the prompt text (Q4-adjacent: verify).

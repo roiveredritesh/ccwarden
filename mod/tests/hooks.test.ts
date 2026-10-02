@@ -39,6 +39,9 @@ function world(on: On, opts: {
     // $.agent.list(), and what reached core's agent.spawn.
     agents: [] as { id: string; description: string; type: string; status: string }[],
     spawned: [] as { subagentType: string; model?: string; prompt: string }[],
+    // Prompts that reached core, and what was put back in the prompt box.
+    sent: [] as string[],
+    fills: [] as string[],
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -53,6 +56,8 @@ function world(on: On, opts: {
   on('fs.read', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: opts.transcript }))
   on('session.cwd', () => ({ value: '/p' }))
   on('agent.list', () => ({ value: shown.agents }))
+  on('prompt.submit', (_$, e) => { shown.sent.push(e.text); return { text: e.text } })
+  on('prompt.fill', (_$, e) => { shown.fills.push(e.text); return { isFilled: true } })
   on('agent.spawn', (_$, e) => {
     shown.spawned.push({ subagentType: e.subagentType, model: e.model, prompt: e.prompt })
     shown.agents.push({ id: `a${shown.agents.length + 1}`, description: e.description, type: e.subagentType, status: 'running' })
@@ -494,4 +499,69 @@ describe('F5 subagent guard', () => {
       expect(w.status.at(-1)).toContain('cache –') // the main cache clock didn't move
     })
   }
+})
+
+describe('F2 cold-cache guard', () => {
+  const typed = (text: string, extra: Record<string, unknown> = {}) => ({ text, wait: false, origin: { kind: 'composer' as const }, ...extra })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`asks over a cold cache; Cancel keeps the prompt, sending again goes through (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+        await $.session.start(start(surface))
+        await $.turn.complete(turnDone())
+        await w.clock.advance(billing === 'window' ? 65 * MIN : 17 * MIN)
+
+        const out = await $.prompt.submit(typed('continue with the refactor'))
+        expect(w.asks).toHaveLength(1)
+        expect(w.asks[0]).toBe(billing === 'window'
+          ? 'ccwarden: the prompt cache went cold 5m ago, so this prompt re-caches ~180k tokens (≈ $0.72 est.). Unrelated work? /clear first is cheaper. Send it anyway?'
+          : 'ccwarden: the prompt cache went cold 12m ago, so this prompt re-caches ~180k tokens (≈ $0.45 est.). Unrelated work? /clear first is cheaper. Send it anyway?')
+        expect(out.drop).toContain("~180k tokens weren't re-cached")
+        expect(w.sent).toEqual([])
+        await w.clock.advance(0)
+        expect(w.fills).toEqual(['continue with the refactor'])
+
+        await $.prompt.submit(typed('continue with the refactor'))
+        expect(w.asks).toHaveLength(1)
+        expect(w.sent).toEqual(['continue with the refactor'])
+      })
+    }
+  }
+
+  test('Continue sends it', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Continue', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(10 * MIN)
+    const out = await $.prompt.submit(typed('go'))
+    expect(out.drop).toBeUndefined()
+    expect(w.sent).toEqual(['go'])
+  })
+
+  test('a dismissed question cancels and keeps the prompt', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(10 * MIN)
+    expect((await $.prompt.submit(typed('go'))).drop).toBeDefined()
+    await w.clock.advance(0)
+    expect(w.fills).toEqual(['go'])
+  })
+
+  test('no question: warm cache, small context, mid-turn, a plugin prompt, headless, or before any response', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(typed('first prompt')) // no response yet: cache –
+    await $.turn.complete(turnDone())
+    await w.clock.advance(2 * MIN)
+    await $.prompt.submit(typed('warm'))
+    await w.clock.advance(10 * MIN)
+    await $.prompt.submit(typed('mid-turn', { turnId: 't1' }))
+    await $.prompt.submit(typed('from a plugin', { origin: { kind: 'plugin', name: 'x' } }))
+    w.usage.tokens = 20_000
+    await $.prompt.submit(typed('small'))
+    expect(w.asks).toEqual([])
+    expect(w.sent).toEqual(['first prompt', 'warm', 'mid-turn', 'from a plugin', 'small'])
+  })
 })
