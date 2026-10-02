@@ -1,4 +1,5 @@
 import { joinPath } from './paths'
+import { goalOf } from './snapshot'
 import type { SnapshotFacts } from './snapshot'
 
 // F7 handoff: a note for whoever continues the work in a fresh session.
@@ -43,7 +44,7 @@ export function handoffFileName(writtenAt: number, topic: string): string {
 
 /** The note. `full` is the fork's four sections; without it the note says how to get them. */
 export function handoffMarkdown(f: HandoffFacts, opts: { cwd?: string; full?: string; modelLine?: string }): string {
-  const goal = f.goal ?? f.asks[0]
+  const goal = goalOf(f)
   const out: string[] = [
     `# Handoff: ${handoffTopic(goal).replace(/-/g, ' ')}`,
     '',

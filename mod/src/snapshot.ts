@@ -38,11 +38,20 @@ export function planCompaction(e: { trigger: SessionCompactTrigger; instructions
   return 'snapshot'
 }
 
+/**
+ * The goal: the stored first ask, else the first ask that isn't ccwarden's own
+ * output pasted back (a toast or probe line), else the first ask. Live test: a
+ * session that opened with a pasted billing toast got that toast as its Goal.
+ */
+export function goalOf(f: { goal?: string; asks: readonly string[] }): string | undefined {
+  return f.goal ?? f.asks.find(a => !/^\s*ccwarden\b/i.test(a)) ?? f.asks[0]
+}
+
 /** The snapshot message's text: the facts the next turns need, capped at `maxChars`. */
 export function snapshotText(f: SnapshotFacts, opts: { cwd?: string; maxChars?: number; keptTurns: number }): string {
   const max = opts.maxChars ?? SNAPSHOT_MAX_CHARS
   const sections: string[] = []
-  const goal = f.goal ?? f.asks[0]
+  const goal = goalOf(f)
   if (goal !== undefined) sections.push(`## Goal (first request)\n${cut(goal, max * 0.25)}`)
   const recent = f.asks.filter(a => a !== goal).slice(-RECENT_ASKS)
   if (recent.length > 0) {

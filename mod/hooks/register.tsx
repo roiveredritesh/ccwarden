@@ -27,7 +27,7 @@ import type { BudgetSwitch } from '../src/budget'
 import type { Ledger } from '../src/ledger'
 import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '../src/hogs'
 import type { HogDays } from '../src/hogs'
-import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
+import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
 import { formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
@@ -481,7 +481,7 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
   if (facts.asks.length === 0) facts = collectFromMessages(messages)
   const conv = await update($, conversation, prev => {
     const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
-    c.goal ??= facts.asks[0]
+    c.goal ??= goalOf(facts)
     return c
   })
   const git = async (argv: string[]) => {
@@ -659,7 +659,7 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
   }
   const root = await $.session.root()
   const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : joinPath(root, config.handoffDir)
-  const path = joinPath(dir, handoffFileName(now, handoffTopic(facts.goal ?? facts.asks[0])))
+  const path = joinPath(dir, handoffFileName(now, handoffTopic(goalOf(facts))))
   const modelLine = config.modelAdvisor ? handoffModelLine(model) : undefined
   const text = handoffMarkdown({ ...facts, model, writtenAt: now }, { cwd: root, full, modelLine })
   const written = await $.fs.write(path, text).then(() => true, () => false)

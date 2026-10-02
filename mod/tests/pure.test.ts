@@ -22,7 +22,7 @@ import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnr
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
-import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
+import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
 describe('config', () => {
   test('empty options read as the defaults, billing unset', () => {
@@ -234,6 +234,17 @@ describe('T2 pure logic', () => {
     expect(formatStatus({
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
+  })
+})
+
+describe('goalOf', () => {
+  test("skips ccwarden's own output pasted as an ask; the stored goal wins", () => {
+    const toast = "ccwarden: couldn't save billing (dismissed); set it in /config."
+    expect(goalOf({ asks: [toast, 'fix the login timeout'] })).toBe('fix the login timeout')
+    expect(goalOf({ asks: ['fix the login timeout', toast] })).toBe('fix the login timeout')
+    expect(goalOf({ asks: [toast] })).toBe(toast) // nothing else to use
+    expect(goalOf({ goal: 'kept goal', asks: [toast, 'x'] })).toBe('kept goal')
+    expect(goalOf({ asks: [] })).toBeUndefined()
   })
 })
 
