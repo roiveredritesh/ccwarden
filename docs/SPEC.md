@@ -289,6 +289,7 @@ It never blocks and adds nothing to context.
 ```
 hooks-edition/   v0.1, documented hooks + status line (works today)
 mod/             the plugin: .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.ts, src/…
+probe/           dev-only day-one probe for §9 (never shipped)
 docs/            this spec
 ```
 
@@ -303,18 +304,22 @@ docs/            this spec
 
 ## 9. Open questions (verify in M1 week one)
 
-1. **Default TTL on usage-billed plans:** read the 5m/1h split of cache writes.
-2. **Keep-warm refresh:** does the ping actually refresh the main conversation's cached prefix? Same model, tools and system prompt are required.
-3. **Post-compaction re-reads:** after a hook answers `session.compact`, does core still re-read recent files?
-4. **`/clear` from a mod:** can a mod trigger it, or only tell the user?
-5. **Live env re-read:** does the engine re-read `CLAUDE_CODE_AUTO_COMPACT_WINDOW` after `$.env.set`?
-6. **Bash trim schema:** does a trimmed Bash result pass the tool's output schema?
-7. **Rate-limit windows:** are `rateLimits` available to mods on Team?
-8. **Desktop rendering:** do `$.ui.ask`, toasts and status look right in the Desktop Code tab?
-9. **`PreModelSwitch` from a mod:** can a mod hook it, to warn before a switch rather than after?
-10. **Plugins allowed on managed machines:** do managed settings allow loading the mod? Hooks run there, but plugins can be restricted separately. Check with a hello mod on day one.
-11. **Background tasks:** how does a mod see running background tasks (the advisor's "never mid-work")?
-12. **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate.
+T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declarations state; they count as documented behaviour under rule 6. Each "Live" cell is still open until the maintainer runs `probe/` (see `probe/README.md`) on the `metered` and `window` machines.
+
+| # | Question | Types (v2.1.287) | Live |
+|---|---|---|---|
+| 1 | **Default TTL on usage-billed plans:** what is the 5m/1h split of cache writes? | No `$` call returns the split. It is in the transcript (`message.usage.cache_creation.ephemeral_5m/1h_input_tokens`; the Agent tool result carries it too). `classic.PreModelSwitch` gets `cache_ttl: '5m'\|'1h'`, and `classic.SessionStart` (resume/fork) gets `prompt_cache_likely_expired` plus `estimated_cache_write_usd`. | open: `/cw-probe info` |
+| 2 | **Keep-warm refresh:** does the ping refresh the main conversation's cached prefix? | `$.model.fork` re-sends "the main thread's last request (its model, system prompt, tools, messages)… so the API serves that prefix from its cache". The prefix is "billed afresh once the entry lapsed or after `/model`". `usage.cache_read_input_tokens` shows how much the cache served. Whether the fork extends the main entry's TTL is not stated. | open: `/cw-probe wait` vs `/cw-probe fork` |
+| 3 | **Post-compaction re-reads:** after a hook answers `session.compact`, does core still re-read recent files? | Answering `{ messages }` without `next` means core makes no summary request (`usage` absent). Re-reads after a hook's answer are not stated. | open: `/cw-probe compact` |
+| 4 | **`/clear` from a mod:** can a mod trigger it, or only tell the user? | **Likely yes.** `$.command.run({ command })` "runs a slash command as if the person typed `/command args`", and `$.command.list()` includes built-ins. `$.prompt.fill({ text, mode })` prefills the prompt box (`isFilled: false` under a dialog or headless). `/clear` raises `session.end` with `reason: 'clear'` and **no `session.start` after it**. | open: `/cw-probe newchat` |
+| 5 | **Live env re-read:** does the engine re-read `CLAUDE_CODE_AUTO_COMPACT_WINDOW` after `$.env.set`? | `$.env.set` sets the variable "for this process and everything it starts after". Nothing says the engine re-reads it. `usage({ breakdown: 'summary' }).context.breakdown.rawMaxTokens` exposes the compaction window, so the effect is measurable. | open: `/cw-probe env 150000` |
+| 6 | **Bash trim schema:** does a trimmed Bash result pass the tool's output schema? | **Likely yes.** Bash's result is `{ stdout: string, stderr: string, interrupted: boolean, … }`, so a shorter `stdout` keeps the shape. "Core validates a hook's answer against the tool's output schema." `claude plugin test` does **not** run that check: a malformed result passed in a test. | open: `seq 1 100000 # cw-probe-trim` |
+| 7 | **Rate-limit windows:** are `rateLimits` available to mods on Team? | `rateLimits` is "empty off a subscription or before the first reading". Kinds are `five_hour`, `seven_day`, and a gateway's `spend_limit`. | open: `/cw-probe info` on `window` |
+| 8 | **Desktop rendering:** do `$.ui.ask`, toasts and status look right in the Desktop Code tab? | All three are surface-independent `$` calls. `ui.ask` rejects when dismissed or in `-p`. | open: `/cw-probe ui` in Desktop |
+| 9 | **`PreModelSwitch` from a mod:** can a mod hook it, to warn before a switch rather than after? | **Yes.** `on('classic.PreModelSwitch')` gets `from_model`, `to_model`, `source`, `context_tokens`, `prompt_cache_warm`, `cache_ttl`, `estimated_cache_write_usd` and `pricing`. It can answer `permissionDecision: 'allow'\|'deny'\|'ask'` with a reason. `classic.PostModelSwitch` exists too. A test passes (`probe/hooks/probe.test.ts`). | confirm once: `/model` |
+| 10 | **Plugins allowed on managed machines:** do managed settings allow loading the mod? Hooks run there, but plugins can be restricted separately. | Not answerable from the types. `$.settings.read({ source: 'policy' })` shows the managed settings. | open: load `mod/` + `probe/` |
+| 11 | **Background tasks:** how does a mod see running background tasks (the advisor's "never mid-work")? | **Answered.** `classic.Stop` and `classic.SubagentStop` carry `background_tasks` (shell, subagent, monitor, workflow: `id`, `type`, `status`, `description`, `command?`) and the scheduled crons that will wake the session. `$.agent.list()` gives subagents with `status` (`running`, `completed`, `failed`, `killed`, …). | confirm once |
+| 12 | **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate. | **No $ figure.** `usage().cost.usd` is this session's total only. The one account-level reading is a gateway's `spend_limit` rate-limit kind, which gives `percentUsed` and no dollars. F11 stays an estimate. | confirm: `/cw-probe info` on `metered` |
 
 ## 10. Gaps found in design review, and resolutions
 

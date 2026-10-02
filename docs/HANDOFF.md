@@ -8,7 +8,8 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
 | `mod/` | First slice only, in `hooks/register.ts`: this conversation's $ in the status line, and a toast every $5. It passes `claude plugin validate` and type-checks against the v2.1.287 API. **It has not run in a live session yet.** |
-| `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. |
+| `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
+| `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
 ## 2. Who it's for (maintainer setup)
 
@@ -73,11 +74,13 @@ Every gap raised in design review (G1–G12) and how it was resolved is in **SPE
 ### Plugin API (types, v2.1.287; re-check against `mod/.claude-plugin/types/` after loading)
 
 - **Events:**
+  - `/clear` raises `session.end` with `reason: 'clear'` and **no `session.start` after it**. The module keeps running, so anything reset per conversation must reset on that `session.end` (or when `cost` drops in `session.measure`, as the first slice does).
+  - Classic settings-hook events are hookable as `classic.<Event>`, e.g. `classic.PreModelSwitch` (it can deny or ask, with the re-cache cost) and `classic.Stop` (`background_tasks`, `transcript_path`).
   - `session.start`, `session.measure` (with `changed: ('context'|'rateLimits'|'cost')[]`), `session.compact`, `session.attach`/`detach`, `session.end`
   - `turn.start`, `turn.complete`, `prompt.submit`, `tool.call`, `agent.spawn`, `ui.render`, `command.run`
 - **`$.session.usage()`:**
   - `{ startedAt, context: { tokens?, window, percent?, breakdown? }, rateLimits: { kind, percentUsed, resetsAt? }[], cost?: { usd } }`
-  - `percent` is measured against the compaction window. `breakdown: "summary"` is local and free, and includes `model`.
+  - `percent` is `tokens` over `window`, and `window` is the **model's** context window (the status line's `used_percentage`). An earlier note here said it was the compaction window; the types say otherwise. The compaction window is `breakdown.rawMaxTokens` (with `autocompactSource`). `breakdown: "summary"` is local and free, and includes `model`.
 - **`$.session.compact({ instructions })`:** rejects mid-turn.
 - **`session.compact` hook:**
   - Input: `{ trigger: 'manual'|'auto'|'plugin'|'precompute', agentId?, instructions?, messages }`.
@@ -114,6 +117,9 @@ Every gap raised in design review (G1–G12) and how it was resolved is in **SPE
 Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window']`, `claude plugin validate` clean, PR.
 
 **T0. Day-one checks** (§6). **Q10 comes first.** Some features depend on the answers: F6 needs Q2, F3 needs Q3, F4 needs Q6.
+
+- *Status 2026-10-02:* the type-level answers are in SPEC §9. Q9, Q11 and Q12 are answered there, and Q4 and Q6 look likely. `probe/` is the runbook for the rest; see `probe/README.md`. What remains is for the maintainer: run it on the `metered` and `window` machines, terminal and Desktop, and paste `~/.claude/ccwarden-probe.jsonl` back into SPEC §9.
+- T1 can start in parallel. It doesn't depend on any open answer.
 
 **T1. Foundation.**
 
@@ -166,6 +172,8 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 
+`probe/` runs each check below; its README maps each one to a `/cw-probe` command.
+
 | # | Question | How to check |
 |---|---|---|
 | Q1 | Default TTL on the metered machine | After a few turns, the transcript's `usage.cache_creation` split (`ephemeral_5m` vs `ephemeral_1h`), or the `prompt_cache.ttl` the status line gets |
@@ -183,6 +191,8 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 
 ## 7. Gotchas learned the hard way
 
+- **`claude plugin test` doesn't validate a `tool.call` answer against the tool's output schema.** A malformed Bash result passes in a test, so schema questions (Q6) need a live session.
+- **In tests, the engine's `$` has only event nouns.** There's no `$.store` to read back, and `ui.log`, `ui.status` and `command.register` need a test-level hook beneath, or the plugin's call fails with "no implementation". See `world()` in `probe/hooks/probe.test.ts`.
 - **The plugin API is early access:** pin and document the minimum Claude Code version; re-run `validate` after every update.
 - **The transcript JSONL format is undocumented.** Assistant lines repeat per content block (dedupe by `message.id`). Mid-turn user messages are `attachment.type: "queued_command"`. Compaction leaves a `compact_boundary` system entry. Prefer `$.session.messages()` when it gives what you need.
 - **No compaction mid-turn:** `$.session.compact` rejects while a turn runs, so a long agentic turn can pass the per-model limit; the engine window is the safety net.
