@@ -463,6 +463,20 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(w.logs.filter(l => l.includes('Type /compact'))).toHaveLength(1)
   })
 
+  test('a limit under the engine\'s 100k floor is advised at 100k, where the engine compacts', { options: { billing: 'window', limitOther: 50_000 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['desktop'], usage: { tokens: 66_000 } })
+    await $.session.start(start('desktop'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(0)
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('100000')
+    expect(w.logs.filter(l => l.includes('Type /compact'))).toEqual([])
+
+    w.usage.tokens = 101_000
+    await $.turn.complete(turnDone())
+    await w.clock.advance(0)
+    expect(w.logs.filter(l => l.includes('Type /compact'))).toHaveLength(1)
+  })
+
   test('a model switch applies the new limit from the next turn', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 150_000 } })
     await $.session.start(start('terminal'))

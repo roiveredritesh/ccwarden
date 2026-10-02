@@ -774,11 +774,13 @@ async function syncCompactWindow($: $, config: Config): Promise<void> {
  * The limit the mod measures a conversation against: its per-model limit, the
  * model window, and the compact window the user sets with
  * CLAUDE_CODE_AUTO_COMPACT_WINDOW (Q5: the engine re-reads it live), so the
- * status never says 300k while the engine compacts at 150k.
+ * status never says 300k while the engine compacts at 150k. The per-model
+ * limit takes the variable's 100k floor, as syncCompactWindow does, so a 50k
+ * limit doesn't say "type /compact" at 50k while the engine waits for 100k.
  */
 async function limitOf($: $, model: string, config: Config, window: number): Promise<number> {
   const compactWindow = Number(await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))
-  return Math.min(limitFor(model, config), window, compactWindow > 0 ? compactWindow : Infinity)
+  return Math.min(compactWindowFor(limitFor(model, config), window), window, compactWindow > 0 ? compactWindow : Infinity)
 }
 
 /** The cache's last use: the main loop's last response, or a later keep-warm ping. */
