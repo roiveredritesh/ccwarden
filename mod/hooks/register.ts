@@ -1,21 +1,28 @@
 import { update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
+import type { CcwardenConversation } from '../types'
+import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
-import { readConfig } from '../src/config'
+import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
+import type { Ttl } from '../src/cache'
+import { limitFor, readConfig } from '../src/config'
 import type { Billing, Config } from '../src/config'
+import { rebuildUsd } from '../src/prices'
+import { formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
 import type { SessionFacts } from '../src/transcript'
+import { fiveHour, trackWindow } from '../src/window'
 
 // The hooks and every $ call live in this file: `claude plugin validate`
 // follows $ only into functions declared in the same file, never across an
 // import. The logic is in src/, pure and tested there.
 //
-// So far: the first slice of F1/F1b (this conversation's $ in the status
-// line, a toast every `sessionAlertUsd`), the first-run billing question,
-// the R9 toast budget, and the transcript path the session facts are read
-// from.
+// So far: F1 (the status line: model, context against the per-model limit,
+// cache warm/cold, this conversation's $ or share of the 5h window), F1b
+// (spend alerts), the first-run billing question, the R9 toast budget, and
+// the transcript path the session facts are read from.
 
 type $ = EngineInterface
 
@@ -23,19 +30,31 @@ const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
 const heldNote = { plugin: 'ccwarden', key: 'heldNote' } as const
 const transcriptPath = { plugin: 'ccwarden', key: 'transcriptPath' } as const
 const billingAsked = { plugin: 'ccwarden', key: 'billingAsked' } as const
+const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
+
+const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
+const TTL_RECHECK_MS = 10 * 60_000
+const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024 // what one $.fs.read takes
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
-  // Highest $ step already alerted in this conversation. A reload re-reads it
-  // from the current total, so nothing alerts twice.
-  let alerted = 0
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    const { cost } = await $.session.usage()
-    alerted = Math.floor((cost?.usd ?? 0) / config.sessionAlertUsd)
+    // A reload keeps the conversation's state; a new process (startup,
+    // resume) starts it from the engine's totals, so old steps don't alert.
+    if ((await $.state.get(conversation)).value === undefined) {
+      const usage = await $.session.usage()
+      const reading = fiveHour(usage.rateLimits)
+      await $.state.set(conversation, {
+        alerted: alertStep(config, { usd: usage.cost?.usd }),
+        ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }),
+      })
+    }
+    $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
+    await refreshStatus($, config)
     return result
   })
 
@@ -46,20 +65,118 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // /clear ends the conversation: its figures start over, a held alert is
+  // dropped, and the window share is measured from here.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      const reading = fiveHour((await $.session.usage()).rateLimits)
+      await $.state.set(conversation, { alerted: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
+      $.clock.after(0, () => void refreshStatus($, config))
+    }
+    return next(e)
+  })
+
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
-    const usd = e.cost?.usd
-    if (usd === undefined) return result
-
-    const step = Math.floor(usd / config.sessionAlertUsd)
-    if (step < alerted) alerted = step // /clear: the conversation started over
-    if (step > alerted) {
-      alerted = step
-      await notify($, 'spend', `⚠ You've spent $${usd.toFixed(2)} in this conversation (est.). Continuing.`)
-    }
-    $.ui.status(`this chat $${usd.toFixed(2)}${step > 0 ? ' ⚠' : ''}`)
+    const reading = fiveHour(e.rateLimits)
+    let due: string | undefined
+    const conv = await update($, conversation, prev => {
+      const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+      if (reading !== undefined) c.window = trackWindow(c.window, reading)
+      const figures = { usd: e.cost?.usd, chatPct: c.window?.chatPct }
+      const step = alertStep(config, figures)
+      if (step < c.alerted) c.alerted = step // the conversation started over
+      if (isAlertDue(step, c.alerted, config.sessionAlertRepeat)) {
+        due = alertText(config, figures)
+        if (config.alertTiming === 'turnEnd') c.pendingAlert = due
+      }
+      if (step > c.alerted) c.alerted = step
+      return c
+    })
+    if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
+    await refreshStatus($, config, conv)
     return result
   })
+
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId !== undefined) return result // a subagent's requests don't touch the main cache
+    const now = await $.clock.now()
+    let pending: string | undefined
+    const conv = await update($, conversation, prev => {
+      const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+      if (e.usage !== undefined) c.lastResponseAt = now
+      pending = c.pendingAlert
+      delete c.pendingAlert
+      return c
+    })
+    if (pending !== undefined) await notify($, 'spend', pending)
+    if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
+    else await refreshStatus($, config, conv)
+    return result
+  })
+}
+
+/** Redraws the status line from the engine's figures and the conversation's state. */
+async function refreshStatus($: $, config: Config, known?: CcwardenConversation): Promise<void> {
+  const conv = known ?? (await $.state.get(conversation)).value ?? { alerted: 0 }
+  const usage = await $.session.usage()
+  const model = await $.session.model()
+  const now = await $.clock.now()
+  const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
+  const cache = cacheView(conv.lastResponseAt, ttl, now)
+  const tokens = usage.context.tokens
+  $.ui.status(formatStatus({
+    billing: config.billing,
+    model,
+    tokens,
+    limit: Math.min(limitFor(model, config), usage.context.window),
+    cache,
+    ttl,
+    rebuildUsd: cache.kind === 'cold' && tokens !== undefined ? rebuildUsd(tokens, model, ttl) : undefined,
+    usd: usage.cost?.usd,
+    chatPct: conv.window?.chatPct,
+    fiveHour: fiveHour(usage.rateLimits),
+    now,
+    isAlerted: conv.alerted > 0,
+  }))
+}
+
+/** The documented TTL override: CLAUDE_CODE_PROMPT_CACHE_TTL, else the `promptCacheTtl` setting. */
+async function ttlOverride($: $): Promise<Ttl | undefined> {
+  return parseTtl(await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL')) ?? parseTtl((await $.settings.read()).promptCacheTtl)
+}
+
+/**
+ * Reads the TTL of the latest cache write from the transcript (best effort:
+ * skipped past what one read takes), records it, and says once per
+ * conversation when it contradicts the billing setting (SPEC §1).
+ */
+async function observeTtl($: $, config: Config, now: number): Promise<void> {
+  const path = (await $.state.get(transcriptPath)).value
+  let observed: Ttl | undefined
+  if (path !== undefined && path !== '') {
+    const stat = await $.fs.stat(path).catch(() => undefined)
+    if (stat !== undefined && stat.size <= MAX_TRANSCRIPT_BYTES) {
+      const text = await $.fs.read(path).catch(() => undefined)
+      if (text !== undefined) observed = latestWriteTtl(parseJsonl(text))
+    }
+  }
+  const override = await ttlOverride($)
+  let isWarnDue = false
+  const conv = await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }), ttlCheckedAt: now }
+    if (observed !== undefined) c.observedTtl = observed
+    if (observed !== undefined && !c.ttlWarned && ttlContradicts(config.billing, observed, override)) {
+      c.ttlWarned = true
+      isWarnDue = true
+    }
+    return c
+  })
+  if (isWarnDue) {
+    await notify($, 'advisor', `ccwarden: cache writes use a ${observed} TTL, but billing is set to ${config.billing}. Check billing in /config.`)
+  }
+  await refreshStatus($, config, conv)
 }
 
 /**

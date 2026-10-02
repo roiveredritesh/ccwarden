@@ -143,10 +143,18 @@ Worked numbers for an engine summary (warm cache, S ≈ 15k):
 ```
 metered:  Sonnet · ctx 140k/300k · cache ● 3m · this chat $1.84
 metered:  Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
-window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h20m)
+window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
 ```
 
 - **The figure:** in `metered`, this chat's $ is the engine's own per-session total (`session.measure` `cost`, the same as `/usage`). It resets on `/clear`; compaction doesn't reset it.
+- **Window share:** the rise in `five_hour` `percentUsed` since the conversation started (a window reset counts from 0). Other sessions on the same account move that window too, so with several running at once it is an upper bound. Until the first `five_hour` reading, the status falls back to $.
+- **ctx:** the last response's input tokens against `min(model limit, model window)`.
+- **Cache:** warm for the TTL after the main loop's last response (subagent turns don't count). No event carries the TTL, so it is inferred, best source first:
+  1. the 5m/1h split of the latest cache write in the transcript, re-read at most every 10 min and only while the file is ≤ 4 MiB (one `$.fs.read`)
+  2. `CLAUDE_CODE_PROMPT_CACHE_TTL` or the `promptCacheTtl` setting
+  3. the billing default: `window` 1h, `metered` 5m
+
+  A cold cache shows the rebuild cost: context × the TTL's write price. An observed TTL that contradicts the billing setting, with no override to explain it, raises one advisor toast per conversation (§1).
 
 **F1b. Spend alert.** Every `sessionAlertUsd` ($5) in `metered`, or every `sessionAlertPct` (20%) of the 5h window in `window`:
 
@@ -351,4 +359,4 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | Fable 5.1 | $10 | $12.50 | $20 | $0.25 (0.025x) | $50 |
 
 - **No long-context premium:** Claude 4.6+ bills a 900K request at the same per-token rate as a 9K one.
-- **Where prices live:** `mod/config/prices.json`, versioned with the mod.
+- **Where prices live:** `mod/src/prices.ts`, versioned with the mod. A hooks module imports code files only, so prices aren't kept as JSON.

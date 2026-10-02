@@ -28,7 +28,11 @@ export type TranscriptEntry = {
   isSidechain?: boolean
   isMeta?: boolean
   isCompactSummary?: boolean
-  message?: { id?: string; content?: string | Block[] }
+  message?: {
+    id?: string
+    content?: string | Block[]
+    usage?: { cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | null }
+  }
   attachment?: { type?: string; prompt?: unknown; humanTurn?: boolean; origin?: { kind?: string } }
 }
 
