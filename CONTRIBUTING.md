@@ -10,7 +10,10 @@ Thanks for helping. A few ground rules keep ccwarden trustworthy:
 
 ## Development
 
-- Hooks edition: `cd hooks-edition && node --test test/*.test.js`
-- Mod: `claude plugin validate mod` and `claude --plugin-dir ./mod`
+- Mod: `claude plugin validate mod && claude plugin test mod`, and run it with `claude --plugin-dir ./mod`
+- Setup: `node --test "setup/test/*.test.js"`
+- Hooks edition: `cd hooks-edition && node --test "test/*.test.js"`
+
+[`docs/SPEC.md`](docs/SPEC.md) is the product spec, and [`docs/HANDOFF.md`](docs/HANDOFF.md) has the current state and next tasks.
 
 Open an issue before large changes.

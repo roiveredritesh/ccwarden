@@ -1,94 +1,149 @@
 # ccwarden
 
-**A cost and context guard for [Claude Code](https://code.claude.com).** It shows what the current conversation is costing you. It warns before money is wasted, keeps compaction cheap, and tells you when to compact, `/clear` or hand off to a fresh session.
+**A cost and context guard for [Claude Code](https://code.claude.com).** It shows what the current conversation is costing you, warns before money is wasted, compacts without paying for a summary, and tells you when to compact, `/clear` or hand off to a fresh session.
 
-> **Status: pre-alpha.** The [hooks edition](#hooks-edition-v01-works-today) works today. The **mod** (CLI + Desktop) is in development; see [`docs/SPEC.md`](docs/SPEC.md) and the [roadmap](#roadmap). The mod is built on Claude Code's function-hook plugin API, which is marked *early access* and may change between releases.
+> **Status: alpha.** It comes in two editions:
+> - The **plugin** (`mod/`): the full feature set, for the Claude Code CLI and the Desktop app's Code tab.
+> - The **hooks edition** (`hooks-edition/`): a smaller, stable set of plain Node hooks.
+>
+> The plugin is built on Claude Code's function-hook plugin API, which is *early access* and may change between releases.
 
 Not affiliated with or endorsed by Anthropic.
 
 ## Why
 
-Every Claude Code request re-sends the whole conversation. Cost and rate-limit burn are driven by a few things you rarely see:
+Every Claude Code request re-sends the whole conversation. A few things drive cost and rate-limit burn, and you rarely see them:
 
-- **Context size.** It is re-read on every request; cheap while the prompt cache is warm, expensive when it's cold.
+- **Context size.** It's re-read on every request. That's cheap while the prompt cache is warm and expensive when it's cold.
 - **Cache misses.** A break longer than the cache TTL (5 minutes on billed usage) means the next request re-processes everything.
-- **Junk in context.** Huge file reads and command outputs are paid again on every later turn.
+- **Junk in context.** Huge file reads and command outputs are paid for again on every later turn.
 - **Compaction itself.** The summary is written in output tokens, the most expensive kind.
-- **Subagents.** Each pays its own context, and its report lands in yours.
+- **Subagents.** Each one pays for its own context, and its report lands in yours.
 
-ccwarden makes these visible as they happen, and steps in where it can without breaking the prompt cache.
+ccwarden shows these as they happen. Where it can do so without breaking the prompt cache, it also steps in.
+
+## Quick start
+
+You need Node 18+ (for setup only) and a Claude Code version with plugin support.
+
+```bash
+git clone https://github.com/roiveredritesh/ccwarden && cd ccwarden
+
+# Try it for one session, nothing installed:
+claude --plugin-dir ./mod
+
+# Or install it for the CLI and the Desktop Code tab:
+node setup/setup.js --dry-run     # shows each change and why
+node setup/setup.js
+```
+
+On the first start, the plugin asks once how this machine is billed: **metered** (API key or usage-billed, shown in $) or **window** (Pro/Max/Team, shown as a % of the 5-hour window).
+
+## What it does
+
+| Feature | What you get |
+|---|---|
+| **Status line** | Model, context against its limit, cache warm/cold (time left and rebuild cost), and this conversation's spend ($ or % of the 5h window). A cache miss names its likely cause. |
+| **Spend alerts** | A toast every $5 (metered) or 20% of the window. Alerts never block. |
+| **Snapshot compaction** | Per-model limits (Haiku 120K, others 300K). Past the limit, the plugin builds the compacted conversation itself, so no summary tokens are spent. |
+| **Cold-cache guard** | Before a big prompt goes out over an expired cache, you choose: continue, hand off, or cancel. |
+| **Junk guard** | Oversized `Read`s go to `Grep` or a ranged read. Long Bash output is trimmed, and the full output is saved to a file Claude can grep. Ships in `observe` mode. |
+| **Subagent guard** | Subagents are pinned to a cheaper model, with a ~300-word report cap and a limit on parallel runs. |
+| **Handoffs** | `/handoff` writes a note for a fresh session, and the next session offers to continue from it. |
+| **Background watcher** | Names turns you didn't type (scheduled tasks, `/loop`, channels) with their cost and the setting that stops them. |
+| **Model advice** | At a fresh start, when switching is still free, it suggests a cheaper model. It never switches for you. |
+| **Month tracking** | Month-to-date estimate, budget toasts at 50/80/100%, and a stricter budget mode. |
+| **`/cw` dashboard** | This session, guard savings, month to date, context hogs and a 7-day cache report. |
+| **Keep-warm** *(experimental, off)* | Before the active session's cache expires, one tiny fork keeps it warm, within a $ cap. |
+
+## Commands
+
+### In Claude Code
+
+| Command | What it does |
+|---|---|
+| `/cw` | Opens the dashboard and logs this month's spend, your pace and the budget mode |
+| `/cw spent <amount>` | Calibrates the month estimate with the real figure from your billing page, e.g. `/cw spent 42.50` |
+| `/cw budget on\|off\|auto` | Turns budget mode on or off by hand, or lets the budget decide (`auto`) |
+| `/handoff` | Writes a full handoff note (one fork of the conversation, best while the cache is warm) |
+| `/handoff quick` | Writes a zero-token handoff from the transcript |
+| `/ccwarden-junk` | Shows what the junk guard did, or would have done in `observe` mode |
+
+### Setup (`setup/setup.js`)
+
+| Flag | What it does |
+|---|---|
+| *(none)* | Loads the plugin in the CLI and the Desktop app, and sets the engine's compaction window to 300000 as a safety net |
+| `--dry-run` | Shows what it would change, and why, without writing anything |
+| `--project <dir>` | Also adds `# Compact instructions` to that repo's `CLAUDE.md` |
+| `--compact-window <n>` | Engine compaction window (100000–1000000) |
+| `--subagent-model <alias>` | Opt-in: the default model for subagents, e.g. `haiku` |
+| `--cache-ttl 5m\|1h` | Opt-in: the prompt-cache TTL (use `1h` only if your breaks often run past 5 minutes) |
+| `--no-prompt-suggestions` | Opt-in: turns off prompt suggestions |
+| `--uninstall` | Restores your old values from the backup |
+
+Every setting is explained as it's written, and a backup is kept.
+
+## Settings
+
+Change them in `/config` under the ccwarden plugin. These are the ones you're most likely to touch:
+
+| Setting | Default | |
+|---|---|---|
+| `billing` | `ask` | `metered`, `window`, or ask on the next start |
+| `sessionAlertUsd` / `sessionAlertPct` | `5` / `20` | Spend alert step |
+| `limitHaiku` / `limitOther` | `120000` / `300000` | Per-model context limits |
+| `compactMode` | `snapshot` | `summary` switches back to the engine's summary |
+| `junkGuard` | `observe` | `enforce` once `/ccwarden-junk` shows no false positives |
+| `subagentModel` | `haiku` | `subagentAllowlist` lists agent types that keep their own model |
+| `monthlyBudgetUsd` | `0` (off) | Turns on month tracking and budget toasts |
+| `handoffDir` | `.claude/handoffs` | Point it at a synced folder to continue on another machine |
+| `keepWarm` | `false` | Experimental, metered only |
+
+The full list, with descriptions, is in [`mod/.claude-plugin/plugin.json`](mod/.claude-plugin/plugin.json).
+
+## Hooks edition (v0.1)
+
+Plain Node scripts on Claude Code's documented hooks and status line, with no dependencies. Use it if you'd rather not run an early-access plugin.
+
+| Piece | What it does |
+|---|---|
+| `statusline.js` | Context against the auto-compact window, cache warm/cold, TTL left, hit %, and the cause of the last miss |
+| `hooks/prompt-guard.js` | On the first prompt after the cache expires, it shows a warning (or blocks once): "this turn re-processes ~N tokens" |
+| `hooks/session-start.js` | After compaction, restores your first request, recent requests (verbatim), open todos and edited files |
+| `report.js` | Per-session cache report: hit %, every rebuild and its cause, and whether a 1h TTL would pay off |
+
+```bash
+cd hooks-edition
+node install.js --dry-run                    # preview
+node install.js --compact-window 120000      # merges into ~/.claude/settings.json (backup first)
+node install.js --cold-guard warn|block|off  # prompt-guard mode
+node install.js --force-statusline           # replace an existing status line
+node install.js --uninstall
+
+node ~/.claude/ccwarden/report.js --days 7 [--project <dir>]
+```
 
 ## How it compares
 
 | | [ccstatusline](https://github.com/sirmalloc/ccstatusline) | ccwarden |
 |---|---|---|
-| Rich, configurable status line | ✅ many widgets | minimal: this conversation's cost, context, cache |
+| Rich, configurable status line | ✅ many widgets | Minimal: this conversation's cost, context and cache |
 | Shows cache and context figures | ✅ | ✅ |
 | **Acts**: spend alerts, cold-cache guard, junk guard, subagent guard | — | ✅ |
-| **Cheaper compaction** (snapshot compaction, no summary tokens) | — | ✅ (mod) |
-| **Advisor**: continue / compact / clear / hand off, with the cost of each | — | ✅ (mod) |
+| **Cheaper compaction** (snapshot, no summary tokens) | — | ✅ (plugin) |
+| Handoffs, month tracking, `/cw` dashboard | — | ✅ (plugin) |
 | History report: cache rebuilds and their causes, TTL verdict | — | ✅ |
 
-They complement each other: use ccstatusline for the status line and ccwarden for the guarding.
-
-## Hooks edition (v0.1, works today)
-
-Plain Node scripts on Claude Code's documented hooks and status line. No dependencies.
-
-| Piece | What it does |
-|---|---|
-| `statusline.js` | Context vs. the auto-compact window, cache warm/cold, TTL left, hit %, last miss cause |
-| `hooks/prompt-guard.js` | On the first prompt after the cache expired: "this turn re-processes ~N tokens; `/clear` is cheaper for unrelated work" (warn or block once) |
-| `hooks/session-start.js` | After compaction, restores your first request, recent requests (verbatim), open todos and edited files |
-| `report.js` | Per-session cache report over your transcripts: hit %, every rebuild and its cause, and whether a 1h TTL would pay off |
-
-```bash
-cd hooks-edition
-node install.js --compact-window 120000   # merges into ~/.claude/settings.json (backup first)
-node ~/.claude/ccwarden/report.js --days 7
-node install.js --uninstall
-```
-
-Tests: `cd hooks-edition && node --test test/*.test.js`.
-
-## The mod (in development)
-
-One plugin for the Claude Code CLI and the Desktop app's Code tab. Planned first milestone:
-
-1. **This conversation's spend in the status line**, with a toast every $5 (or a share of your 5-hour window on subscription plans), plus the model, context against its limit, and whether the prompt cache is warm. *(in [`mod/`](mod/))*
-2. **Per-model context limits** (e.g. Haiku 120K, Sonnet/Opus 300K) with **snapshot compaction**: the mod hands the engine its own compacted conversation, so no summary is generated. *(in [`mod/`](mod/))*
-3. **Junk guard**: oversized reads and outputs are redirected to `Grep`/ranged reads; full outputs are saved to a file.
-4. **Subagent guard**: pins subagents to a cheaper model, caps their report size and how many run at once.
-5. **Cold-cache guard + keep-warm** for the active session only.
-
-Later milestones, also in `mod/`:
-
-- `/handoff` notes for a fresh session.
-- A background spend watcher.
-- Model advice at session start.
-- Month tracking with a budget mode.
-- The `/cw` dashboard: this session, guard savings, month to date, context hogs and a 7-day cache report.
-
-Set it up (Node 18+). This loads the mod in the CLI and the Desktop app's Code tab, and sets the engine's own compaction window to 300000 as a safety net for very long turns. Each setting is explained as it is written, a backup is kept, and `--uninstall` puts your old values back:
-
-```bash
-node setup/setup.js --dry-run              # show what it would change, and why
-node setup/setup.js --project ~/my-repo    # also adds "# Compact instructions" to that repo's CLAUDE.md
-node setup/setup.js --uninstall
-```
-
-Opt-in flags: `--subagent-model haiku`, `--cache-ttl 1h` (only when your breaks often pass 5 minutes) and `--no-prompt-suggestions`. Or just try it for one session with `claude --plugin-dir ./mod`.
+The two work together: ccstatusline for the status line, ccwarden for the guarding.
 
 ## Privacy
 
-Everything runs locally. ccwarden reads your local transcripts and Claude Code's own usage figures. It sends nothing anywhere and makes no model calls unless a feature says so and you turn it on.
+Everything runs locally. ccwarden reads your local transcripts and Claude Code's own usage figures. It sends nothing anywhere, and it makes no model calls unless a feature says it does and you turn it on (full handoff, keep-warm), each within a $ cap.
 
-## Roadmap
+## Contributing
 
-- **M1:** the five features above, tested on the terminal and Desktop surfaces
-- **M2:** `/handoff` + pickup in a new session, background-spend watcher, model/effort advisor, setup profile
-- **M3:** `/cw` dashboard with context hogs, monthly tracking
-- **M4:** unrelated-prompt hint, plugin marketplace packaging
+Bug reports and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules and the test commands.
 
 ## License
 
