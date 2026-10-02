@@ -48,7 +48,7 @@ describe('Q6: a trimmed Bash result', () => {
     world(on)
     on('tool.call', { tool: 'Bash' }, () => ran('x'.repeat(10_000)))
 
-    const out = await $.tool.call({ tool: 'Bash', command: `seq 1 100000 ${TRIM_MARKER}` })
+    const out = await $.tool.call({ tool: 'Bash', command: `seq 1 4000 ${TRIM_MARKER}` })
 
     expect(out.deny).toBeUndefined()
     expect(out.isError).toBeUndefined()
