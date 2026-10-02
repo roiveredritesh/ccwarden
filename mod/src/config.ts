@@ -37,6 +37,7 @@ export type Config = {
   handoffMaxUsd: number
   backgroundWatch: boolean
   modelAdvisor: boolean
+  topicShiftHint: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -68,6 +69,7 @@ export const DEFAULTS: Config = {
   handoffMaxUsd: 0.5,
   backgroundWatch: true,
   modelAdvisor: true,
+  topicShiftHint: false, // until tuned from its log (SPEC F13)
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -119,6 +121,7 @@ export function readConfig(options: PluginOptions): Config {
     handoffMaxUsd: num('handoffMaxUsd'),
     backgroundWatch: bool('backgroundWatch'),
     modelAdvisor: bool('modelAdvisor'),
+    topicShiftHint: bool('topicShiftHint'),
   }
 }
 

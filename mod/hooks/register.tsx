@@ -35,6 +35,8 @@ import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
 import type { SessionFacts } from '../src/transcript'
 import { fiveHour, trackWindow } from '../src/window'
+import { appendTopic, isTopicCandidate, isTopicShift, TOPIC_CLEAR, TOPIC_HANDOFF_CLEAR, TOPIC_SEND, topicChoice, topicDropReason, topicOverlap, topicQuestion } from '../src/topic'
+import type { TopicEvent } from '../src/topic'
 
 // The hooks and every $ call live in this file: `claude plugin validate`
 // follows $ only into functions declared in the same file, never across an
@@ -47,7 +49,7 @@ import { fiveHour, trackWindow } from '../src/window'
 // per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
 // F8 (the background spend watcher), F9 (model and effort advice), the
 // M3 spend ledger and context hogs, F11 month tracking and budget mode,
-// F10 the /cw dashboard pane, the first-run billing question, the R9 toast budget, and the transcript path
+// F10 the /cw dashboard pane, F13 (the unrelated-prompt hint, off by default), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -85,6 +87,7 @@ const LEDGER_KEY = 'ledger' // $.store: this machine's est. spend per day (M3)
 const HOG_DAYS_KEY = 'hogDays' // $.store: the day's biggest tool results (F10)
 const MONTH_ALERTS_KEY = 'monthAlerts' // $.store: the month steps already alerted (F11)
 const BUDGET_SWITCH_KEY = 'budgetSwitch' // $.store: /cw budget on|off|auto
+const TOPIC_LOG_KEY = 'topicLog' // $.store: each unrelated-prompt hint and its answer, for tuning (F13)
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -160,11 +163,7 @@ export const register: Register = (on, options) => {
   // /clear ends the conversation: its figures start over, a held alert is
   // dropped, and the window share is measured from here.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
-      const reading = fiveHour((await $.session.usage()).rateLimits)
-      await $.state.set(conversation, { alerted: 0, ledgerUsd: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
-      $.clock.after(0, () => void refreshStatus($, config))
-    }
+    if (e.reason === 'clear') await startOver($, config)
     return next(e)
   })
 
@@ -239,7 +238,11 @@ export const register: Register = (on, options) => {
     if ((await $.session.surfaces()).length === 0) return next(e)
     const cache = cacheView(lastCacheUse(conv), ttl, now)
     const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor, text: e.text })
-    if (!isDue || cache.kind !== 'cold' || tokens === undefined) return next(e)
+    if (!isDue || cache.kind !== 'cold' || tokens === undefined) {
+      // F13 only where F2 didn't ask: its question already names /clear.
+      const reason = config.topicShiftHint ? await topicHint($, config, e.text, tokens, conv) : undefined
+      return reason === undefined ? next(e) : { drop: reason }
+    }
 
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
     const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
@@ -514,6 +517,50 @@ export const register: Register = (on, options) => {
     $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
     return { messages: [{ role: 'user', text, toolUses: [] }, ...tail] }
   })
+}
+
+/** /clear: the conversation's figures start over, a held alert is dropped, and the window share is measured from here. */
+async function startOver($: $, config: Config): Promise<void> {
+  const reading = fiveHour((await $.session.usage()).rateLimits)
+  await $.state.set(conversation, { alerted: 0, ledgerUsd: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
+  $.clock.after(0, () => void refreshStatus($, config))
+}
+
+/**
+ * F13: a typed prompt that shares almost no words with the goal, recent asks
+ * and last answer is asked about. Clear runs /clear (queued until idle) and
+ * puts the prompt back; any answer mutes the hint until the context grows
+ * 20%, so sending again goes through. Returns the drop reason, or undefined
+ * to send.
+ */
+async function topicHint($: $, config: Config, text: string, tokens: number | undefined, conv: CcwardenConversation): Promise<string | undefined> {
+  if (tokens === undefined || !isTopicCandidate({ text, tokens, mutedAt: conv.topicMutedAt })) return undefined
+  const facts = await sessionFacts($, (await $.state.get(transcriptPath)).value)
+  const history = [goalOf({ goal: conv.goal, asks: facts.asks }) ?? '', ...facts.asks.slice(-5), lastAnswer(await $.session.messages()) ?? '']
+  if (!isTopicShift(text, history)) return undefined
+  const answer = await $.ui.ask(topicQuestion(tokens), { header: 'New topic?', options: [TOPIC_SEND, TOPIC_CLEAR, TOPIC_HANDOFF_CLEAR] }).catch(() => undefined)
+  const choice = topicChoice(answer)
+  await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), topicMutedAt: tokens }))
+  const { overlap, count } = topicOverlap(text, history)
+  const log = (await $.store.get(TOPIC_LOG_KEY)) as TopicEvent[] | undefined
+  await $.store.set(TOPIC_LOG_KEY, appendTopic(log, { at: await $.clock.now(), overlap, keywords: count, tokens, choice }))
+  if (choice === 'send') return undefined
+  // Quick: no model call, so the old context isn't re-read just to write it.
+  const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
+  const isCleared = choice !== 'keep'
+  // After the drop has settled; /clear itself waits until the session is idle.
+  $.clock.after(0, async () => {
+    if (isCleared) {
+      const ran = await $.command.run({ command: 'clear' }).catch(() => undefined)
+      // A plugin's own command skips its own hooks (Q13), so session.end may not reset it.
+      if (ran !== undefined) await startOver($, config)
+      else $.ui.log('ccwarden: /clear could not be run from here; type /clear, then send your prompt.')
+    }
+    await $.prompt.fill({ text, mode: 'replace' })
+  })
+  const reason = topicDropReason({ isCleared, handoffPath })
+  $.ui.log(reason)
+  return reason
 }
 
 /**

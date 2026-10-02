@@ -6,7 +6,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 **M1, M2 and M3 code is complete (M1 T0–T7, M2-T1–T4, M3-T1–T3, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). M3 added the spend ledger, context hogs, month tracking with budget mode, and the `/cw` dashboard (§5c).
 
-**M4 started (2026-10-02).** Marketplace packaging is done: `.claude-plugin/marketplace.json` at the repo root lists `./mod`, so `claude plugin marketplace add roiveredritesh/ccwarden` + `claude plugin install ccwarden@ccwarden` installs it (tested from a local directory source in an isolated `CLAUDE_CONFIG_DIR`). `setup.js` skips `CLAUDE_CODE_PLUGIN_DIRS` when `enabledPlugins` has `ccwarden@…`, so the mod never loads twice. Left for M4: F13 (unrelated-prompt hint), off by default.
+**M4 started (2026-10-02).** Marketplace packaging is done: `.claude-plugin/marketplace.json` at the repo root lists `./mod`, so `claude plugin marketplace add roiveredritesh/ccwarden` + `claude plugin install ccwarden@ccwarden` installs it (tested from a local directory source in an isolated `CLAUDE_CONFIG_DIR`). `setup.js` skips `CLAUDE_CODE_PLUGIN_DIRS` when `enabledPlugins` has `ccwarden@…`, so the mod never loads twice. **F13 done (2026-10-02):** `topicShiftHint` (off by default) asks before a typed prompt that shares almost no keywords with the goal, recent asks and last answer, at 40k+ context: Send, Clear (runs `/clear`, puts the prompt back) or Handoff + clear. Answers go to `$.store` `topicLog` for tuning; SPEC F13 "As built" has the rules. Unverified live: that a mod-run `/clear` clears (Q4). M4's code is complete.
 
 **First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
 
@@ -23,8 +23,9 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 3. Q6 retry with `seq 1 4000 # cw-probe-trim`; Q2 on the metered machine; `/cw` vs `/usage` back to back (the first compare was 21% low, timing-confounded).
 4. Desktop UI polish: wait for the maintainer's list of what looks wrong.
 5. Use the mod for a week, then `junkGuard` → `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
+6. F13 live: turn `topicShiftHint` on, start unrelated work in a long session, pick Clear, and check the conversation clears and the prompt comes back (Q4).
 
-Not built: the full §3 advisor (break-even rule, task-done / unrelated-prompt detection, its buttons), and cleanup of F4's output files (the plugin API has no file delete).
+Not built: the full §3 advisor (break-even rule, task-done detection, its buttons), and cleanup of F4's output files (the plugin API has no file delete).
 
 | Piece | State |
 |---|---|

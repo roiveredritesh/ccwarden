@@ -125,6 +125,7 @@ Change them in `/config` under the ccwarden plugin. These are the ones you're mo
 | `monthlyBudgetUsd` | `0` (off) | Turns on month tracking and budget toasts |
 | `handoffDir` | `.claude/handoffs` | Point it at a synced folder to continue on another machine |
 | `keepWarm` | `false` | Experimental, metered only |
+| `topicShiftHint` | `false` | Experimental: before a prompt that looks like new work in a long session, offer to `/clear` first |
 
 The full list, with descriptions, is in [`mod/.claude-plugin/plugin.json`](mod/.claude-plugin/plugin.json).
 
