@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { SNAPSHOT_TAG } from './snapshot'
 
 // Session facts for the snapshot (F3) and handoffs (F7): the user's verbatim
 // asks, the files edited, and the latest TodoWrite list. Ported from
@@ -102,9 +103,10 @@ export function collectFromMessages(messages: readonly SessionMessage[]): Sessio
   return facts.done()
 }
 
+/** A prior snapshot is ccwarden's own message, not an ask: keeping it nests snapshots. */
 function cleanAsk(text: string | null): string | null {
   const trimmed = text?.trim() ?? ''
-  return trimmed === '' || trimmed.startsWith('<') ? null : trimmed
+  return trimmed === '' || trimmed.startsWith('<') || trimmed.startsWith(SNAPSHOT_TAG) ? null : trimmed
 }
 
 class FactsBuilder {

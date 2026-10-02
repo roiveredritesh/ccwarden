@@ -110,6 +110,7 @@ describe('transcript facts', () => {
     user([{ type: 'tool_result', content: 'ok' }]),
     tool('a2', 'TodoWrite', { todos: TODOS }),
     user('This session is being continued... summary', { isCompactSummary: true }),
+    user('[ccwarden snapshot] This conversation was compacted...\n\n## Goal (first request)\nFix the login timeout bug'),
     user('also keep the old cookie name for backwards compat'),
     tool('a3', 'Write', { file_path: '/p/test/auth.test.ts' }),
     tool('a4', 'Edit', { file_path: '/p/src/auth.ts' }),
@@ -143,6 +144,7 @@ describe('transcript facts', () => {
       msg('assistant', '', { toolUses: [use('Edit', { file_path: '/p/a.ts' }), use('TodoWrite', { todos: TODOS })] }),
       msg('user', 'ok', { toolResults: [{ tool_use_id: 'Edit', text: 'ok' }] as never }),
       msg('user', '<command-name>/model</command-name>'),
+      msg('user', '[ccwarden snapshot] This conversation was compacted...'),
       msg('assistant', '', { toolUses: [use('NotebookEdit', { notebook_path: '/p/n.ipynb' })] }),
       msg('user', 'now the tests'),
     ])
@@ -312,8 +314,8 @@ describe('T3 snapshot', () => {
     expect(keptTail(messages, 5)).toEqual({ tail: [], turns: 0 })
     const unhandled = [...messages.slice(0, 5), { ...messages[5]!, handle: undefined }]
     expect(keptTail(unhandled, 10_000).turns).toBe(0)
-    // tool results and wrappers don't start a turn
-    const withTools = [msg('user', 'go'), msg('assistant', ''), msg('user', '', { toolResults: [{ tool_use_id: 't', text: 'r' }] as never }), msg('user', '<command-name>/model</command-name>')]
+    // tool results, wrappers and a prior snapshot don't start a turn
+    const withTools = [msg('user', 'go'), msg('assistant', ''), msg('user', '', { toolResults: [{ tool_use_id: 't', text: 'r' }] as never }), msg('user', '<command-name>/model</command-name>'), msg('user', '[ccwarden snapshot] earlier facts')]
     expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1 })
   })
 

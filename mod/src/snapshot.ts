@@ -22,6 +22,8 @@ export type SnapshotFacts = {
   lastAnswer?: string
 }
 
+/** Opens every snapshot message; transcript.ts drops it from the asks so snapshots don't nest. */
+export const SNAPSHOT_TAG = '[ccwarden snapshot]'
 export const SNAPSHOT_MAX_CHARS = 6_000
 const RECENT_ASKS = 5
 const MAX_FILES = 40
@@ -75,7 +77,7 @@ export function snapshotText(f: SnapshotFacts, opts: { cwd?: string; maxChars?: 
 
   const kept = opts.keptTurns === 0 ? 'No earlier turns were kept.' : `The last ${opts.keptTurns === 1 ? 'turn follows' : `${opts.keptTurns} turns follow`} verbatim.`
   const header =
-    '[ccwarden snapshot] This conversation was compacted by ccwarden without a summary, to save tokens. ' +
+    `${SNAPSHOT_TAG} This conversation was compacted by ccwarden without a summary, to save tokens. ` +
     `The facts below are quoted from the session transcript; the user's words are verbatim. ${kept}`
   return cut(`${header}\n\n${sections.join('\n\n')}`, max)
 }
@@ -131,7 +133,7 @@ export function summaryInstructions(instructions: string | undefined, text: stri
 
 function isPrompt(m: SessionMessage): boolean {
   const text = m.text.trim()
-  return m.role === 'user' && (m.toolResults?.length ?? 0) === 0 && text !== '' && !text.startsWith('<')
+  return m.role === 'user' && (m.toolResults?.length ?? 0) === 0 && text !== '' && !text.startsWith('<') && !text.startsWith(SNAPSHOT_TAG)
 }
 
 function size(messages: readonly SessionMessage[]): number {
