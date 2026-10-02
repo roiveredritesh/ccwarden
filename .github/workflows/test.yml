@@ -20,6 +20,19 @@ jobs:
         working-directory: hooks-edition
         run: node --test "test/*.test.js"
 
+  setup:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Installer tests
+        run: node --test "setup/test/*.test.js"
+
   mod:
     runs-on: ${{ matrix.os }}
     strategy:

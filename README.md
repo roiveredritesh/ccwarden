@@ -61,19 +61,15 @@ One plugin for the Claude Code CLI and the Desktop app's Code tab. Planned first
 4. **Subagent guard**: pins subagents to a cheaper model, caps their report size and how many run at once.
 5. **Cold-cache guard + keep-warm** for the active session only.
 
-Try it:
+Set it up (Node 18+). This loads the mod in the CLI and the Desktop app's Code tab, and sets the engine's own compaction window to 300000 as a safety net for very long turns. Each setting is explained as it is written, a backup is kept, and `--uninstall` puts your old values back:
 
 ```bash
-claude --plugin-dir ./mod
+node setup/setup.js --dry-run              # show what it would change, and why
+node setup/setup.js --project ~/my-repo    # also adds "# Compact instructions" to that repo's CLAUDE.md
+node setup/setup.js --uninstall
 ```
 
-The mod compacts at turn end, and the engine can't compact mid-turn. So set the engine's own auto-compaction window to the largest per-model limit as a safety net for one very long turn. Put this in the `env` block of `~/.claude/settings.json`:
-
-```json
-{ "env": { "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000" } }
-```
-
-For the Desktop app's Code tab, add `"CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/ccwarden/mod"` to the same `env` block.
+Opt-in flags: `--subagent-model haiku`, `--cache-ttl 1h` (only when your breaks often pass 5 minutes) and `--no-prompt-suggestions`. Or just try it for one session with `claude --plugin-dir ./mod`.
 
 ## Privacy
 

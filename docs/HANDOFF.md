@@ -4,7 +4,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 
 ## 1. Where things stand
 
-**M1 code is complete (T0–T7, 2026-10-02).** What's left before M1's exit check (SPEC §8) is live:
+**M1 and M2 code is complete (M1 T0–T7, M2-T1–T4, 2026-10-02).** M2 added handoffs, the background spend watcher, model/effort advice and the `setup/` installer (§5b). What's left before M1's exit check (SPEC §8) is live:
 
 1. Run `probe/` on the metered and window machines, terminal and Desktop, and fill in SPEC §9: Q1–Q3, Q5–Q8, Q10, Q13.
 2. Use the mod for a week.
@@ -226,7 +226,7 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 
 **M2-T3. F9, model/effort advisor.** *Done 2026-10-02* (SPEC F9 "As built"). At session start, before the first prompt (when a switch is free), suggest a cheaper model for routine work. A lower `/effort` is cache-safe on Opus 5.5, Sonnet 5.5 and Fable 5.1. No guard on `/model` (rejected in §3). The handoff note names the suggested model.
 
-**M2-T4. F12, setup profile.** A Node installer outside the mod, so it can also set `CLAUDE_CODE_PLUGIN_DIRS`. It writes and explains each setting, with `--dry-run`, a backup and `--uninstall`. Only settings that are documented, or present in the pinned binary and listed in SPEC §9.
+**M2-T4. F12, setup profile.** *Done 2026-10-02* (`setup/setup.js`, SPEC F12 "As built"; CI runs its tests). A Node installer outside the mod, so it can also set `CLAUDE_CODE_PLUGIN_DIRS`. It writes and explains each setting, with `--dry-run`, a backup and `--uninstall`. Only settings that are documented, or present in the pinned binary and listed in SPEC §9.
 
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 

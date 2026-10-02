@@ -10,6 +10,7 @@ Cost and context guard for Claude Code. Two editions:
 ## Commands
 
 - Hooks edition tests: `cd hooks-edition && node --test "test/*.test.js"`
+- Setup profile (F12): `node setup/setup.js --dry-run` · tests: `node --test "setup/test/*.test.js"`
 - Mod: `claude plugin validate mod` · `claude plugin test mod` · run with `claude --plugin-dir ./mod`
 - Day-one probe (dev only, T0): `claude plugin validate probe` · `claude plugin test probe` · run with `claude --plugin-dir ./mod --plugin-dir ./probe`, then `/cw-probe`
 - Mod API reference: load the `plugin-authoring` skill. Once the mod has loaded, its types are in `mod/.claude-plugin/types/` (gitignored, written by the engine).
