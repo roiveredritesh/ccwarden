@@ -1034,7 +1034,7 @@ describe('F9 model and effort advice', () => {
     on('classic.PreModelSwitch', () => ({}))
     const out = await sw('claude-haiku-4-5-20251001', 180_000)
     expect(out.permissionDecision).toBeUndefined()
-    expect(w.logs).toEqual(["ccwarden: 180k tokens is past claude-haiku-4-5-20251001's 120k limit, so the switch re-reads it all and then compacts at the next turn end. Cheaper: /handoff, then start a new session on that model."])
+    expect(w.logs).toEqual(["ccwarden: 180k tokens is past claude-haiku-4-5-20251001's 120k limit. If you switch, it re-reads it all (≈ $0.20 est.) and then compacts. Cheaper: /handoff, then start a new session on that model."])
     await sw('claude-opus-5-5', 180_000)
     expect(w.logs).toHaveLength(1)
   })
