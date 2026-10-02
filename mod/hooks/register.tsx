@@ -853,6 +853,9 @@ async function askBilling($: $, config: Config): Promise<Billing | undefined> {
   $.ui.log(saved.deny === undefined
     ? `ccwarden: billing set to ${billing} for this machine (change it in /config).`
     : `ccwarden: couldn't save billing (${saved.deny}); set it in /config.`)
+  // `config` is the load-time snapshot every hook closes over: use the answer now, not at the next load.
+  config.billing = billing
+  await refreshStatus($, config)
   return billing
 }
 
