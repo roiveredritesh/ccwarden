@@ -34,6 +34,7 @@ export type Config = {
   handoffDir: string
   handoffOnCompact: boolean
   handoffMaxUsd: number
+  backgroundWatch: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -62,6 +63,7 @@ export const DEFAULTS: Config = {
   handoffDir: '.claude/handoffs',
   handoffOnCompact: false,
   handoffMaxUsd: 0.5,
+  backgroundWatch: true,
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -110,6 +112,7 @@ export function readConfig(options: PluginOptions): Config {
     handoffDir: typeof options.handoffDir === 'string' && options.handoffDir.trim() !== '' ? options.handoffDir.trim() : DEFAULTS.handoffDir,
     handoffOnCompact: bool('handoffOnCompact'),
     handoffMaxUsd: num('handoffMaxUsd'),
+    backgroundWatch: bool('backgroundWatch'),
   }
 }
 

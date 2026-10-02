@@ -863,3 +863,70 @@ describe('F7 handoff', () => {
     expect(w.forks).toEqual([])
   })
 })
+
+describe('F8 background spend watcher', () => {
+  const sent = (origin: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ text: 'tick', wait: false, origin: origin as never, ...extra })
+  const bgTurn = { ...turnDone(), usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } } // $0.20
+
+  async function backgroundTurn($: Engine, origin: Record<string, unknown>) {
+    await $.prompt.submit(sent(origin))
+    await $.turn.start({ text: 'tick', turnId: 'b' })
+    await $.turn.complete(bgTurn)
+  }
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`each kind is named once with its cost and how to stop it; the total stays in the status (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface] })
+        await $.session.start(start(surface))
+
+        await backgroundTurn($, { kind: 'scheduled-trigger' })
+        await w.clock.advance(61 * MIN) // past R9's hour, so only the once-per-kind rule holds a repeat back
+        await backgroundTurn($, { kind: 'scheduled-trigger' })
+        expect(w.toasts).toEqual(['ccwarden: a turn started by a scheduled task or /loop cost ~$0.20 (est.). To stop these, delete the scheduled tasks or loops you no longer need.'])
+        expect(w.status.at(-1)).toContain('background $0.40')
+      })
+    }
+  }
+
+  test("the user's own turns don't count: typed, from a phone, or the SDK host's", { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    for (const kind of ['composer', 'bridge', 'sdk']) await backgroundTurn($, { kind })
+    expect(w.toasts).toEqual([])
+    expect(w.status.at(-1)).not.toContain('background')
+  })
+
+  test("a delivery folded into the user's running turn isn't a turn of its own", { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit({ text: 'mine', wait: false, origin: { kind: 'composer' } })
+    await $.turn.start({ text: 'mine', turnId: 't' })
+    await $.prompt.submit(sent({ kind: 'peer' }, { turnId: 't' }))
+    await $.turn.complete(bgTurn)
+    await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } }) // the next turn is the user's
+    await $.turn.start({ text: 'next', turnId: 't2' })
+    await $.turn.complete(bgTurn)
+    expect(w.toasts).toEqual([])
+  })
+
+  test('queued prompts are told apart: a background one and the user\'s, each to its own turn', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(sent({ kind: 'scheduled-trigger' }))
+    await $.prompt.submit({ text: 'mine', wait: false, origin: { kind: 'composer' } })
+    await $.turn.start({ text: 'tick', turnId: 'b' })
+    await $.turn.complete(bgTurn)
+    await $.turn.start({ text: 'mine', turnId: 'm' })
+    await $.turn.complete(bgTurn)
+    expect(w.toasts).toHaveLength(1)
+    expect(w.status.at(-1)).toContain('background $0.20')
+  })
+
+  test('backgroundWatch off: nothing', { options: { billing: 'metered', backgroundWatch: false } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await backgroundTurn($, { kind: 'peer' })
+    expect(w.toasts).toEqual([])
+  })
+})
