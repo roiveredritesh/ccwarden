@@ -76,7 +76,9 @@ function world(on: On, opts: {
     value: { startedAt: 0, context: { tokens: usage.tokens, window: usage.window }, rateLimits: usage.rateLimits, cost: { usd: usage.usd } },
   }))
   on('settings.read', () => ({ value: opts.settings ?? {} }))
-  const file = (path: string) => opts.files?.[path] ?? opts.transcript
+  // The engine hands fs hooks a native path (`D:\p\x` on Windows); the fixtures are keyed `/p/x`.
+  const posix = (path: string) => path.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+  const file = (path: string) => opts.files?.[posix(path)] ?? opts.transcript
   on('fs.stat', (_$, e) => {
     const text = file(e.path)
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
@@ -87,7 +89,7 @@ function world(on: On, opts: {
   })
   on('fs.write', (_$, e) => {
     if (opts.isWriteRefused) return Promise.reject(new Error('EACCES'))
-    shown.writes.push({ path: e.path, text: e.text })
+    shown.writes.push({ path: posix(e.path), text: e.text })
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'sess1' }))
@@ -95,7 +97,7 @@ function world(on: On, opts: {
   on('ui.copy', (_$, e) => { shown.copied.push({ text: e.text, surface: e.surface }); return { value: { isCopied: true } } })
   on('session.root', () => ({ value: '/p' }))
   on('fs.list', (_$, e) => {
-    const dir = `${e.path}/`
+    const dir = `${posix(e.path)}/`
     const names = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
     return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })) }
   })

@@ -16,6 +16,7 @@ import { cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts }
 import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
+import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
 import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, trimmedOutput } from '../src/junk'
@@ -657,8 +658,8 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
     }
   }
   const root = await $.session.root()
-  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : `${root}/${config.handoffDir}`
-  const path = `${dir}/${handoffFileName(now, handoffTopic(facts.goal ?? facts.asks[0]))}`
+  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : joinPath(root, config.handoffDir)
+  const path = joinPath(dir, handoffFileName(now, handoffTopic(facts.goal ?? facts.asks[0])))
   const modelLine = config.modelAdvisor ? handoffModelLine(model) : undefined
   const text = handoffMarkdown({ ...facts, model, writtenAt: now }, { cwd: root, full, modelLine })
   const written = await $.fs.write(path, text).then(() => true, () => false)
@@ -672,16 +673,18 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
 async function offerHandoff($: $, config: Config): Promise<void> {
   if ((await $.session.surfaces()).length === 0) return
   const root = await $.session.root()
-  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : `${root}/${config.handoffDir}`
+  const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : joinPath(root, config.handoffDir)
   const entries = await $.fs.list(dir).catch(() => [])
   const offered = ((await $.store.get(HANDOFFS_OFFERED_KEY)) as string[] | undefined) ?? []
-  const name = newestUnread(entries.filter(f => f.kind === 'file').map(f => f.name), offered.filter(p => p.startsWith(`${dir}/`)).map(p => p.slice(dir.length + 1)))
+  const dirPrefix = joinPath(dir, '')
+  const name = newestUnread(entries.filter(f => f.kind === 'file').map(f => f.name), offered.filter(p => p.startsWith(dirPrefix)).map(p => p.slice(dirPrefix.length)))
   if (name === undefined) return
-  const path = `${dir}/${name}`
+  const path = joinPath(dir, name)
   await $.store.set(HANDOFFS_OFFERED_KEY, [...offered, path].slice(-200))
   const answer = await $.ui.ask(`ccwarden: continue from the handoff ${name}?`, { header: 'Handoff', options: [HANDOFF_CONTINUE, 'Not now'] }).catch(() => undefined)
   if (answer !== HANDOFF_CONTINUE) return
-  const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+  const rootPrefix = joinPath(root, '')
+  const rel = path.startsWith(rootPrefix) ? path.slice(rootPrefix.length) : path
   await $.prompt.fill({ text: pickupPrompt(rel), mode: 'replace' })
 }
 
