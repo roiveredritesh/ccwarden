@@ -17,6 +17,10 @@ import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
 import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
+import { addSpend, costDelta, dayKey } from '../src/ledger'
+import type { Ledger } from '../src/ledger'
+import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '../src/hogs'
+import type { HogDays } from '../src/hogs'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
 import { formatStatus } from '../src/status'
@@ -35,7 +39,8 @@ import { fiveHour, trackWindow } from '../src/window'
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
 // per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
-// F8 (the background spend watcher), F9 (model and effort advice), the first-run billing question, the R9 toast budget, and the transcript path
+// F8 (the background spend watcher), F9 (model and effort advice), the
+// M3 spend ledger and context hogs, the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -63,6 +68,8 @@ const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024 // what one $.fs.read takes
 const JUNK_LOG_KEY = 'junkLog' // $.store: what the junk guard did or would have done
 const HANDOFFS_OFFERED_KEY = 'handoffsOffered' // $.store: handoff paths already offered at a start
 const HANDOFF_CONTINUE = 'Continue from handoff'
+const LEDGER_KEY = 'ledger' // $.store: this machine's est. spend per day (M3)
+const HOG_DAYS_KEY = 'hogDays' // $.store: the day's biggest tool results (F10)
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -81,6 +88,8 @@ export const register: Register = (on, options) => {
       const reading = fiveHour(usage.rateLimits)
       await $.state.set(conversation, {
         alerted: alertStep(config, { usd: usage.cost?.usd }),
+        // A resumed conversation's earlier spend was counted when it happened.
+        ledgerUsd: usage.cost?.usd ?? 0,
         ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }),
       })
     }
@@ -132,7 +141,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       const reading = fiveHour((await $.session.usage()).rateLimits)
-      await $.state.set(conversation, { alerted: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
+      await $.state.set(conversation, { alerted: 0, ledgerUsd: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
       $.clock.after(0, () => void refreshStatus($, config))
     }
     return next(e)
@@ -142,9 +151,14 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     const reading = fiveHour(e.rateLimits)
     let due: string | undefined
+    let spent = 0
     const conv = await update($, conversation, prev => {
       const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
       if (reading !== undefined) c.window = trackWindow(c.window, reading)
+      if (e.cost !== undefined) {
+        spent = costDelta(c.ledgerUsd, e.cost.usd)
+        c.ledgerUsd = e.cost.usd
+      }
       const figures = { usd: e.cost?.usd, chatPct: c.window?.chatPct }
       const step = alertStep(config, figures)
       if (step < c.alerted) c.alerted = step // the conversation started over
@@ -156,8 +170,18 @@ export const register: Register = (on, options) => {
       return c
     })
     if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
+    if (spent > 0) await recordSpend($, spent)
     await refreshStatus($, config, conv)
     return result
+  })
+
+  // F10: every main-loop tool result big enough to matter, for the dashboard.
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId !== undefined || ran.deny !== undefined) return ran
+    const tokens = estimateTokens(ran.text ?? JSON.stringify(ran.result ?? ''))
+    if (tokens >= HOG_MIN_TOKENS) await recordHog($, { tool: String(e.tool), target: hogTarget(e as unknown as Record<string, unknown>), tokens })
+    return ran
   })
 
   // F2: before a typed prompt goes out over a cold cache with a large
@@ -388,6 +412,19 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
     lastError: lastError(messages),
     lastAnswer: lastAnswer(messages),
   }
+}
+
+/** M3: adds spend to today's line of this machine's ledger. */
+async function recordSpend($: $, usd: number): Promise<void> {
+  const day = dayKey(await $.clock.now())
+  await $.store.set(LEDGER_KEY, addSpend((await $.store.get(LEDGER_KEY)) as Ledger | undefined, day, usd))
+}
+
+/** F10: a big tool result, into the conversation's top list and today's tally. */
+async function recordHog($: $, hog: { tool: string; target: string; tokens: number }): Promise<void> {
+  await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), hogs: topHogs(prev?.hogs, hog) }))
+  const day = dayKey(await $.clock.now())
+  await $.store.set(HOG_DAYS_KEY, tallyHog((await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined, day, hog))
 }
 
 /** F8: adds a background turn's cost; names its kind in a toast once per conversation. */

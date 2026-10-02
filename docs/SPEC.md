@@ -278,7 +278,7 @@ It never blocks and adds nothing to context.
 
 **F10. `/cw` dashboard and context hogs.**
 
-- **Hogs:** every tool result is recorded with its estimated tokens. The top hogs per session and per month feed the dashboard and tune the F4 thresholds.
+- **Hogs:** every tool result is recorded with its estimated tokens. The top hogs per session and per month feed the dashboard and tune the F4 thresholds. *(As built, M3-T1: main-loop results of ≥ 2k est. tokens (characters / 4); the session's top 20 in `$.state`, a per-day tally in `$.store`, 31 days.)*
 - **Pane:**
   - this session: context, cache hits, rebuilds with their cause, compactions, subagents
   - guard savings
@@ -288,7 +288,7 @@ It never blocks and adds nothing to context.
 
 **F11. Month tracking** (`metered`).
 
-- **Total:** the month-to-date estimate, calibrated with `/cw spent <amount>`.
+- **Total:** the month-to-date estimate, calibrated with `/cw spent <amount>`. *(As built, M3-T1: a per-UTC-day ledger in `$.store` from each conversation's engine total; resumes and reloads start from their current total, so nothing is counted twice.)*
 - **Toasts:** at 50%, 80% and 100% of `monthlyBudgetUsd`, with a projection ("at this pace $118 by month end"). The total is not in the status line, which stays per conversation.
 
 **F12. Setup profile (installer).** It writes and explains each setting:

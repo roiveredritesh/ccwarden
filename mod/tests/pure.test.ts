@@ -10,6 +10,8 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { addSpend, calibrate, costDelta, LEDGER_DAYS, monthToDate, projectMonth } from '../src/ledger'
+import { hogsOver, hogTarget, tallyHog, topHogs } from '../src/hogs'
 import { handoffModelLine, isEffortCacheSafe, startAdvice, switchNote } from '../src/advisor'
 import { backgroundSource, backgroundToast } from '../src/background'
 import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
@@ -488,5 +490,50 @@ describe('M2 F9 advisor', () => {
     expect(handoffModelLine('opus')).toContain('start on haiku')
     expect(switchNote({ toModel: 'h', contextTokens: 100, limit: 200 })).toBeUndefined()
     expect(switchNote({ toModel: 'h', contextTokens: 201_000, limit: 120_000 })).toContain("201k tokens is past h's 120k limit")
+  })
+})
+
+describe('M3 ledger', () => {
+  const at = (iso: string) => Date.parse(iso)
+  test('deltas: the rise, or all of it when the total started over', () => {
+    expect(costDelta(undefined, 1.5)).toBe(1.5)
+    expect(costDelta(1, 1.5)).toBe(0.5)
+    expect(costDelta(3, 0.2)).toBe(0.2)
+  })
+  test('days add up, old ones drop', () => {
+    let l = addSpend(undefined, '2026-10-01', 1)
+    l = addSpend(l, '2026-10-01', 0.5)
+    l = addSpend(l, '2026-10-02', 2)
+    expect(l.days).toEqual({ '2026-10-01': 1.5, '2026-10-02': 2 })
+    for (let i = 0; i < LEDGER_DAYS + 5; i++) l = addSpend(l, `2027-01-${String(i).padStart(3, '0')}`, 1)
+    expect(Object.keys(l.days)).toHaveLength(LEDGER_DAYS)
+  })
+  test('month to date, and after a /cw spent calibration', () => {
+    let l = addSpend(addSpend(undefined, '2026-09-30', 50), '2026-10-01', 10)
+    expect(monthToDate(l, at('2026-10-02T00:00:00Z'))).toBe(10)
+    l = calibrate(l, 42, at('2026-10-02T00:00:00Z')) // the real figure was higher (other surfaces)
+    l = addSpend(l, '2026-10-02', 3)
+    expect(monthToDate(l, at('2026-10-02T12:00:00Z'))).toBe(45)
+    expect(monthToDate(l, at('2026-11-01T12:00:00Z'))).toBe(0) // a new month: the calibration no longer applies
+  })
+  test('projection at this pace', () => {
+    expect(projectMonth(10, at('2026-10-11T00:00:00Z'))).toBe(31) // 10 days in, 31-day month
+    expect(projectMonth(5, at('2026-10-01T06:00:00Z'))).toBe(5) // too early to project
+  })
+})
+
+describe('M3 hogs', () => {
+  test('target, top list, tallies over days', () => {
+    expect(hogTarget({ file_path: '/a.ts', command: 'x' })).toBe('/a.ts')
+    expect(hogTarget({ command: 'y'.repeat(200) })).toHaveLength(120)
+    expect(hogTarget({})).toBe('')
+    const hog = (tokens: number) => ({ tool: 'Read', target: `/f${tokens}`, tokens })
+    expect(topHogs([hog(5), hog(9)], hog(7), 2).map(h => h.tokens)).toEqual([9, 7])
+    let days = tallyHog(undefined, '2026-10-01', hog(5))
+    days = tallyHog(days, '2026-10-01', hog(5))
+    days = tallyHog(days, '2026-10-02', hog(3))
+    days = tallyHog(days, '2026-09-30', hog(100))
+    expect(hogsOver(days, '2026-10')).toEqual([{ tool: 'Read', target: '/f5', tokens: 10 }, { tool: 'Read', target: '/f3', tokens: 3 }])
+    expect(hogsOver(days, '', 1)).toEqual([{ tool: 'Read', target: '/f100', tokens: 100 }])
   })
 })
