@@ -24,7 +24,25 @@ ccwarden shows these as they happen. Where it can do so without breaking the pro
 
 ## Quick start
 
-You need Node 18+ (for setup only) and a Claude Code version with plugin support.
+### Requirements
+
+- **Claude Code 2.1.287 or later** (check with `claude --version`). The plugin is built and tested against the function-hook API as it ships in 2.1.287. That API is early access, so a later release can break it; if one does, please [open an issue](https://github.com/roiveredritesh/ccwarden/issues).
+- **Function hooks switched on.** Claude Code loads function-hook plugins only when `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set. Add it to the `env` block of `~/.claude/settings.json` so it applies to the CLI and the Desktop app:
+
+  ```json
+  {
+    "env": {
+      "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
+    }
+  }
+  ```
+
+  For a one-off try, setting it in your shell is enough: `export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` (PowerShell: `$env:CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"`).
+- **Node 18+**, for the setup script only.
+
+The hooks edition (below) doesn't need the env var: it uses only documented hooks and the status line.
+
+### Install
 
 ```bash
 git clone https://github.com/roiveredritesh/ccwarden && cd ccwarden
@@ -36,6 +54,8 @@ claude --plugin-dir ./mod
 node setup/setup.js --dry-run     # shows each change and why
 node setup/setup.js
 ```
+
+To check that it loaded, run `claude plugin list`: `ccwarden` should show `Status: ✔ loaded`.
 
 On the first start, the plugin asks once how this machine is billed: **metered** (API key or usage-billed, shown in $) or **window** (Pro/Max/Team, shown as a % of the 5-hour window).
 
