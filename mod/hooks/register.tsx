@@ -146,7 +146,7 @@ export const register: Register = (on, options) => {
   // only a note when the context is past the new model's limit.
   on('classic.PreModelSwitch', async ($, e, next) => {
     if (config.modelAdvisor) {
-      const note = switchNote({ toModel: e.to_model, contextTokens: e.context_tokens, limit: limitFor(e.to_model, config) })
+      const note = switchNote({ toModel: e.to_model, contextTokens: e.context_tokens, limit: limitFor(e.to_model, config), writeUsd: e.estimated_cache_write_usd })
       if (note !== undefined) $.ui.log(note)
     }
     return next(e)

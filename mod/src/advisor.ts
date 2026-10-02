@@ -48,11 +48,13 @@ export function handoffModelLine(model: string): string | undefined {
  * Before a model switch: when the context is past the new model's limit,
  * say it will be compacted at the next turn end, and the cheaper route.
  */
-export function switchNote(f: { toModel: string; contextTokens: number; limit: number }): string | undefined {
+/** Said before the switch is confirmed (PreModelSwitch also fires for a picker that is then cancelled), so it says "if". */
+export function switchNote(f: { toModel: string; contextTokens: number; limit: number; writeUsd?: number }): string | undefined {
   if (f.contextTokens <= f.limit) return undefined
+  const cost = f.writeUsd === undefined ? '' : ` (≈ $${f.writeUsd.toFixed(2)} est.)`
   return (
-    `ccwarden: ${Math.round(f.contextTokens / 1000)}k tokens is past ${f.toModel}'s ${Math.round(f.limit / 1000)}k limit, ` +
-    'so the switch re-reads it all and then compacts at the next turn end. Cheaper: /handoff, then start a new session on that model.'
+    `ccwarden: ${Math.round(f.contextTokens / 1000)}k tokens is past ${f.toModel}'s ${Math.round(f.limit / 1000)}k limit. ` +
+    `If you switch, it re-reads it all${cost} and then compacts. Cheaper: /handoff, then start a new session on that model.`
   )
 }
 
