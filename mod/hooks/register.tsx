@@ -901,7 +901,8 @@ async function notify($: $, priority: Priority, text: string, timeoutMs = 10_000
     return verdict.times
   })
   if (isShown) {
-    $.ui.toast(text, { timeoutMs })
+    // A toast is already shown under the plugin's name, so drop our own prefix.
+    $.ui.toast(text.replace(/^ccwarden: /, ''), { timeoutMs })
   } else {
     await $.state.set(heldNote, { text, priority, at: now })
     $.ui.log(`ccwarden: toast held (R9, ${TOASTS_PER_HOUR}/hour): ${text}`, { to: 'debug' })

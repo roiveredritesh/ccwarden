@@ -258,7 +258,7 @@ describe('TTL inference', () => {
     await $.turn.complete(turnDone())
     await w.clock.advance(10 * MIN)
     expect(w.status.at(-1)).toContain('cache ● 50m')
-    expect(w.toasts).toEqual(['ccwarden: cache writes use a 1h TTL, but billing is set to metered. Check billing in /config.'])
+    expect(w.toasts).toEqual(['cache writes use a 1h TTL, but billing is set to metered. Check billing in /config.'])
 
     await $.turn.complete(turnDone()) // re-read after 10 min: no second toast
     expect(w.toasts).toHaveLength(1)
@@ -991,7 +991,7 @@ describe('F8 background spend watcher', () => {
         await backgroundTurn($, { kind: 'scheduled-trigger' })
         await w.clock.advance(61 * MIN) // past R9's hour, so only the once-per-kind rule holds a repeat back
         await backgroundTurn($, { kind: 'scheduled-trigger' })
-        expect(w.toasts).toEqual(['ccwarden: a turn started by a scheduled task or /loop cost ~$0.20 (est.). To stop these, delete the scheduled tasks or loops you no longer need.'])
+        expect(w.toasts).toEqual(['a turn started by a scheduled task or /loop cost ~$0.20 (est.). To stop these, delete the scheduled tasks or loops you no longer need.'])
         expect(w.status.at(-1)).toContain('background $0.40')
       })
     }
@@ -1046,7 +1046,7 @@ describe('F9 model and effort advice', () => {
         const w = world(on, { surfaces: [surface], model: 'claude-opus-5-5' })
         await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl', model: 'claude-opus-5-5' })
         await w.clock.advance(0)
-        expect(w.toasts).toEqual(['ccwarden: Routine work? Per token, Sonnet 50%, Haiku 25% of Opus. Switching now (/model haiku) is free: nothing is cached before the first prompt. For routine steps later, a lower /effort keeps the cache on this model.'])
+        expect(w.toasts).toEqual(['Routine work? Per token, Sonnet 50%, Haiku 25% of Opus. Switching now (/model haiku) is free: nothing is cached before the first prompt. For routine steps later, a lower /effort keeps the cache on this model.'])
       })
     }
   }
@@ -1149,7 +1149,7 @@ describe('F11 month tracking and budget mode', () => {
       await $.session.start(start(surface))
       w.usage.usd = 6
       await $.session.measure(measure(w))
-      expect(w.toasts).toEqual(['ccwarden: $51.00 of your $100 month budget so far (51%, est.). At this pace, ~$158 by month end.'])
+      expect(w.toasts).toEqual(['$51.00 of your $100 month budget so far (51%, est.). At this pace, ~$158 by month end.'])
       w.usage.usd = 7
       await $.session.measure(measure(w))
       expect(w.toasts).toHaveLength(1)
@@ -1158,8 +1158,8 @@ describe('F11 month tracking and budget mode', () => {
       w.usage.usd = 37
       await $.session.measure(measure(w))
       expect(w.toasts.slice(1)).toEqual([
-        'ccwarden: $82.00 of your $100 month budget so far (82%, est.). At this pace, ~$254 by month end.',
-        'ccwarden: budget mode on (the month is at 82% of its budget): a stricter junk guard and earlier window alerts. /cw budget off to stop it.',
+        '$82.00 of your $100 month budget so far (82%, est.). At this pace, ~$254 by month end.',
+        'budget mode on (the month is at 82% of its budget): a stricter junk guard and earlier window alerts. /cw budget off to stop it.',
       ])
       expect(w.status.at(-1)).toContain('budget mode')
 
@@ -1210,7 +1210,7 @@ describe('F11 month tracking and budget mode', () => {
     await $.session.start(start('terminal'))
     w.usage.rateLimits = [fiveHour(81)]
     await $.session.measure(measure(w))
-    expect(w.toasts.at(-1)).toBe('ccwarden: budget mode on (the 5h window is at 81%): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
+    expect(w.toasts.at(-1)).toBe('budget mode on (the 5h window is at 81%): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
   })
 })
 
