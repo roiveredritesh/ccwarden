@@ -12,7 +12,7 @@ import { avoidedRebuild, PING_PROMPT, pingUsd, pingVerdict, TICK_MS } from '../s
 import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread, pickupPrompt } from '../src/handoff'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
-import { cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
+import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
 import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
@@ -29,7 +29,7 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
-import { formatStatus } from '../src/status'
+import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
@@ -376,6 +376,34 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // F1: a turn's first request that re-cached the conversation is named in
+  // the status, with its likely cause. Watches the step's usage only; the
+  // request and the response pass through unchanged.
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    if (e.agentId !== undefined || e.index !== 0 || r.usage === null) return r
+    const usage = r.usage
+    const now = await $.clock.now()
+    const override = await ttlOverride($)
+    let miss: ReturnType<typeof cacheMiss>
+    const conv = await update($, conversation, prev => {
+      const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+      const { ttl } = inferTtl({ observed: c.observedTtl, override, billing: config.billing })
+      miss = cacheMiss({
+        read: usage.cache_read_input_tokens, write: usage.cache_creation_input_tokens, model: usage.model,
+        prevModel: c.lastStepModel, lastUseAt: lastCacheUse(c), now, ttl,
+        isCompacted: (c.compactions ?? 0) !== (c.compactionsSeen ?? 0),
+      })
+      c.lastMiss = miss
+      c.lastStepModel = usage.model
+      c.compactionsSeen = c.compactions ?? 0
+      return c
+    })
+    if (miss !== undefined) $.ui.log(`ccwarden: the cache missed (${miss.cause}); this request re-cached ${fmtTokens(miss.tokens)} tokens.`)
+    await refreshStatus($, config, conv)
+    return r
+  })
+
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) runtime.isTurnRunning = false
@@ -713,6 +741,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     now,
     isAlerted: conv.alerted > 0,
     keepWarm: conv.keepWarm,
+    miss: conv.lastMiss,
     isBudget: (await $.state.get(budgetModeRef)).value === true,
     backgroundUsd: conv.background?.usd,
     agents: {
