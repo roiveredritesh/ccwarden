@@ -36,6 +36,9 @@ function world(on: On, opts: {
     // What reached core's session.compact: the plugin passed it on.
     coreCompactions: [] as { trigger: string; instructions?: string; agentId?: string }[],
     commandsRun: [] as string[],
+    // $.agent.list(), and what reached core's agent.spawn.
+    agents: [] as { id: string; description: string; type: string; status: string }[],
+    spawned: [] as { subagentType: string; model?: string; prompt: string }[],
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -49,6 +52,12 @@ function world(on: On, opts: {
   on('fs.stat', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: opts.transcript.length, mtimeMs: 0, isLink: false } }))
   on('fs.read', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: opts.transcript }))
   on('session.cwd', () => ({ value: '/p' }))
+  on('agent.list', () => ({ value: shown.agents }))
+  on('agent.spawn', (_$, e) => {
+    shown.spawned.push({ subagentType: e.subagentType, model: e.model, prompt: e.prompt })
+    shown.agents.push({ id: `a${shown.agents.length + 1}`, description: e.description, type: e.subagentType, status: 'running' })
+    return { model: e.model ?? e.parentModel, agentId: `a${shown.agents.length}` }
+  })
   on('session.messages', () => ({ value: [] }))
   on('process.run', (_$, e) => {
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
@@ -418,4 +427,71 @@ describe('F3 per-model limits and snapshot compaction', () => {
     await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: history() })
     expect(w.coreCompactions).toEqual([{ trigger: 'auto', instructions: undefined, agentId: 'a1' }])
   })
+})
+
+describe('F5 subagent guard', () => {
+  const spawn = (subagentType: string, extra: Record<string, unknown> = {}) => ({
+    tool_use_id: `t-${subagentType}`, prompt: 'Find where sessions expire.', description: 'find expiry', subagentType,
+    provider: { plugin: 'engine', tier: 'core' } as const, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra,
+  })
+  const subTurn = (agentId: string, model = 'claude-haiku-4-5-20251001', input = 1_000_000) => ({
+    ...turnDone(model), agentId, usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model },
+  })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`Explore runs on Haiku with a report cap; the 4th parallel spawn is denied (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface] })
+        await $.session.start(start(surface))
+
+        for (const n of [1, 2, 3]) expect((await $.agent.spawn(spawn('Explore', { tool_use_id: `t${n}` }))).deny).toBeUndefined()
+        expect(w.spawned[0]!.model).toBe('haiku')
+        expect(w.spawned[0]!.prompt).toMatch(/^Find where sessions expire\.\n\n\[ccwarden\] Keep your final report to at most ~300 words/)
+        expect(w.logs).toContain('ccwarden: Explore subagent: model haiku, report capped at ~300 words.')
+
+        const fourth = await $.agent.spawn(spawn('Explore', { tool_use_id: 't4' }))
+        expect(fourth.deny).toBe('ccwarden: 3 subagents are already running (maxParallelAgents is 3). Wait for one to finish, or do this step yourself.')
+        expect(w.spawned).toHaveLength(3)
+
+        w.agents[0]!.status = 'completed'
+        expect((await $.agent.spawn(spawn('Explore', { tool_use_id: 't5' }))).deny).toBeUndefined()
+      })
+    }
+  }
+
+  test('allowlisted types and forks keep their model; the cap is never doubled', { options: { billing: 'metered', subagentAllowlist: 'Plan' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.agent.spawn(spawn('Plan', { model: 'opus' }))
+    await $.agent.spawn(spawn('general-purpose', { fork: true }))
+    expect(w.spawned.map(s => s.model)).toEqual(['opus', undefined])
+    const capped = w.spawned[0]!.prompt
+    await $.agent.spawn(spawn('Explore', { prompt: capped }))
+    expect(w.spawned[2]!.prompt).toBe(capped)
+  })
+
+  test('subagentGuard off: spawns pass untouched', { options: { billing: 'metered', subagentGuard: false, maxParallelAgents: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    expect((await $.agent.spawn(spawn('Explore'))).deny).toBeUndefined()
+    expect(w.spawned[0]).toEqual({ subagentType: 'Explore', model: undefined, prompt: 'Find where sessions expire.' })
+  })
+
+  for (const surface of SURFACES) {
+    test(`per-agent cost in the status, one toast past $1 (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { usd: 2 } })
+      await $.session.start(start(surface))
+      await $.agent.spawn(spawn('Explore'))
+
+      await $.turn.complete(subTurn('a1', 'claude-haiku-4-5-20251001', 400_000)) // $0.40
+      expect(w.status.at(-1)).toBe('Sonnet · ctx –/300k · cache – · this chat $2.00 · agents 1 running · $0.40')
+      expect(w.toasts).toEqual([])
+
+      await $.turn.complete(subTurn('a1', 'claude-haiku-4-5-20251001', 700_000)) // $1.10 in all
+      await $.turn.complete(subTurn('a1', 'claude-haiku-4-5-20251001', 100_000))
+      expect(w.toasts).toEqual(['⚠ A subagent (a1) has cost $1.10 so far (est.).'])
+      expect(w.status.at(-1)).toContain('agents 1 running · $1.20')
+      expect(w.status.at(-1)).toContain('cache –') // the main cache clock didn't move
+    })
+  }
 })

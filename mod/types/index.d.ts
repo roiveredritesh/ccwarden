@@ -22,6 +22,8 @@ export type CcwardenConversation = {
   ttlWarned?: boolean
   /** The conversation's first ask, kept across snapshot compactions (F3). */
   goal?: string
+  /** Subagents (F5): what each cost so far (est.), and which were warned about. */
+  agents?: { byId: Record<string, number>; warned: string[] }
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
 }

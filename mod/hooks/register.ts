@@ -1,6 +1,7 @@
 import { update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
+import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
 import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
@@ -23,8 +24,8 @@ import { fiveHour, trackWindow } from '../src/window'
 //
 // So far: F1 (the status line: model, context against the per-model limit,
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
-// (spend alerts), F3 (per-model limits and snapshot compaction), the
-// first-run billing question, the R9 toast budget, and the transcript path
+// (spend alerts), F3 (per-model limits and snapshot compaction), F5 (the
+// subagent guard and per-agent cost), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -105,9 +106,46 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // F5: pin the model, cap the report, cap how many run at once.
+  on('agent.spawn', async ($, e, next) => {
+    if (!config.subagentGuard) return next(e)
+    const plan = planSpawn(e, config, runningCount(await $.agent.list()))
+    if ('deny' in plan) {
+      $.ui.log(plan.deny)
+      return { deny: plan.deny }
+    }
+    const started = await next({ ...e, prompt: plan.prompt, ...(plan.model === undefined ? {} : { model: plan.model }) })
+    if (started.deny === undefined) $.ui.log(`ccwarden: ${e.subagentType} subagent: ${plan.notes.join(', ')}.`)
+    await refreshStatus($, config)
+    return started
+  })
+
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined) return result // a subagent's requests don't touch the main cache
+    if (e.agentId !== undefined) {
+      // A subagent's turn: its cost, and one toast if it passes AGENT_WARN_USD.
+      // Its requests don't touch the main cache.
+      const usd = e.usage === undefined ? undefined : turnUsd(e.usage)
+      if (usd === undefined) return result
+      const agentId = e.agentId
+      let total = 0
+      let isWarnDue = false
+      const conv = await update($, conversation, prev => {
+        const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+        const agents = { byId: { ...(c.agents?.byId ?? {}) }, warned: [...(c.agents?.warned ?? [])] }
+        total = (agents.byId[agentId] ?? 0) + usd
+        agents.byId[agentId] = total
+        if (total > AGENT_WARN_USD && !agents.warned.includes(agentId)) {
+          agents.warned.push(agentId)
+          isWarnDue = true
+        }
+        c.agents = agents
+        return c
+      })
+      if (isWarnDue) await notify($, 'spend', `⚠ A subagent (${agentId}) has cost $${total.toFixed(2)} so far (est.).`)
+      await refreshStatus($, config, conv)
+      return result
+    }
     const now = await $.clock.now()
     let pending: string | undefined
     const conv = await update($, conversation, prev => {
@@ -219,6 +257,10 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     fiveHour: fiveHour(usage.rateLimits),
     now,
     isAlerted: conv.alerted > 0,
+    agents: {
+      running: runningCount(await $.agent.list()),
+      usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
+    },
   }))
 }
 

@@ -6,7 +6,8 @@ import { familyOf } from './prices'
 // The status line (F1), one segment per fact:
 //   metered: Sonnet · ctx 140k/300k · cache ● 3m · this chat $1.84
 //   metered: Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
-//   window:  Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h20m)
+//   window:  Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
+//   with subagents (F5): … · agents 2 running · $0.40
 
 export type StatusFacts = {
   billing: Billing | undefined
@@ -21,6 +22,8 @@ export type StatusFacts = {
   fiveHour?: SessionRateLimit
   now: number
   isAlerted: boolean
+  /** This conversation's subagents: how many run now and what they cost (est.). */
+  agents?: { running: number; usd: number }
 }
 
 export function formatStatus(f: StatusFacts): string {
@@ -36,6 +39,9 @@ export function formatStatus(f: StatusFacts): string {
     parts.push(`5h ${f.fiveHour.percentUsed}%${Number.isFinite(resetsIn) && resetsIn > 0 ? ` (resets ${fmtDuration(resetsIn)})` : ''}`)
   } else if (f.usd !== undefined) {
     parts.push(`this chat $${f.usd.toFixed(2)}${flag}`)
+  }
+  if (f.agents !== undefined && (f.agents.running > 0 || f.agents.usd > 0)) {
+    parts.push(`agents ${f.agents.running} running · $${f.agents.usd.toFixed(2)}`)
   }
   return parts.join(' · ')
 }

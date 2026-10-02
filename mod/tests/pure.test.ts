@@ -9,6 +9,7 @@ import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '.
 import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
+import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
 import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
 describe('config', () => {
@@ -293,5 +294,30 @@ describe('T3 snapshot', () => {
   test('summary instructions keep the focus and add the facts', () => {
     expect(summaryInstructions('auth', 'FACTS')).toBe('auth\n\nKeep these facts from the session verbatim in the summary:\nFACTS')
     expect(summaryInstructions(undefined, 'FACTS')).toBe('Keep these facts from the session verbatim in the summary:\nFACTS')
+  })
+})
+
+describe('T4 subagents', () => {
+  const config = readConfig({ subagentAllowlist: 'Plan' })
+  const facts = { subagentType: 'Explore', prompt: 'go', fork: false }
+
+  test('plan: deny at the cap, pin the model, keep allowlisted and forks', () => {
+    expect('deny' in planSpawn(facts, config, 3)).toBe(true)
+    expect(planSpawn(facts, config, 2)).toEqual({ model: 'haiku', prompt: `go${REPORT_CAP}`, notes: ['model haiku', 'report capped at ~300 words'] })
+    expect(planSpawn({ ...facts, model: 'sonnet' }, config, 0)).toMatchObject({ model: 'haiku', notes: ['model haiku (asked: sonnet)', 'report capped at ~300 words'] })
+    expect(planSpawn({ ...facts, subagentType: 'Plan', model: 'opus' }, config, 0)).toMatchObject({ model: undefined })
+    expect(planSpawn({ ...facts, fork: true }, config, 0)).toMatchObject({ model: undefined })
+    expect(planSpawn({ ...facts, model: 'haiku' }, config, 0)).toMatchObject({ model: undefined })
+  })
+
+  test('cost of a turn at list price', () => {
+    const usage = { input_tokens: 100_000, output_tokens: 10_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 200_000 }
+    // Haiku: 0.1 + 0.05 + 0.1 + 0.25
+    expect(Math.round((turnUsd({ ...usage, model: 'claude-haiku-4-5' }) ?? 0) * 100) / 100).toBe(0.5)
+    expect(turnUsd({ ...usage, model: 'mystery' })).toBeUndefined()
+  })
+
+  test('running count', () => {
+    expect(runningCount([{ status: 'running' }, { status: 'completed' }, { status: 'running' }, { status: 'killed' }])).toBe(2)
   })
 })

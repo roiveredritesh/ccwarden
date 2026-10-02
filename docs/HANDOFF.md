@@ -7,7 +7,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. It validates, type-checks, and passes 59 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. It validates, type-checks, and passes 70 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -170,7 +170,14 @@ Known limits:
   - the next turn still knows the goal and recent asks
   - Haiku compacts past 120K, Sonnet past 300K
 
-**T4. F5, subagent guard.**
+**T4. F5, subagent guard.** *Done 2026-10-02* (code and tests). Notes:
+
+- The `agent.spawn` hook pins `subagentModel` unless the type is in `subagentAllowlist` (forks keep the parent's model). It appends the report cap to the subagent's own prompt, once, and denies a spawn once `maxParallelAgents` are `running` per `$.agent.list()`.
+- Each spawn writes one dim transcript line saying what changed. `subagentGuard: false` turns all of it off.
+- A subagent's cost comes from its `turn.complete` usage. A toast fires once per agent over $1.
+- Not done yet: per-model limits and snapshot compaction inside subagent loops. Their `session.compact` passes through, and a mod can't trigger a subagent's compaction.
+- Unverified live: that an Explore report really stays ≤ ~300 words. It's an instruction, not a hard limit.
+
 
 - `agent.spawn`: `model: haiku` unless allowlisted; append the report cap to `prompt`; deny past `maxParallelAgents`.
 - Per-agent cost in the status.
