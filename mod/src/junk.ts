@@ -74,7 +74,7 @@ export function isTestCommand(command: string): boolean {
   return /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(jest|vitest|mocha|pytest|py\.test|rspec|phpunit|nextest)\b|\b(go|cargo|dotnet|deno)\s+test\b|\bnode\s+--test\b|\bplugin\s+test\b|\bgradlew?\b[^|;&]*\btest\b|\bmvn\b[^|;&]*\btest\b/.test(command)
 }
 
-const FAILURE_LINE = /\b(fail(ed|ure|ures|ing)?|errors?|assert(ion)?(error)?|expected|received|panic(ked)?|traceback|exception)\b|[✗✕×]|^\s*(E\s|>\s)/i
+const FAILURE_LINE = /\b(fail(ed|ure|ures|ing)?|errors?|assert(ion)?(error)?|expected|received|panic(ked)?|traceback|exception)\b|[✗✕×]|^\s*(E\s|>\s|not ok\b)/i
 const AFTER_FAILURE = 3
 const SUMMARY_LINES = 15
 

@@ -10,7 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { joinPath } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
-import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { appendJunk, countLines, failuresOnly, isAllowlisted, isAlreadyFiltered, isTestCommand, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
 import { analyze, requestsOf, ttlVerdict, weekReport } from '../src/report'
 import { dashboardText } from '../src/dashboard'
 import { budgetConfig, isBudgetMode, monthStepsDue } from '../src/budget'
@@ -422,6 +422,15 @@ describe('T6 junk guard', () => {
     expect(isAlreadyFiltered('echo "a|b"')).toBe(false)
     expect(trimOutput('abcdefghij', 20)).toEqual({ head: 'abcdefghij', tail: '', cut: 0 })
     expect(trimOutput('abcdefghij', 5)).toEqual({ head: 'abc', tail: 'ij', cut: 5 })
+  })
+  test('test runs: which commands, and what is kept', () => {
+    for (const c of ['npm test', 'pnpm run test', 'npx vitest run', 'pytest -q', 'cargo test', 'node --test "test/*.test.js"', 'claude plugin test mod', './gradlew test']) expect(isTestCommand(c)).toBe(true)
+    for (const c of ['cat build.log', 'npm run build', 'git log --grep test', 'ls tests']) expect(isTestCommand(c)).toBe(false)
+    const run = ['ok 1', 'ok 2', 'not ok 3 - adds', '  expected: 2', '  received: 3', '  at a.js:1', 'ok 4', 'ok 5', ...Array.from({ length: 20 }, (_, i) => `ok ${6 + i}`), '# fail 1'].join('\n')
+    const kept = failuresOnly(run, 10_000)
+    expect(kept.startsWith('… (2 lines)\nnot ok 3 - adds\n  expected: 2\n  received: 3\n  at a.js:1\nok 4\nok 5\n… (6 lines)\n')).toBe(true)
+    expect(kept.endsWith('ok 25\n# fail 1')).toBe(true)
+    expect(failuresOnly(run, 40).length).toBeLessThan(80)
   })
   test('allowlist globs', () => {
     const globs = parseGlobs(' **/*.lock, docs/**, *.min.js ')

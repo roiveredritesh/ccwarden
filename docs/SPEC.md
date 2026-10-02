@@ -208,7 +208,8 @@ It never blocks and adds nothing to context.
   - A Read is checked only when it reads a whole text file: no offset, limit or pages, and not an image or PDF. Files of at most `readMaxLines` bytes are skipped without being read, and so are files over 4 MiB (what one `$.fs.read` takes).
   - A trimmed output keeps 60% head and 40% tail. The full text goes to `~/.claude/ccwarden/outputs/<session>-<tool_use_id>.txt`.
   - Output is left alone when it is an error, when the engine already persisted it (`persistedOutputPath`), when the command already pipes through `head`/`tail`/`grep`/…, or when the file couldn't be written.
-  - Not built yet: the test-runner failure filter, and cleanup of old output files.
+  - **Test runners** (`npm test`, `node --test`, `pytest`, `cargo test`, `claude plugin test`, … by command regex): a run over `bashMaxChars`, passed or failed, keeps each failure line (`fail`, `error`, `expected`, `not ok`, `✗`, …) with the 3 lines after it, plus the last 15 lines, within `bashMaxChars`. The full text is saved as above. A failed run goes back as a plain result that starts "This test run FAILED (exit code N)", because a hook can't shorten an error result.
+  - Not built yet: cleanup of old output files.
 
 **F5. Subagent guard** (`agent.spawn` hook).
 
@@ -308,7 +309,7 @@ It never blocks and adds nothing to context.
   - `/cw spent <amount>` records the real figure. The estimate counts on from it until the month ends.
   - `/cw` (for now) logs month to date, the projection and the budget mode.
   - **Budget mode** is on with `/cw budget on|off|auto` (auto by default), or automatically at `budgetModeAt`% of the month budget or the 5h window. It tightens `readMaxLines` (800), `bashMaxChars` (12k), `sessionAlertPct` (15) and `compactAt` (45), and never loosens a stricter setting.
-  - Budget mode shows in the status line and is announced once when it switches on by itself. The test-runner filter and turning prompt suggestions off are not built.
+  - Budget mode shows in the status line and is announced once when it switches on by itself. The test-runner filter is always on with the junk guard; budget mode's lower `bashMaxChars` makes it cut sooner. Turning prompt suggestions off is not built.
 
 **F12. Setup profile (installer).** It writes and explains each setting:
 
