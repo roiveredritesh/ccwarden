@@ -330,6 +330,15 @@ It never blocks and adds nothing to context.
 - The 1h-TTL recommendation from measured breaks waits for F10's data.
 **F13. Unrelated-prompt hint.** It compares a new prompt's keywords with the session goal and recent asks, with zero model tokens, and suggests `/clear` when overlap is near zero. Off until tuned from the advisor's accept/reject log.
 
+**As built (M4):** `topicShiftHint`, off by default.
+
+- **Asked for:** the same prompts F2 asks about (typed while idle, interactive), when F2 didn't ask: its cold question already names `/clear`. The context must be ≥ 40k tokens and the prompt must have ≥ 4 keywords and not be a slash command.
+- **Keywords:** lowercased alphanumeric words of 3+ characters, minus English and Hinglish filler, cut to 6 characters (a crude stem). The history is the goal, the last 5 asks and Claude's last answer. A shift is ≤ 10% of the prompt's keywords seen there.
+- **The question:** Send, Clear or Handoff + clear. Clear drops the prompt, runs `/clear` with `$.command.run` (queued until the session is idle), resets the conversation's figures itself (a plugin's own command may skip its own `session.end` hook, as `/compact` did in Q13), and puts the prompt back with `$.prompt.fill`. Handoff + clear writes a quick handoff first. A dismissal keeps the prompt in the box.
+- **Mute:** any answer mutes the hint until the context grows 20%, so sending the same prompt again goes through.
+- **Learning:** each answer goes to `$.store` `topicLog` (overlap, keyword count, tokens, choice; last 200). Turn it on by default once that log shows few Sends.
+- **Unverified live:** that a mod-run `/clear` clears (Q4), and that the refill lands after it.
+
 ## 5. Configuration (`userConfig`)
 
 | Key | Default | Feature |
@@ -348,7 +357,7 @@ It never blocks and adds nothing to context.
 | `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |
 | `alertTiming` | `immediate` | F1b |
 | `handoffDir` / `handoffOnCompact` / `handoffMaxUsd` | `.claude/handoffs` / off / 0.50 | F7 |
-| `topicShiftHint` | off | F13 |
+| `topicShiftHint` | off (until tuned from `topicLog`) | F13 |
 
 M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.
 

@@ -136,6 +136,7 @@ function world(on: On, opts: {
   // Core's /compact raises a manual compaction; a test plays that part with
   // the engine's $ (see `runCompact`).
   on('command.run', { command: 'compact' }, () => { shown.commandsRun.push('compact'); return {} })
+  on('command.run', { command: 'clear' }, () => { shown.commandsRun.push('clear'); return {} })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
@@ -1317,5 +1318,94 @@ describe('F10 /cw dashboard', () => {
     await $.session.start(start('desktop'))
     const pane = await $.ui.mount({ plugin: 'ccwarden', surface: 'desktop', component: 'Pane', props: paneProps, requestId: 'ccwarden-cw' })
     expect((await pane.find({ type: 'Text' }))?.text).toBe('Run /cw to gather the figures.')
+  })
+})
+
+describe('F13 unrelated-prompt hint', () => {
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+  const history: SessionMessage[] = [
+    { role: 'user', text: 'fix the snapshot compaction for the haiku limit', toolUses: [] },
+    { role: 'assistant', text: 'Done: compaction now writes a snapshot at the haiku limit.', toolUses: [] },
+  ]
+  const UNRELATED = 'write a python scraper for weather forecast data'
+  const warm = async ($: Engine, w: World, surface: RenderSurface) => {
+    w.messages.push(...history)
+    await $.session.start(start(surface))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(MIN)
+  }
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`Clear runs /clear and puts the prompt back (${surface}, ${billing})`, { options: { billing, topicShiftHint: true } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], answer: 'Clear', usage: { tokens: 180_000 } })
+        await warm($, w, surface)
+        const out = await $.prompt.submit(typed(UNRELATED))
+        expect(w.asks).toHaveLength(1)
+        expect(w.asks[0]).toContain('every turn here re-reads ~180k tokens. New work? Clear starts fresh and puts your prompt back in the box. Send it here anyway?')
+        expect(out.drop).toBe('ccwarden: not sent; clearing the conversation, then your prompt goes back in the box.')
+        expect(w.sent).toEqual([])
+        await w.clock.advance(0)
+        expect(w.commandsRun).toEqual(['clear'])
+        expect(w.fills).toEqual([UNRELATED])
+        expect((w.store.get('topicLog') as { choice: string; keywords: number }[]).map(ev => [ev.choice, ev.keywords])).toEqual([['clear', 6]])
+      })
+    }
+  }
+
+  test('Handoff + clear writes a quick note first', { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Handoff + clear', usage: { tokens: 180_000 } })
+    await warm($, w, 'terminal')
+    const out = await $.prompt.submit(typed(UNRELATED))
+    expect(w.forks).toEqual([])
+    const path = w.writes.find(f => f.path.includes('/.claude/handoffs/'))?.path
+    expect(path).toBeDefined()
+    expect(out.drop).toContain(`Handoff written to ${path}`)
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual(['clear'])
+  })
+
+  test('Send goes ahead and mutes the hint until the context grows 20%', { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Send', usage: { tokens: 180_000 } })
+    await warm($, w, 'terminal')
+    await $.prompt.submit(typed(UNRELATED))
+    await $.prompt.submit(typed('deploy kubernetes cluster on azure today'))
+    expect(w.asks).toHaveLength(1)
+    w.usage.tokens = 220_000
+    await $.prompt.submit(typed('deploy kubernetes cluster on azure today'))
+    expect(w.asks).toHaveLength(2)
+    expect(w.sent).toHaveLength(3)
+  })
+
+  test('a dismissal keeps the prompt; sending it again goes through', { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await warm($, w, 'terminal')
+    const out = await $.prompt.submit(typed(UNRELATED))
+    expect(out.drop).toContain('Type /clear first')
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual([])
+    expect(w.fills).toEqual([UNRELATED])
+    await $.prompt.submit(typed(UNRELATED))
+    expect(w.sent).toEqual([UNRELATED])
+  })
+
+  test('not asked: related, short, under 40k, or a slash command', { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Clear', usage: { tokens: 180_000 } })
+    await warm($, w, 'terminal')
+    await $.prompt.submit(typed('now make the snapshot keep todos for sonnet too'))
+    await $.prompt.submit(typed('ok ship it'))
+    await $.prompt.submit(typed('/handoff quick please now'))
+    w.usage.tokens = 30_000
+    await $.prompt.submit(typed(UNRELATED))
+    expect(w.asks).toEqual([])
+    expect(w.sent).toHaveLength(4)
+  })
+
+  test('off by default', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Clear', usage: { tokens: 180_000 } })
+    await warm($, w, 'terminal')
+    await $.prompt.submit(typed(UNRELATED))
+    expect(w.asks).toEqual([])
+    expect(w.sent).toEqual([UNRELATED])
   })
 })

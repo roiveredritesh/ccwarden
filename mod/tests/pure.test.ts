@@ -22,6 +22,7 @@ import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnr
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldChoice, coldDropReason, coldQuestion, isColdAskDue, isHandoffAsk } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
+import { isTopicCandidate, isTopicShift, keywords, topicChoice, topicOverlap } from '../src/topic'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
 describe('config', () => {
@@ -712,5 +713,36 @@ describe('M3 report (ported from hooks-edition/report.js)', () => {
     expect(text).toContain('junk guard (observe): 2 events this month, ~30k tokens would be kept out')
     expect(text).toContain('this session: 9k Read /a.ts')
     expect(text).not.toContain('Last 7 days')
+  })
+})
+
+describe('F13 topic shift', () => {
+  test('keywords drop English and Hinglish filler and cut words to 6 characters', () => {
+    expect([...keywords('ab F13 shuru karo, the compaction is done')]).toEqual(['f13', 'shuru', 'compac'])
+    expect(keywords('compact').has('compac')).toBe(true)
+  })
+  test('overlap is the share of prompt keywords seen before', () => {
+    expect(topicOverlap('snapshot compaction weather python', ['fix the snapshot compaction'])).toEqual({ overlap: 0.5, count: 4 })
+  })
+  test('a candidate: 40k+ context, 4+ keywords, not a slash command, not muted', () => {
+    const text = 'write a python scraper for weather data'
+    expect(isTopicCandidate({ text, tokens: 40_000 })).toBe(true)
+    expect(isTopicCandidate({ text, tokens: 39_999 })).toBe(false)
+    expect(isTopicCandidate({ text: 'ok ship it now', tokens: 90_000 })).toBe(false)
+    expect(isTopicCandidate({ text: `/${text}`, tokens: 90_000 })).toBe(false)
+    expect(isTopicCandidate({ text, tokens: 119_000, mutedAt: 100_000 })).toBe(false)
+    expect(isTopicCandidate({ text, tokens: 120_000, mutedAt: 100_000 })).toBe(true)
+  })
+  test('a shift: overlap near zero, and some history to compare with', () => {
+    expect(isTopicShift('write a python scraper for weather data', ['fix the snapshot compaction'])).toBe(true)
+    expect(isTopicShift('make the snapshot keep todos too', ['fix the snapshot compaction'])).toBe(false)
+    expect(isTopicShift('write a python scraper for weather data', ['', ' '])).toBe(false)
+  })
+  test('answers', () => {
+    expect(topicChoice('Send')).toBe('send')
+    expect(topicChoice('Clear')).toBe('clear')
+    expect(topicChoice('/clear')).toBe('clear')
+    expect(topicChoice('Handoff + clear')).toBe('handoff')
+    expect(topicChoice(undefined)).toBe('keep')
   })
 })
