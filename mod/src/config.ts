@@ -29,6 +29,7 @@ export type Config = {
   keepWarm: boolean
   keepWarmMaxMin: number
   keepWarmCapUsd: number
+  monthlyBudgetUsd: number
   budgetModeAt: number
   alertTiming: 'immediate' | 'turnEnd'
   handoffDir: string
@@ -59,6 +60,7 @@ export const DEFAULTS: Config = {
   keepWarm: false, // until Q2 confirms a fork refreshes the main cache
   keepWarmMaxMin: 30,
   keepWarmCapUsd: 0.5,
+  monthlyBudgetUsd: 0,
   budgetModeAt: 80,
   alertTiming: 'immediate',
   handoffDir: '.claude/handoffs',
@@ -109,7 +111,8 @@ export function readConfig(options: PluginOptions): Config {
     keepWarm: bool('keepWarm'),
     keepWarmMaxMin: num('keepWarmMaxMin'),
     keepWarmCapUsd: num('keepWarmCapUsd'),
-    budgetModeAt: num('budgetModeAt'),
+    monthlyBudgetUsd: num('monthlyBudgetUsd'),
+    budgetModeAt: pos('budgetModeAt'),
     alertTiming: pick('alertTiming', ['immediate', 'turnEnd'], DEFAULTS.alertTiming),
     handoffDir: typeof options.handoffDir === 'string' && options.handoffDir.trim() !== '' ? options.handoffDir.trim() : DEFAULTS.handoffDir,
     handoffOnCompact: bool('handoffOnCompact'),

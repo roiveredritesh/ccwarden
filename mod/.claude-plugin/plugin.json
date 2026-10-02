@@ -141,6 +141,12 @@
       "default": 0.5,
       "description": "Keep-warm stops once its pings cost this much in a session."
     },
+    "monthlyBudgetUsd": {
+      "type": "number",
+      "title": "Month budget ($, metered)",
+      "description": "This machine's monthly budget: toasts at 50%, 80% and 100% of it, with a projection. 0 turns month tracking off. Calibrate the estimate with /cw spent <amount>.",
+      "default": 0
+    },
     "budgetModeAt": {
       "type": "number",
       "title": "Budget mode at (% of month budget or 5h window)",

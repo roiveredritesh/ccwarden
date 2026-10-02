@@ -17,7 +17,9 @@ import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
 import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
-import { addSpend, costDelta, dayKey } from '../src/ledger'
+import { addSpend, calibrate, costDelta, dayKey, monthKey, monthToDate, projectMonth } from '../src/ledger'
+import { budgetConfig, budgetModeText, isBudgetMode, monthAlertText, monthStepsDue } from '../src/budget'
+import type { BudgetSwitch } from '../src/budget'
 import type { Ledger } from '../src/ledger'
 import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '../src/hogs'
 import type { HogDays } from '../src/hogs'
@@ -40,7 +42,7 @@ import { fiveHour, trackWindow } from '../src/window'
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
 // per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
 // F8 (the background spend watcher), F9 (model and effort advice), the
-// M3 spend ledger and context hogs, the first-run billing question, the R9 toast budget, and the transcript path
+// M3 spend ledger and context hogs, F11 month tracking and budget mode, the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -54,6 +56,8 @@ type Runtime = {
   queued: { text: string; source?: BackgroundSource }[]
   /** F8: what started the running turn, when the user didn't. */
   turnSource?: BackgroundSource
+  /** Budget mode (SPEC §3), as last worked out. */
+  isBudget: boolean
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -61,6 +65,7 @@ const heldNote = { plugin: 'ccwarden', key: 'heldNote' } as const
 const transcriptPath = { plugin: 'ccwarden', key: 'transcriptPath' } as const
 const billingAsked = { plugin: 'ccwarden', key: 'billingAsked' } as const
 const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
+const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
 
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
 const TTL_RECHECK_MS = 10 * 60_000
@@ -70,6 +75,8 @@ const HANDOFFS_OFFERED_KEY = 'handoffsOffered' // $.store: handoff paths already
 const HANDOFF_CONTINUE = 'Continue from handoff'
 const LEDGER_KEY = 'ledger' // $.store: this machine's est. spend per day (M3)
 const HOG_DAYS_KEY = 'hogDays' // $.store: the day's biggest tool results (F10)
+const MONTH_ALERTS_KEY = 'monthAlerts' // $.store: the month steps already alerted (F11)
+const BUDGET_SWITCH_KEY = 'budgetSwitch' // $.store: /cw budget on|off|auto
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -77,7 +84,9 @@ const CHARS_PER_TOKEN = 4
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false, queued: [] }
+  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false }
+  // The config as budget mode has it (stricter junk guard, earlier window alerts).
+  const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -94,6 +103,9 @@ export const register: Register = (on, options) => {
       })
     }
     await $.command.register({ name: 'handoff', description: 'ccwarden: write a handoff note for a fresh session (full while the cache is warm)', argumentHint: '[quick]' })
+    await $.command.register({ name: 'cw', description: 'ccwarden: month to date, budget mode, calibration', argumentHint: '[spent <amount> | budget on|off|auto]' })
+    runtime.isBudget = (await $.state.get(budgetModeRef)).value === true // a reload keeps it, unannounced
+    await updateBudgetMode($, config, runtime)
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
@@ -160,17 +172,18 @@ export const register: Register = (on, options) => {
         c.ledgerUsd = e.cost.usd
       }
       const figures = { usd: e.cost?.usd, chatPct: c.window?.chatPct }
-      const step = alertStep(config, figures)
+      const step = alertStep(eff(), figures)
       if (step < c.alerted) c.alerted = step // the conversation started over
       if (isAlertDue(step, c.alerted, config.sessionAlertRepeat)) {
-        due = alertText(config, figures)
+        due = alertText(eff(), figures)
         if (config.alertTiming === 'turnEnd') c.pendingAlert = due
       }
       if (step > c.alerted) c.alerted = step
       return c
     })
     if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
-    if (spent > 0) await recordSpend($, spent)
+    if (spent > 0) await trackMonth($, config, await recordSpend($, spent))
+    if (spent > 0 || reading !== undefined) await updateBudgetMode($, config, runtime)
     await refreshStatus($, config, conv)
     return result
   })
@@ -230,13 +243,13 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     if (config.junkGuard === 'off' || !isWholeTextRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
     const stat = await $.fs.stat(e.file_path).catch(() => undefined)
-    if (stat === undefined || stat.kind !== 'file' || stat.size <= config.readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
+    if (stat === undefined || stat.kind !== 'file' || stat.size <= eff().readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
     const text = await $.fs.read(e.file_path).catch(() => undefined)
     const lines = text === undefined ? 0 : countLines(text)
-    if (lines <= config.readMaxLines) return next(e)
+    if (lines <= eff().readMaxLines) return next(e)
     await recordJunk($, { at: await $.clock.now(), tool: 'Read', mode: config.junkGuard, target: e.file_path, size: lines, savedChars: stat.size })
     if (config.junkGuard === 'observe') return next(e)
-    const reason = readDenyText(e.file_path, lines, config.readMaxLines)
+    const reason = readDenyText(e.file_path, lines, eff().readMaxLines)
     $.ui.log(reason)
     return { deny: reason }
   })
@@ -249,16 +262,44 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (config.junkGuard === 'off' || ran.deny !== undefined || ran.isError || isAlreadyFiltered(e.command)) return ran
     const { stdout } = ran.result
-    if (ran.result.persistedOutputPath !== undefined || stdout.length <= config.bashMaxChars) return ran
-    await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - config.bashMaxChars })
+    if (ran.result.persistedOutputPath !== undefined || stdout.length <= eff().bashMaxChars) return ran
+    await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
     if (config.junkGuard === 'observe') return ran
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
     if (home === undefined) return ran
     const path = outputPath(home, await $.session.id(), e.tool_use_id)
     const saved = await $.fs.write(path, stdout).then(() => true, () => false)
     if (!saved) return ran
-    $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${config.bashMaxChars} characters; the full text is in ${path}.`)
-    return { result: { ...ran.result, stdout: trimmedOutput(stdout, config.bashMaxChars, path) } }
+    $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${eff().bashMaxChars} characters; the full text is in ${path}.`)
+    return { result: { ...ran.result, stdout: trimmedOutput(stdout, eff().bashMaxChars, path) } }
+  })
+
+  // F11 and budget mode by hand. (The dashboard pane comes in M3-T3.)
+  on('command.run', { command: 'cw' }, async ($, e) => {
+    const [verb, arg] = e.args.trim().split(/\s+/)
+    const now = await $.clock.now()
+    if (verb === 'spent') {
+      const real = Number((arg ?? '').replace(/^\$/, ''))
+      if (!Number.isFinite(real) || real < 0) {
+        $.ui.log('ccwarden: /cw spent <amount>: the real month-to-date from your billing page, e.g. /cw spent 42.50')
+        return {}
+      }
+      await $.store.set(LEDGER_KEY, calibrate((await $.store.get(LEDGER_KEY)) as Ledger | undefined, real, now))
+      $.ui.log(`ccwarden: month to date calibrated to $${real.toFixed(2)}; the estimate counts on from there.`)
+    } else if (verb === 'budget' && (arg === 'on' || arg === 'off' || arg === 'auto')) {
+      await $.store.set(BUDGET_SWITCH_KEY, arg)
+      await updateBudgetMode($, config, runtime)
+      $.ui.log(budgetModeText(runtime.isBudget, arg === 'auto' ? 'automatic' : 'set by hand'))
+    } else if (verb !== undefined && verb !== '') {
+      $.ui.log('ccwarden: /cw, /cw spent <amount>, /cw budget on|off|auto')
+      return {}
+    }
+    const ledger = (await $.store.get(LEDGER_KEY)) as Ledger | undefined
+    const mtd = monthToDate(ledger, now)
+    const budget = config.monthlyBudgetUsd > 0 ? ` of your $${config.monthlyBudgetUsd.toFixed(0)} budget` : ''
+    $.ui.log(`ccwarden: this month $${mtd.toFixed(2)}${budget} on this machine (est.), ~$${projectMonth(mtd, now).toFixed(0)} at this pace; budget mode ${runtime.isBudget ? 'on' : 'off'}.`)
+    await refreshStatus($, config)
+    return {}
   })
 
   on('command.run', { command: 'ccwarden-junk' }, async ($) => {
@@ -414,10 +455,41 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
   }
 }
 
-/** M3: adds spend to today's line of this machine's ledger. */
-async function recordSpend($: $, usd: number): Promise<void> {
+/** M3: adds spend to today's line of this machine's ledger; resolves the ledger after. */
+async function recordSpend($: $, usd: number): Promise<Ledger> {
   const day = dayKey(await $.clock.now())
-  await $.store.set(LEDGER_KEY, addSpend((await $.store.get(LEDGER_KEY)) as Ledger | undefined, day, usd))
+  const ledger = addSpend((await $.store.get(LEDGER_KEY)) as Ledger | undefined, day, usd)
+  await $.store.set(LEDGER_KEY, ledger)
+  return ledger
+}
+
+/** F11 (metered): a toast at 50%, 80% and 100% of the month budget, each once a month on this machine. */
+async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
+  if (config.billing === 'window' || config.monthlyBudgetUsd <= 0) return
+  const now = await $.clock.now()
+  const month = monthKey(now)
+  const mtd = monthToDate(ledger, now)
+  const record = (await $.store.get(MONTH_ALERTS_KEY)) as { month: string; sent: number[] } | undefined
+  const sent = record?.month === month ? record.sent : []
+  const due = monthStepsDue(mtd, config.monthlyBudgetUsd, sent)
+  if (due.length === 0) return
+  await $.store.set(MONTH_ALERTS_KEY, { month, sent: [...sent, ...due] })
+  await notify($, 'spend', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
+}
+
+/** Budget mode (SPEC §3): by hand, or past budgetModeAt% of the month budget or 5h window; says when it switches on by itself. */
+async function updateBudgetMode($: $, config: Config, runtime: Runtime): Promise<void> {
+  const manual = ((await $.store.get(BUDGET_SWITCH_KEY)) as BudgetSwitch | undefined) ?? 'auto'
+  const now = await $.clock.now()
+  const mtd = monthToDate((await $.store.get(LEDGER_KEY)) as Ledger | undefined, now)
+  const fiveHourPct = fiveHour((await $.session.usage()).rateLimits)?.percentUsed
+  const on = isBudgetMode({ manual, billing: config.billing, budgetModeAt: config.budgetModeAt, mtd, budget: config.monthlyBudgetUsd, fiveHourPct })
+  if (on && !runtime.isBudget && manual === 'auto') {
+    const why = config.billing === 'window' ? `the 5h window is at ${fiveHourPct ?? 0}%` : `the month is at ${Math.round((mtd / config.monthlyBudgetUsd) * 100)}% of its budget`
+    await notify($, 'spend', budgetModeText(true, why)) // spend-driven, like the alerts that lead to it
+  }
+  runtime.isBudget = on
+  await $.state.set(budgetModeRef, on)
 }
 
 /** F10: a big tool result, into the conversation's top list and today's tally. */
@@ -528,6 +600,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     now,
     isAlerted: conv.alerted > 0,
     keepWarm: conv.keepWarm,
+    isBudget: (await $.state.get(budgetModeRef)).value === true,
     backgroundUsd: conv.background?.usd,
     agents: {
       running: runningCount(await $.agent.list()),
