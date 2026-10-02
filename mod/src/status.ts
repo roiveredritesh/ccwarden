@@ -1,5 +1,5 @@
 import type { SessionRateLimit } from 'claude-code'
-import type { CacheView, Ttl } from './cache'
+import type { CacheMiss, CacheView, Ttl } from './cache'
 import type { Billing } from './config'
 import { familyOf } from './prices'
 
@@ -7,6 +7,7 @@ import { familyOf } from './prices'
 //   metered: Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache ● 3m · this chat $1.84
 //   metered: Fable · ctx ▓▓▓▓▓▓▓▓▓░ 87% 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
 //   window:  Haiku · ctx ▓▓▓▓▓░░░░░ 53% 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
+//   after a re-cache:  … · cache ● 59m · miss: model switch, re-cached 111k
 //   with subagents (F5): … · agents 2 running · $0.40
 //   with keep-warm (F6): … · keep-warm $0.06 · saved $0.38
 //   with turns the user didn't type (F8): … · background $0.12
@@ -26,6 +27,8 @@ export type StatusFacts = {
   isAlerted: boolean
   /** Keep-warm (F6): what its pings cost and the rebuilds they avoided (est.). */
   keepWarm?: { spentUsd: number; savedUsd: number; pings: number }
+  /** The last turn's first request re-cached the conversation, and why. */
+  miss?: CacheMiss
   /** Budget mode is on (SPEC §3). */
   isBudget?: boolean
   /** Turns the user didn't type (F8): what they cost (est.). */
@@ -39,6 +42,7 @@ export function formatStatus(f: StatusFacts): string {
   const parts = [family === undefined ? f.model : family[0]!.toUpperCase() + family.slice(1)]
   parts.push(ctxSegment(f.tokens, f.limit))
   parts.push(cacheSegment(f))
+  if (f.miss !== undefined) parts.push(`miss: ${f.miss.cause}, re-cached ${fmtTokens(f.miss.tokens)}`)
 
   const flag = f.isAlerted ? ' ⚠' : ''
   if (f.billing === 'window' && f.fiveHour !== undefined) {

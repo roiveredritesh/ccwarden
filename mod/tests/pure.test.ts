@@ -5,7 +5,7 @@ import { DEFAULTS, limitFor, readConfig } from '../src/config'
 import { admit } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
 import { alertStep, isAlertDue } from '../src/alerts'
-import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
+import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
 import { familyOf, rebuildUsd } from '../src/prices'
 import { joinPath } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
@@ -234,6 +234,20 @@ describe('T2 pure logic', () => {
     expect(formatStatus({
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
+  })
+})
+
+describe('cacheMiss', () => {
+  const base = { read: 0, write: 111_000, model: 'claude-opus-5-5', prevModel: 'claude-opus-5-5', lastUseAt: 0, now: 60_000, ttl: '1h' as const, isCompacted: false }
+  test('names the likely cause of a re-cache, and only a re-cache', () => {
+    expect(cacheMiss({ ...base, prevModel: 'claude-sonnet-5-5' })).toEqual({ cause: 'model switch', tokens: 111_000 })
+    expect(cacheMiss({ ...base, isCompacted: true, prevModel: 'claude-sonnet-5-5' })?.cause).toBe('compaction')
+    expect(cacheMiss({ ...base, now: 2 * 3_600_000 })?.cause).toBe('expired (idle 2h 0m)')
+    expect(cacheMiss({ ...base, ttl: '5m', now: 6 * 60_000 })?.cause).toBe('expired (idle 6m)')
+    expect(cacheMiss(base)?.cause).toBe('prefix changed (CLAUDE.md, tools, MCP or settings)')
+    expect(cacheMiss({ ...base, read: 110_000, write: 1_000 })).toBeUndefined() // served from the cache
+    expect(cacheMiss({ ...base, read: 120_000, write: 30_000 })).toBeUndefined() // a big new tail, cache still read
+    expect(cacheMiss({ ...base, lastUseAt: undefined })).toBeUndefined() // the first request always writes
   })
 })
 

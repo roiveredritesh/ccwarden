@@ -40,6 +40,11 @@ export type CcwardenConversation = {
   ledgerUsd?: number
   /** The conversation's biggest tool results (F10), largest first. */
   hogs?: { tool: string; target: string; tokens: number }[]
+  /** The last turn's first request re-cached the conversation, and why; cleared by a turn the cache served. */
+  lastMiss?: { cause: string; tokens: number }
+  /** The model of the main loop's last request, and the compactions counted then (for the miss cause). */
+  lastStepModel?: string
+  compactionsSeen?: number
   /** Compactions in this conversation, and how many were snapshots (F3, for the dashboard). */
   compactions?: number
   snapshots?: number

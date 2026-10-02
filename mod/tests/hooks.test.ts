@@ -197,6 +197,31 @@ describe('F1 status line', () => {
     expect(w.status.at(-1)).toContain('150k/200k')
   })
 
+  test('a re-cached first request names its cause in the status, until the cache serves again', { options: { billing: 'window' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 111_000 } })
+    const step = (model: string, read: number, write: number) => ({
+      turnId: 't', index: 0, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const,
+      usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: read, cache_creation_input_tokens: write, model },
+    })
+    let next = step('claude-sonnet-5-5', 100_000, 1_000)
+    on('turn.step', async function* () { return next })
+    const run = async () => { const s = $.turn.step({ turnId: 't', index: 0, model: next.usage.model, messageCount: 2 }); for await (const _ of s); return s.result }
+    await $.session.start(start('terminal'))
+    await run()
+    await $.turn.complete(turnDone())
+    expect(w.status.at(-1)).not.toContain('miss')
+
+    next = step('claude-opus-5-5', 0, 111_000) // the /model switch
+    await run()
+    expect(w.status.at(-1)).toContain('miss: model switch, re-cached 111k')
+    expect(w.logs).toContain('ccwarden: the cache missed (model switch); this request re-cached 111k tokens.')
+    await $.turn.complete(turnDone('claude-opus-5-5'))
+
+    next = step('claude-opus-5-5', 111_000, 500)
+    await run()
+    expect(w.status.at(-1)).not.toContain('miss')
+  })
+
   test('the limit is the compact window when CLAUDE_CODE_AUTO_COMPACT_WINDOW is smaller', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000, window: 1_000_000 }, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
     await $.session.start(start('terminal'))

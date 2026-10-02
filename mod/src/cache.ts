@@ -1,4 +1,5 @@
 import type { Billing } from './config'
+import { fmtDuration } from './status'
 import type { TranscriptEntry } from './transcript'
 
 // The prompt cache's TTL and whether it is still warm (F1). No event carries
@@ -53,4 +54,35 @@ export function cacheView(lastResponseAt: number | undefined, ttl: Ttl, now: num
   if (lastResponseAt === undefined) return { kind: 'none' }
   const left = lastResponseAt + TTL_MS[ttl] - now
   return left > 0 ? { kind: 'warm', msLeft: left } : { kind: 'cold', msCold: -left }
+}
+
+/** A first request that writes at least this much (and more than it reads) re-cached the conversation. */
+export const MISS_MIN_TOKENS = 20_000
+
+export type CacheMiss = { cause: string; tokens: number }
+
+/**
+ * A turn's first request re-cached the conversation, and the likely why (as
+ * cache-guard's report.js reads it): a compaction since the last request, a
+ * model switch (each model has its own cache), the TTL running out, else the
+ * prefix changed (CLAUDE.md, tools, MCP servers or settings). Undefined when
+ * the cache served it, or there was no earlier request to miss.
+ */
+export function cacheMiss(f: {
+  read: number
+  write: number
+  model: string
+  prevModel?: string
+  lastUseAt?: number
+  now: number
+  ttl: Ttl
+  isCompacted: boolean
+}): CacheMiss | undefined {
+  if (f.lastUseAt === undefined || f.write < MISS_MIN_TOKENS || f.write <= f.read) return undefined
+  const gap = f.now - f.lastUseAt
+  const cause = f.isCompacted ? 'compaction'
+    : f.prevModel !== undefined && f.prevModel !== f.model ? 'model switch'
+    : gap > TTL_MS[f.ttl] ? `expired (idle ${fmtDuration(gap)})`
+    : 'prefix changed (CLAUDE.md, tools, MCP or settings)'
+  return { cause, tokens: f.write }
 }

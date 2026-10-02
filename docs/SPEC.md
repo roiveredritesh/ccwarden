@@ -143,6 +143,7 @@ Worked numbers for an engine summary (warm cache, S ≈ 15k):
 ```
 metered:  Sonnet · ctx 140k/300k · cache ● 3m · this chat $1.84
 metered:  Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
+window:   Opus · ctx 111k/300k · cache ● 59m · miss: model switch, re-cached 111k · this chat 4% of 5h · …
 window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
 ```
 
@@ -155,6 +156,7 @@ window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 
   3. the billing default: `window` 1h, `metered` 5m
 
   A cold cache shows the rebuild cost: context × the TTL's write price. An observed TTL that contradicts the billing setting, with no override to explain it, raises one advisor toast per conversation (§1).
+- **Cache miss:** a turn's first main-loop request that writes ≥ 20k tokens and more than it reads (its `turn.step` usage) re-cached the conversation. The status adds `miss: <cause>, re-cached 111k` until a turn the cache serves, and the log says the same. The cause, best guess first: `compaction` (one since the last request), `model switch` (each model has its own cache), `expired (idle 1h 5m)` (past the TTL), else `prefix changed (CLAUDE.md, tools, MCP or settings)`. The engine's own `last_miss_cause` (statusline JSON) is not in the plugin API, so this is inferred.
 
 **F1b. Spend alert.** Every `sessionAlertUsd` ($5) in `metered`, or every `sessionAlertPct` (20%) of the 5h window in `window`:
 
