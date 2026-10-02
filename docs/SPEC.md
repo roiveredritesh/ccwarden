@@ -300,6 +300,14 @@ It never blocks and adds nothing to context.
 - a reminder to disable unused MCP servers
 - `promptCacheTtl: "1h"`, only when F6/F7 data says it pays off
 
+**As built (M2):** `setup/setup.js`, a plain Node script outside the mod. A plugin can't load itself, and only a script can set `CLAUDE_CODE_PLUGIN_DIRS`.
+
+- **By default** it sets the documented `CLAUDE_CODE_PLUGIN_DIRS` (the mod, appended to any other dirs) and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (300000), each with its reason.
+- **With `--project <dir>`** it appends a `# Compact instructions` template to that project's CLAUDE.md.
+- It lists the configured MCP servers (`~/.claude.json`, the project's `.mcp.json`) with the reminder.
+- **Opt-in, and unverified in the docs (§9 Q14):** `--subagent-model` (`CLAUDE_CODE_SUBAGENT_MODEL`), `--cache-ttl` (`promptCacheTtl`) and `--no-prompt-suggestions` (`promptSuggestionEnabled`).
+- It writes a timestamped backup and records what each change replaced (`~/.claude/ccwarden/setup.json`), so `--uninstall` restores it and leaves later hand edits alone. `--dry-run` prints the plan only.
+- The 1h-TTL recommendation from measured breaks waits for F10's data.
 **F13. Unrelated-prompt hint.** It compares a new prompt's keywords with the session goal and recent asks, with zero model tokens, and suggests `/clear` when overlap is near zero. Off until tuned from the advisor's accept/reject log.
 
 ## 5. Configuration (`userConfig`)
@@ -368,6 +376,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 11 | **Background tasks:** how does a mod see running background tasks (the advisor's "never mid-work")? | **Answered.** `classic.Stop` and `classic.SubagentStop` carry `background_tasks` (shell, subagent, monitor, workflow: `id`, `type`, `status`, `description`, `command?`) and the scheduled crons that will wake the session. `$.agent.list()` gives subagents with `status` (`running`, `completed`, `failed`, `killed`, …). | confirm once |
 | 12 | **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate. | **No $ figure.** `usage().cost.usd` is this session's total only. The one account-level reading is a gateway's `spend_limit` rate-limit kind, which gives `percentUsed` and no dollars. F11 stays an estimate. | confirm: `/cw-probe info` on `metered` |
 | 13 | **Mod-run `/compact`:** does `$.command.run({ command: 'compact' })` reach the mod's own `session.compact` hook (trigger `manual`)? F3's limit compaction depends on it. | `$.command.run` "runs a slash command as if the person typed" it, and the engine's command raises `session.compact` from its own call site. The test kit can't run core's `/compact`, so this is unverified. A plugin's own `$.session.compact` does **not** reach its own hook. | open: `/cw-probe compact` (now goes through `/compact`) |
+| 14 | **Setting names not in the docs read for this spec:** `CLAUDE_CODE_SUBAGENT_MODEL`, `promptSuggestionEnabled`, `crossSessionInbound`, `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`. | All four are strings in the 2.1.287 binary. The setup offers the first two only as opt-in flags, and F8's texts name the last two. | open: check code.claude.com/docs (settings, model-config) |
 
 ## 10. Gaps found in design review, and resolutions
 
