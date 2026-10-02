@@ -345,6 +345,14 @@ describe('first-run billing question', () => {
       expect(w.asks).toHaveLength(1)
     })
 
+    test(`the answer takes effect at once: the status switches to the 5h window (${surface})`, async ($, on) => {
+      const w = world(on, { surfaces: [surface], answer: BILLING_OPTIONS[1], usage: { tokens: 64_000, window: 200_000, rateLimits: [fiveHour(53)] } })
+      await $.session.start(start(surface))
+      expect(w.status.at(-1)).toContain('this chat $') // asked, not answered yet: metered format
+      await w.clock.advance(0)
+      expect(w.status.at(-1)).toContain('% of 5h · 5h 53%')
+    })
+
     test(`a dismissal saves nothing and says how to set it (${surface})`, async ($, on) => {
       const w = world(on, { surfaces: [surface] })
       await $.session.start(start(surface))
