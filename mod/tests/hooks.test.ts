@@ -636,8 +636,8 @@ describe('F2 cold-cache guard', () => {
         const out = await $.prompt.submit(typed('continue with the refactor'))
         expect(w.asks).toHaveLength(1)
         expect(w.asks[0]).toBe(billing === 'window'
-          ? 'ccwarden: the prompt cache went cold 5m ago, so this prompt re-caches ~180k tokens (≈ $0.72 est.). Same task? /handoff, then a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?'
-          : 'ccwarden: the prompt cache went cold 12m ago, so this prompt re-caches ~180k tokens (≈ $0.45 est.). Same task? /handoff, then a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?')
+          ? 'ccwarden: the prompt cache went cold 5m ago, so this prompt re-caches ~180k tokens (≈ $0.72 est.). Same task? Handoff writes a note without a model call; a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?'
+          : 'ccwarden: the prompt cache went cold 12m ago, so this prompt re-caches ~180k tokens (≈ $0.45 est.). Same task? Handoff writes a note without a model call; a new session re-reads ~3k instead. Unrelated work? /clear first. Send it anyway?')
         expect(out.drop).toContain("~180k tokens weren't re-cached")
         expect(w.sent).toEqual([])
         await w.clock.advance(0)
@@ -658,6 +658,32 @@ describe('F2 cold-cache guard', () => {
     const out = await $.prompt.submit(typed('go'))
     expect(out.drop).toBeUndefined()
     expect(w.sent).toEqual(['go'])
+  })
+
+  test('Handoff writes a quick note without a model call and keeps the prompt', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Handoff', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(10 * MIN)
+    const out = await $.prompt.submit(typed('go'))
+    expect(w.forks).toEqual([])
+    expect(w.sent).toEqual([])
+    const path = w.writes.find(f => f.path.includes('/.claude/handoffs/'))?.path
+    expect(path).toBeDefined()
+    expect(out.drop).toContain(`Handoff written to ${path}`)
+    await w.clock.advance(0)
+    expect(w.fills).toEqual(['go'])
+  })
+
+  test('a prompt asking Claude for a handoff is asked about again in the same cold spell', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(10 * MIN)
+    await $.prompt.submit(typed('go'))
+    await $.prompt.submit(typed('handoff document bana do'))
+    expect(w.asks).toHaveLength(2)
+    expect(w.sent).toEqual([])
   })
 
   test('a dismissed question cancels and keeps the prompt', { options: { billing: 'metered' } }, async ($, on) => {

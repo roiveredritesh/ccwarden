@@ -173,7 +173,7 @@ It never blocks and adds nothing to context.
 
 *(First slice implemented in `mod/`.)*
 
-**F2. Cold-cache guard.** On `prompt.submit`, when the cache has expired and context ≥ `coldMinTokens`, it asks before sending: "this turn re-caches ~N tokens (≈ $X)". The choices are Continue or Cancel; the advisor's suggestion is attached.
+**F2. Cold-cache guard.** On `prompt.submit`, when the cache has expired and context ≥ `coldMinTokens`, it asks before sending: "this turn re-caches ~N tokens (≈ $X)". The choices are Continue, Handoff or Cancel; the advisor's suggestion is attached. Handoff writes a quick handoff (F7) without a model call, since asking Claude for one would re-cache the whole context. A prompt that asks Claude for a handoff is asked about every time the cache is cold.
 
 - **Asked for:** only prompts the user typed while the session was idle. Not prompts typed mid-turn, prompts from plugins or other sessions, headless runs, or before the first response.
 - **Once per cold spell:** sending the same prompt again goes through.

@@ -13,7 +13,7 @@ import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTop
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
 import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
-import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
+import { COLD_CANCEL, COLD_CONTINUE, COLD_HANDOFF, coldChoice, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
 import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
@@ -234,16 +234,18 @@ export const register: Register = (on, options) => {
 
     if ((await $.session.surfaces()).length === 0) return next(e)
     const cache = cacheView(lastCacheUse(conv), ttl, now)
-    const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor })
+    const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor, text: e.text })
     if (!isDue || cache.kind !== 'cold' || tokens === undefined) return next(e)
 
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
     const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
-    const answer = await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_CANCEL] }).catch(() => COLD_CANCEL)
-    if (answer !== COLD_CANCEL) return next(e)
+    const choice = coldChoice(await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_HANDOFF, COLD_CANCEL] }).catch(() => undefined))
+    if (choice === 'send') return next(e)
+    // Quick on a cold cache: no model call, so nothing is re-cached.
+    const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
     // After the drop has settled, so the box isn't cleared over the refill.
     $.clock.after(0, () => void $.prompt.fill({ text: e.text, mode: 'replace' }))
-    return { drop: coldDropReason(tokens) }
+    return { drop: coldDropReason(tokens, handoffPath) }
   })
 
   // F4: a whole-file Read of a long text file is denied with a pointer to
