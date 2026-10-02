@@ -7,6 +7,7 @@ import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/t
 import { alertStep, isAlertDue } from '../src/alerts'
 import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
 import { familyOf, rebuildUsd } from '../src/prices'
+import { joinPath } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
@@ -233,6 +234,15 @@ describe('T2 pure logic', () => {
     expect(formatStatus({
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
+  })
+})
+
+describe('paths', () => {
+  test("joinPath keeps the base's own separator", () => {
+    expect(joinPath('/p', '.claude/handoffs')).toBe('/p/.claude/handoffs')
+    expect(joinPath('/p/', 'a.md')).toBe('/p/a.md')
+    expect(joinPath('D:\\proj', '.claude/handoffs')).toBe('D:\\proj\\.claude\\handoffs')
+    expect(joinPath('D:\\proj\\', '')).toBe('D:\\proj\\')
   })
 })
 

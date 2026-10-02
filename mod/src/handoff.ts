@@ -1,3 +1,4 @@
+import { joinPath } from './paths'
 import type { SnapshotFacts } from './snapshot'
 
 // F7 handoff: a note for whoever continues the work in a fresh session.
@@ -96,6 +97,6 @@ function oneLine(text: string): string {
 
 function relativeTo(path: string, cwd: string | undefined): string {
   if (cwd === undefined || cwd === '') return path
-  const root = cwd.endsWith('/') ? cwd : `${cwd}/`
+  const root = joinPath(cwd, '')
   return path.startsWith(root) ? path.slice(root.length) : path
 }
