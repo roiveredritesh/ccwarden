@@ -23,6 +23,7 @@ export const TRIM_KEEP_CHARS = 2_000
 const HELP = `/cw-probe <check>
   info          Q1 TTL split, Q7 rateLimits, Q10 policy, Q11 tasks, Q12 spend
   ui            Q8 toast, status line and ui.ask on this surface
+  color [off]   Q15 status line with ANSI colours and a bar: do they render?
   env <tokens>  Q5 set CLAUDE_CODE_AUTO_COMPACT_WINDOW live, compare windows
   fork | wait   Q2 fork after 4 min (or don't: the control run), then log the
                 next turn's cache read; send a real prompt at ~8 min
@@ -47,9 +48,8 @@ export const register: Register = on => {
     await $.command.register({
       name: 'cw-probe',
       description: 'ccwarden day-one checks (dev only)',
-      argumentHint: 'info|ui|env|fork|wait|compact|newchat|report|clear',
+      argumentHint: 'info|ui|color|env|fork|wait|compact|newchat|report|clear',
     })
-    $.ui.status('ccwarden-probe loaded') // Q10: seeing this answers it
     return result
   })
 
@@ -133,6 +133,7 @@ export const register: Register = on => {
     switch (check) {
       case 'info': await info($, transcriptPath); break
       case 'ui': await ui($); break
+      case 'color': await color($, arg); break
       case 'env': await env($, arg); break
       case 'fork':
       case 'wait':
@@ -221,12 +222,26 @@ async function ttlSplit($: $, path: string): Promise<unknown> {
   return { responses: seen.size, write5m: w5m, write1h: w1h, ttl: w1h > w5m ? '1h' : w5m > 0 ? '5m' : 'unknown' }
 }
 
+// Q15: the types give `$.ui.status` a plain string and say nothing of ANSI. Show
+// green, yellow and red bars with escape codes; the user answers what rendered.
+async function color($: $, arg: string | undefined): Promise<void> {
+  if (arg === 'off') { $.ui.status(undefined); return }
+  const bar = (pct: number) => '▓'.repeat(Math.round(pct / 10)) + '░'.repeat(10 - Math.round(pct / 10))
+  const paint = (code: number, text: string) => `[${code}m${text}[0m`
+  $.ui.status(`${paint(32, `ctx ${bar(30)} 30%`)} │ ${paint(33, `ctx ${bar(70)} 70%`)} │ ${paint(31, `ctx ${bar(90)} 90%`)} │ ${paint(2, 'dim')}`)
+  const answer = await $.ui.ask('cw-probe Q15: how does the status line look?', ['Colours + bars', 'Bars only, no colour', 'Raw escape codes (garbage)', 'Nothing shown'])
+    .catch((err: unknown) => `ask failed: ${String(err)}`)
+  $.ui.status(undefined) // leave no second status line behind
+  await record($, 'Q15', { surfaces: await $.session.surfaces(), answer })
+}
+
 async function ui($: $): Promise<void> {
   const surfaces = await $.session.surfaces()
   $.ui.toast('cw-probe: toast test (Q8)', { timeoutMs: 10_000 })
   $.ui.status('cw-probe: status test (Q8)')
   const answer = await $.ui.ask('cw-probe Q8: did the toast and the status line show?', ['Both', 'Toast only', 'Status only', 'Neither'])
     .catch((err: unknown) => `ask failed: ${String(err)}`)
+  $.ui.status(undefined) // leave no second status line behind
   await record($, 'Q8', { surfaces, answer })
 }
 

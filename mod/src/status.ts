@@ -4,9 +4,9 @@ import type { Billing } from './config'
 import { familyOf } from './prices'
 
 // The status line (F1), one segment per fact:
-//   metered: Sonnet · ctx 140k/300k · cache ● 3m · this chat $1.84
-//   metered: Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
-//   window:  Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
+//   metered: Sonnet · ctx ▓▓▓▓▓░░░░░ 47% 140k/300k · cache ● 3m · this chat $1.84
+//   metered: Fable · ctx ▓▓▓▓▓▓▓▓▓░ 87% 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠
+//   window:  Haiku · ctx ▓▓▓▓▓░░░░░ 53% 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 62% (resets 1h 20m)
 //   with subagents (F5): … · agents 2 running · $0.40
 //   with keep-warm (F6): … · keep-warm $0.06 · saved $0.38
 //   with turns the user didn't type (F8): … · background $0.12
@@ -37,7 +37,7 @@ export type StatusFacts = {
 export function formatStatus(f: StatusFacts): string {
   const family = familyOf(f.model)
   const parts = [family === undefined ? f.model : family[0]!.toUpperCase() + family.slice(1)]
-  parts.push(`ctx ${f.tokens === undefined ? '–' : fmtTokens(f.tokens)}/${fmtTokens(f.limit)}`)
+  parts.push(ctxSegment(f.tokens, f.limit))
   parts.push(cacheSegment(f))
 
   const flag = f.isAlerted ? ' ⚠' : ''
@@ -57,6 +57,14 @@ export function formatStatus(f: StatusFacts): string {
     parts.push(`agents ${f.agents.running} running · $${f.agents.usd.toFixed(2)}`)
   }
   return parts.join(' · ')
+}
+
+/** `ctx ▓▓▓▓▓░░░░░ 47% 140k/300k`: plain Unicode, because `$.ui.status` shows ANSI escapes raw (Q15). */
+function ctxSegment(tokens: number | undefined, limit: number): string {
+  if (tokens === undefined) return `ctx –/${fmtTokens(limit)}`
+  const pct = limit > 0 ? Math.round((tokens / limit) * 100) : 0
+  const filled = Math.max(0, Math.min(10, Math.round(pct / 10)))
+  return `ctx ${'▓'.repeat(filled)}${'░'.repeat(10 - filled)} ${pct}% ${fmtTokens(tokens)}/${fmtTokens(limit)}`
 }
 
 function cacheSegment(f: StatusFacts): string {

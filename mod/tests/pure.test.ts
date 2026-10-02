@@ -229,7 +229,7 @@ describe('T2 pure logic', () => {
     expect(formatStatus({
       billing: 'metered', model: 'claude-fable-5-1', tokens: 262_000, limit: 300_000, ttl: '5m',
       cache: { kind: 'cold', msCold: 12 * MIN }, rebuildUsd: 3.3, usd: 5.12, now: 0, isAlerted: true,
-    })).toBe('Fable · ctx 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠')
+    })).toBe('Fable · ctx ▓▓▓▓▓▓▓▓▓░ 87% 262k/300k · cache ○ cold 12m (rebuild ≈ $3.30) · this chat $5.12 ⚠')
     expect(formatStatus({
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
