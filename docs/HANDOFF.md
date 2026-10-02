@@ -207,6 +207,8 @@ Known limits:
 
 - A prompt the user types while idle, over a cold cache with a context ≥ `coldMinTokens`, gets one `$.ui.ask`. It names the cold time, the tokens and the re-cache cost (est.), and suggests `/clear`.
 - Cancel or a dismissal drops the prompt with a reason and refills the box via `$.prompt.fill`. Sending again in the same cold spell goes through.
+- A third choice, Handoff (or `/handoff` typed under Other), writes a quick handoff with no model call, so the cold cache isn't rebuilt just to write the note. Before this, asking Claude for the note re-cached everything anyway. The prompt is kept as with Cancel.
+- Guard: a prompt that asks Claude for a handoff (`isHandoffAsk`: mentions "handoff"/"hand-off", not a slash command) is asked about every time over a cold cache, not just once per cold spell.
 - Unverified live: that the refill lands after the drop clears the box (Q4-adjacent), and how `ui.ask` looks in Desktop (Q8).
 
 

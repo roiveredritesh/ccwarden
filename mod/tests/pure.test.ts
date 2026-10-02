@@ -20,7 +20,7 @@ import { handoffModelLine, isEffortCacheSafe, startAdvice, switchNote } from '..
 import { backgroundSource, backgroundToast } from '../src/background'
 import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
-import { coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
+import { coldChoice, coldDropReason, coldQuestion, isColdAskDue, isHandoffAsk } from '../src/cold'
 import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
@@ -408,11 +408,27 @@ describe('T5 cold-cache guard', () => {
     expect(isColdAskDue({ ...base, tokens: 40_000 })).toBe(false)
     expect(isColdAskDue({ ...base, tokens: undefined })).toBe(false)
     expect(isColdAskDue({ ...base, cache: { kind: 'warm', msLeft: 1 } })).toBe(false)
+    // A prompt asking Claude for a handoff is asked about again.
+    expect(isColdAskDue({ ...base, askedFor: 100, text: 'write a handoff document' })).toBe(true)
+    expect(isColdAskDue({ ...base, askedFor: 100, text: '/handoff' })).toBe(false)
+  })
+  test('handoff asks and answers', () => {
+    expect(isHandoffAsk('Handoff doc bana do')).toBe(true)
+    expect(isHandoffAsk('a hand-off note')).toBe(true)
+    expect(isHandoffAsk('/handoff quick')).toBe(false)
+    expect(isHandoffAsk('handoffDir config fix karo')).toBe(false)
+    expect(coldChoice('Continue')).toBe('send')
+    expect(coldChoice('Handoff')).toBe('handoff')
+    expect(coldChoice(' /handoff ')).toBe('handoff')
+    expect(coldChoice('Cancel')).toBe('keep')
+    expect(coldChoice('send it')).toBe('keep')
+    expect(coldChoice(undefined)).toBe('keep')
   })
   test('texts', () => {
     expect(coldQuestion({ msCold: 12 * 60_000, tokens: 262_000, rebuildUsd: 3.3 })).toContain('re-caches ~262k tokens (≈ $3.30 est.)')
     expect(coldQuestion({ msCold: 60_000, tokens: 1_000 })).not.toContain('$')
     expect(coldDropReason(180_000)).toContain('Your prompt is back in the box')
+    expect(coldDropReason(180_000, '/p/h.md')).toContain('Handoff written to /p/h.md')
   })
 })
 
