@@ -194,7 +194,7 @@ describe('TTL inference', () => {
   const jsonl = (split: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number }) =>
     JSON.stringify({ type: 'assistant', message: { id: 'm1', usage: { cache_creation: split } } })
 
-  test('observed in the transcript, with one toast when it contradicts billing', { options: { billing: 'metered' } }, async ($, on) => {
+  test('observed in the transcript, with one toast when it contradicts billing', { options: { billing: 'metered', modelAdvisor: false } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 1_000 }, transcript: jsonl({ ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 500 }) })
     await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl' })
     await $.session.start(start('terminal'))
@@ -207,7 +207,7 @@ describe('TTL inference', () => {
     expect(w.toasts).toHaveLength(1)
   })
 
-  test('the documented override wins over billing, and explains a 1h write', { options: { billing: 'metered' } }, async ($, on) => {
+  test('the documented override wins over billing, and explains a 1h write', { options: { billing: 'metered', modelAdvisor: false } }, async ($, on) => {
     const w = world(on, {
       surfaces: ['terminal'], usage: { tokens: 1_000 }, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' },
       transcript: jsonl({ ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 500 }),
@@ -928,5 +928,56 @@ describe('F8 background spend watcher', () => {
     await $.session.start(start('terminal'))
     await backgroundTurn($, { kind: 'peer' })
     expect(w.toasts).toEqual([])
+  })
+})
+
+describe('F9 model and effort advice', () => {
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`a fresh start on Opus suggests cheaper models while a switch is free (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], model: 'claude-opus-5-5' })
+        await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl', model: 'claude-opus-5-5' })
+        await w.clock.advance(0)
+        expect(w.toasts).toEqual(['ccwarden: Routine work? Per token, Sonnet 50%, Haiku 25% of Opus. Switching now (/model haiku) is free: nothing is cached before the first prompt. For routine steps later, a lower /effort keeps the cache on this model.'])
+      })
+    }
+  }
+
+  test('not on a resume or after /clear, not on Haiku, not when off', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], model: 'claude-opus-5-5' })
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl', model: 'claude-opus-5-5' })
+    await $.classic.SessionStart({ source: 'clear', transcript_path: '/t.jsonl', model: 'claude-opus-5-5' })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl', model: 'claude-haiku-4-5-20251001' })
+    await w.clock.advance(0)
+    expect(w.toasts).toEqual([])
+  })
+
+  test('modelAdvisor off', { options: { billing: 'metered', modelAdvisor: false } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], model: 'claude-opus-5-5' })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl', model: 'claude-opus-5-5' })
+    await w.clock.advance(0)
+    expect(w.toasts).toEqual([])
+  })
+
+  test('a switch past the new model\'s limit is noted, never blocked', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    const sw = (to_model: string, context_tokens: number) => $.classic.PreModelSwitch({
+      from_model: 'claude-sonnet-5-5', to_model, requested_model: null, source: 'command', context_tokens,
+      prompt_cache_warm: true, cache_ttl: '5m', estimated_cache_write_usd: 0.2, pricing: 'catalog',
+    })
+    on('classic.PreModelSwitch', () => ({}))
+    const out = await sw('claude-haiku-4-5-20251001', 180_000)
+    expect(out.permissionDecision).toBeUndefined()
+    expect(w.logs).toEqual(["ccwarden: 180k tokens is past claude-haiku-4-5-20251001's 120k limit, so the switch re-reads it all and then compacts at the next turn end. Cheaper: /handoff, then start a new session on that model."])
+    await sw('claude-opus-5-5', 180_000)
+    expect(w.logs).toHaveLength(1)
+  })
+
+  test('a handoff names the cheaper model for the next session', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], model: 'claude-opus-5-5' })
+    w.messages = [{ role: 'user', text: 'Ship it', toolUses: [] }]
+    await $.session.start(start('terminal'))
+    await $.command.run({ command: 'handoff', args: 'quick', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    expect(w.writes[0]!.text).toContain('_Next session: for routine steps, start on haiku (`/model haiku`) before the first prompt; a switch then costs nothing._')
   })
 })

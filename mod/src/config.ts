@@ -35,6 +35,7 @@ export type Config = {
   handoffOnCompact: boolean
   handoffMaxUsd: number
   backgroundWatch: boolean
+  modelAdvisor: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -64,6 +65,7 @@ export const DEFAULTS: Config = {
   handoffOnCompact: false,
   handoffMaxUsd: 0.5,
   backgroundWatch: true,
+  modelAdvisor: true,
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -113,6 +115,7 @@ export function readConfig(options: PluginOptions): Config {
     handoffOnCompact: bool('handoffOnCompact'),
     handoffMaxUsd: num('handoffMaxUsd'),
     backgroundWatch: bool('backgroundWatch'),
+    modelAdvisor: bool('modelAdvisor'),
   }
 }
 

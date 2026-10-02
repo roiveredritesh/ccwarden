@@ -3,6 +3,7 @@ import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
 import { backgroundSource, backgroundToast } from '../src/background'
 import type { BackgroundSource } from '../src/background'
+import { handoffModelLine, startAdvice, switchNote } from '../src/advisor'
 import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
 import { avoidedRebuild, PING_PROMPT, pingUsd, pingVerdict, TICK_MS } from '../src/keepwarm'
 import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread, pickupPrompt } from '../src/handoff'
@@ -34,7 +35,7 @@ import { fiveHour, trackWindow } from '../src/window'
 // (spend alerts), F2 (the cold-cache guard), F3 (per-model limits and
 // snapshot compaction), F4 (the junk guard), F5 (the subagent guard and
 // per-agent cost), F6 (keep-warm, off by default until Q2), F7 (handoffs),
-// F8 (the background spend watcher), the first-run billing question, the R9 toast budget, and the transcript path
+// F8 (the background spend watcher), F9 (model and effort advice), the first-run billing question, the R9 toast budget, and the transcript path
 // the session facts are read from.
 
 type $ = EngineInterface
@@ -100,6 +101,23 @@ export const register: Register = (on, options) => {
     // F7: a fresh start offers the newest handoff not offered before.
     if (e.source === 'startup') {
       $.clock.after(0, () => void offerHandoff($, config).catch((err: unknown) => $.ui.log(`ccwarden: handoff pickup failed: ${String(err)}`, { to: 'debug' })))
+      // F9: before the first prompt nothing is cached, so a switch is free.
+      if (config.modelAdvisor) {
+        $.clock.after(0, async () => {
+          const advice = startAdvice(e.model ?? (await $.session.model()))
+          if (advice !== undefined) await notify($, 'advisor', advice)
+        })
+      }
+    }
+    return next(e)
+  })
+
+  // F9: no guard on a switch (Claude Code asks while the cache is warm);
+  // only a note when the context is past the new model's limit.
+  on('classic.PreModelSwitch', async ($, e, next) => {
+    if (config.modelAdvisor) {
+      const note = switchNote({ toModel: e.to_model, contextTokens: e.context_tokens, limit: limitFor(e.to_model, config) })
+      if (note !== undefined) $.ui.log(note)
     }
     return next(e)
   })
@@ -418,7 +436,8 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
   const root = await $.session.root()
   const dir = /^([\\/]|[A-Za-z]:)/.test(config.handoffDir) ? config.handoffDir : `${root}/${config.handoffDir}`
   const path = `${dir}/${handoffFileName(now, handoffTopic(facts.goal ?? facts.asks[0]))}`
-  const text = handoffMarkdown({ ...facts, model, writtenAt: now }, { cwd: root, full })
+  const modelLine = config.modelAdvisor ? handoffModelLine(model) : undefined
+  const text = handoffMarkdown({ ...facts, model, writtenAt: now }, { cwd: root, full, modelLine })
   const written = await $.fs.write(path, text).then(() => true, () => false)
   $.ui.log(!written
     ? `ccwarden: couldn't write the handoff to ${path}.`
