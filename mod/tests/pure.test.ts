@@ -9,6 +9,7 @@ import { cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '.
 import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
+import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
 describe('config', () => {
   test('empty options read as the defaults, billing unset', () => {
@@ -220,5 +221,77 @@ describe('T2 pure logic', () => {
     expect(formatStatus({
       billing: 'window', model: 'opus', limit: 300_000, ttl: '1h', cache: { kind: 'none' }, usd: 1, now: 0, isAlerted: false,
     })).toBe('Opus · ctx –/300k · cache – · this chat $1.00') // no 5h reading yet: falls back to $
+  })
+})
+
+describe('T3 snapshot', () => {
+  const msg = (role: 'user' | 'assistant', text: string, extra: Partial<SessionMessage> = {}): SessionMessage =>
+    ({ role, text, toolUses: [], handle: `h-${role}-${text}`, ...extra })
+
+  test('plan: snapshot by default, summary for a focus or summary mode, veto precompute', () => {
+    expect(planCompaction({ trigger: 'auto' }, 'snapshot')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'plugin' }, 'snapshot')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'manual' }, 'snapshot')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'manual', instructions: '  ' }, 'snapshot')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'manual', instructions: 'auth' }, 'snapshot')).toBe('summary+facts')
+    expect(planCompaction({ trigger: 'precompute' }, 'snapshot')).toBe('skip')
+    expect(planCompaction({ trigger: 'precompute' }, 'summary')).toBe('pass')
+    expect(planCompaction({ trigger: 'auto' }, 'summary')).toBe('summary+facts')
+    expect(planCompaction({ trigger: 'auto', agentId: 'a' }, 'snapshot')).toBe('pass')
+  })
+
+  test('tail: two turns when they fit, else one, else none; never a turn missing a handle', () => {
+    const big = 'x'.repeat(1_000)
+    const messages = [msg('user', 'one'), msg('assistant', big), msg('user', 'two'), msg('assistant', big), msg('user', 'three'), msg('assistant', 'ok')]
+    expect(keptTail(messages, 10_000)).toEqual({ tail: messages.slice(2), turns: 2 })
+    expect(keptTail(messages, 500)).toEqual({ tail: messages.slice(4), turns: 1 })
+    expect(keptTail(messages, 5)).toEqual({ tail: [], turns: 0 })
+    const unhandled = [...messages.slice(0, 5), { ...messages[5]!, handle: undefined }]
+    expect(keptTail(unhandled, 10_000).turns).toBe(0)
+    // tool results and wrappers don't start a turn
+    const withTools = [msg('user', 'go'), msg('assistant', ''), msg('user', '', { toolResults: [{ tool_use_id: 't', text: 'r' }] as never }), msg('user', '<command-name>/model</command-name>')]
+    expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1 })
+  })
+
+  test('the last error and answer', () => {
+    const fail = { tool_use_id: 'b', tool: 'Bash', input: {}, text: 'exit 1', isError: true as const }
+    const messages = [msg('assistant', 'first', { toolUses: [fail] }), msg('assistant', 'second'), msg('assistant', '  ')]
+    expect(lastError(messages)).toBe('Bash: exit 1')
+    expect(lastAnswer(messages)).toBe('second')
+    expect(lastError([msg('assistant', 'fine')])).toBeUndefined()
+  })
+
+  test('numstat: counts per path, binary as 0', () => {
+    const stats = parseNumstat('12\t3\tsrc/a.ts\n-\t-\timg.png\n\n')
+    expect(stats.get('src/a.ts')).toEqual({ added: 12, removed: 3 })
+    expect(stats.get('img.png')).toEqual({ added: 0, removed: 0 })
+    expect(stats.size).toBe(2)
+  })
+
+  test('text: sections, relative paths with diff stat, capped length', () => {
+    const facts = {
+      asks: ['Fix login', 'keep cookie', 'fix test'],
+      todos: [{ content: 'done', status: 'completed' }, { content: 'retry', status: 'in_progress' }],
+      files: ['/p/src/a.ts', '/elsewhere/b.ts'],
+      diff: parseNumstat('12\t3\tsrc/a.ts\n'),
+      branch: 'main',
+      lastAnswer: 'All green.',
+    }
+    const text = snapshotText(facts, { cwd: '/p', keptTurns: 0 })
+    expect(text).toContain('No earlier turns were kept.')
+    expect(text).toContain('## Goal (first request)\nFix login')
+    expect(text).toContain('1. keep cookie\n2. fix test')
+    expect(text).toContain('- [in_progress] retry')
+    expect(text).not.toContain('[completed]')
+    expect(text).toContain('- src/a.ts (+12 -3)\n- /elsewhere/b.ts')
+    expect(text).toContain('## Your last answer\nAll green.')
+    expect(snapshotText(facts, { cwd: '/p', keptTurns: 2 })).not.toContain('## Your last answer')
+    expect(snapshotText({ ...facts, asks: ['y'.repeat(50_000)] }, { keptTurns: 1, maxChars: 800 }).length).toBeLessThanOrEqual(800)
+    expect(snapshotText({ ...facts, goal: 'Original goal' }, { keptTurns: 1 })).toContain('## Goal (first request)\nOriginal goal')
+  })
+
+  test('summary instructions keep the focus and add the facts', () => {
+    expect(summaryInstructions('auth', 'FACTS')).toBe('auth\n\nKeep these facts from the session verbatim in the summary:\nFACTS')
+    expect(summaryInstructions(undefined, 'FACTS')).toBe('Keep these facts from the session verbatim in the summary:\nFACTS')
   })
 })

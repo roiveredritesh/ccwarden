@@ -1,5 +1,5 @@
 import { update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { CcwardenConversation } from '../types'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
 import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billingRow } from '../src/billing'
@@ -8,6 +8,8 @@ import type { Ttl } from '../src/cache'
 import { limitFor, readConfig } from '../src/config'
 import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
+import { keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
+import type { SnapshotFacts } from '../src/snapshot'
 import { formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -21,8 +23,9 @@ import { fiveHour, trackWindow } from '../src/window'
 //
 // So far: F1 (the status line: model, context against the per-model limit,
 // cache warm/cold, this conversation's $ or share of the 5h window), F1b
-// (spend alerts), the first-run billing question, the R9 toast budget, and
-// the transcript path the session facts are read from.
+// (spend alerts), F3 (per-model limits and snapshot compaction), the
+// first-run billing question, the R9 toast budget, and the transcript path
+// the session facts are read from.
 
 type $ = EngineInterface
 
@@ -35,9 +38,13 @@ const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
 const TTL_RECHECK_MS = 10 * 60_000
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024 // what one $.fs.read takes
+const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
+const CHARS_PER_TOKEN = 4
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
+  // One limit compaction at a time; a reload forgets it, which is harmless.
+  let isCompacting = false
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -113,8 +120,81 @@ export const register: Register = (on, options) => {
     if (pending !== undefined) await notify($, 'spend', pending)
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
+
+    // F3: past the model's limit, compact once the turn is over (the engine
+    // refuses mid-turn). Through `/compact`, not $.session.compact: a plugin's
+    // own call skips its own session.compact hook, so it would get the engine
+    // summary. The engine's own window stays the safety net.
+    const usage = await $.session.usage()
+    const model = await $.session.model()
+    const limit = Math.min(limitFor(model, config), usage.context.window)
+    const tokens = usage.context.tokens ?? 0
+    if (tokens > limit && !isCompacting) {
+      isCompacting = true
+      $.ui.log(`ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}; compacting.`)
+      $.clock.after(0, async () => {
+        const ran = await $.command.run({ command: 'compact' }).catch((err: unknown) => ({ error: String(err) }))
+        isCompacting = false
+        if ('error' in ran) $.ui.log(`ccwarden: compaction didn't run: ${ran.error}`)
+        await refreshStatus($, config)
+      })
+    }
     return result
   })
+
+  // F3 snapshot compaction: answer in core's place, so no summary request is
+  // made. A `/compact <focus>` (or compactMode summary) keeps the engine's
+  // summary, with the snapshot facts added to its instructions.
+  on('session.compact', async ($, e, next) => {
+    const plan = planCompaction(e, config.compactMode)
+    if (plan === 'pass') return next(e)
+    if (plan === 'skip') return { skip: 'ccwarden: snapshot compaction is on, so no summary is precomputed.' }
+
+    const facts = await snapshotFacts($, e.messages)
+    if (plan === 'summary+facts') {
+      const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: 0 })
+      return next({ ...e, instructions: summaryInstructions(e.instructions, text) })
+    }
+
+    const usage = await $.session.usage()
+    const limit = Math.min(limitFor(await $.session.model(), config), usage.context.window)
+    const { tail, turns } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
+    const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: turns })
+    $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
+    return { messages: [{ role: 'user', text, toolUses: [] }, ...tail] }
+  })
+}
+
+/**
+ * The facts a snapshot carries: asks, files and todos from the transcript
+ * (else the messages compacted), the goal kept across compactions, and git's
+ * branch and diff stat.
+ */
+async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise<SnapshotFacts> {
+  const path = (await $.state.get(transcriptPath)).value
+  let facts = await sessionFacts($, path)
+  if (facts.asks.length === 0) facts = collectFromMessages(messages)
+  const conv = await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    c.goal ??= facts.asks[0]
+    return c
+  })
+  const git = async (argv: string[]) => {
+    const ran = await $.process.run(['git', ...argv], { timeoutMs: 5_000 }).catch(() => undefined)
+    return ran?.exitCode === 0 ? ran.stdout.trim() : undefined
+  }
+  const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  const numstat = await git(['diff', '--numstat', 'HEAD'])
+  return {
+    goal: conv.goal,
+    asks: facts.asks,
+    todos: facts.todos,
+    files: facts.files,
+    diff: parseNumstat(numstat ?? ''),
+    branch: branch === undefined || branch === '' ? undefined : branch,
+    lastError: lastError(messages),
+    lastAnswer: lastAnswer(messages),
+  }
 }
 
 /** Redraws the status line from the engine's figures and the conversation's state. */

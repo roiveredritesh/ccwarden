@@ -7,7 +7,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). It validates, type-checks, and passes 41 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. It validates, type-checks, and passes 59 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -152,7 +152,13 @@ Known limits:
 - `sessionAlertUsd/Pct/Repeat` from config.
 - Done when the figures match `/usage`, and `/clear` resets the count with no stale alert.
 
-**T3. F3, snapshot compaction + per-model limits.**
+**T3. F3, snapshot compaction + per-model limits.** *Done 2026-10-02* (code and tests). Notes:
+
+- The limit compaction runs `/compact` through `$.command.run`, not `$.session.compact`, because a plugin's own call skips its own `session.compact` hook. That `/compact` reaches the hook is unverified (SPEC §9 Q13). The probe's Q3 check now goes the same way.
+- The snapshot is a user message: the goal (kept in `$.state` across compactions), the last 5 asks verbatim, open todos, edited files with `git diff --numstat HEAD`, the branch, and the last error. It is followed by the last 2 turns by handle (1 if they don't fit 15% of the limit; with none, the last answer goes in the snapshot).
+- A snapshot followed by a kept user prompt makes two user messages in a row; that the engine accepts this is part of Q3.
+- Compaction of subagent loops (`agentId`) passes through untouched, for T4.
+
 
 - At `turn.complete` past the model limit: `$.session.compact()`.
 - The `session.compact` hook builds the snapshot message plus the last 1–2 turns (with handles) and returns `{ messages }`.
@@ -213,6 +219,7 @@ Known limits:
 - **Tests:** `test(name, { options }, body)` sets `userConfig`. Ops the mod calls (`session.usage`, `session.surfaces`, `config.list`, `ui.toast`, …) need a test hook that answers `{ value }`. `$.state` works in tests without one. `$.ui.ask` is answered through `tool.call` `AskUserQuestion` (`{ result: { questions, answers } }`, or `{ deny }` for a dismissal). See `world()` in `mod/tests/hooks.test.ts`.
 - **CI:** `npm install -g @anthropic-ai/claude-code@<version>` runs `plugin validate` and `plugin test` with no login.
 - **The test kit's `expect` has no `toBeCloseTo`.** Round instead. A mod that calls `$.env.get` needs `mock.env(on, {})` in its tests. `fs.read`, `fs.stat`, `settings.read` and `session.model` are answered with `{ value }` like other ops.
+- **A plugin's own `$.session.compact()` skips that plugin's `session.compact` hook** (the "calling one" is the whole plugin, even from a timer). To have your own hook answer, go through `$.command.run({ command: 'compact' })`. In tests, a test hook's `$` can't call `$.session.compact` (it isn't in its scanned calls), so the test body plays core with the engine's `$`.
 - **`$.fs.read` rejects files over 4 MiB.** Long transcripts exceed that, so anything read from the transcript must have another source to fall back on.
 
 - **`claude plugin test` doesn't validate a `tool.call` answer against the tool's output schema.** A malformed Bash result passes in a test, so schema questions (Q6) need a live session.

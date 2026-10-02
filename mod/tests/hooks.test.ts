@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { ConfigRow, On, RenderSurface, SessionRateLimit } from 'claude-code'
+import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -19,6 +19,7 @@ function world(on: On, opts: {
   env?: Record<string, string>
   settings?: Record<string, unknown>
   transcript?: string
+  git?: { branch?: string; numstat?: string }
 } = {}) {
   const clock = mock.clock(on)
   mock.env(on, opts.env ?? {})
@@ -32,6 +33,9 @@ function world(on: On, opts: {
     logs: [] as string[],
     asks: [] as string[],
     configSets: [] as { key: string; value: unknown }[],
+    // What reached core's session.compact: the plugin passed it on.
+    coreCompactions: [] as { trigger: string; instructions?: string; agentId?: string }[],
+    commandsRun: [] as string[],
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -44,6 +48,19 @@ function world(on: On, opts: {
   on('settings.read', () => ({ value: opts.settings ?? {} }))
   on('fs.stat', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: opts.transcript.length, mtimeMs: 0, isLink: false } }))
   on('fs.read', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: opts.transcript }))
+  on('session.cwd', () => ({ value: '/p' }))
+  on('session.messages', () => ({ value: [] }))
+  on('process.run', (_$, e) => {
+    const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
+    return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.compact', (_$, e) => {
+    shown.coreCompactions.push({ trigger: e.trigger, instructions: e.instructions, agentId: e.agentId })
+    return { messages: [{ role: 'user', text: 'core summary', toolUses: [] }] }
+  })
+  // Core's /compact raises a manual compaction; a test plays that part with
+  // the engine's $ (see `runCompact`).
+  on('command.run', { command: 'compact' }, () => { shown.commandsRun.push('compact'); return {} })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
@@ -276,5 +293,129 @@ describe('first-run billing question', () => {
     await $.session.start(start(null))
     await w.clock.advance(0)
     expect(w.asks).toEqual([])
+  })
+})
+
+describe('F3 per-model limits and snapshot compaction', () => {
+  const msg = (role: 'user' | 'assistant', text: string, extra: Partial<SessionMessage> = {}): SessionMessage =>
+    ({ role, text, toolUses: [], handle: `h${handles++}`, ...extra })
+  let handles = 0
+  const history = (): SessionMessage[] => [
+    msg('user', 'Fix the login timeout bug'),
+    msg('assistant', 'Looking.', { toolUses: [{ tool_use_id: 'e1', tool: 'Edit', input: { file_path: '/p/src/auth.ts' }, text: 'ok' }] }),
+    msg('user', '', { toolResults: [{ tool_use_id: 'e1', text: 'ok' }] as never }),
+    msg('assistant', 'Edited auth.ts.'),
+    msg('user', 'also keep the old cookie name'),
+    msg('assistant', 'Running tests.', { toolUses: [{ tool_use_id: 'b1', tool: 'Bash', input: { command: 'npm test' }, text: '1 failing', isError: true }] }),
+    msg('user', '', { toolResults: [{ tool_use_id: 'b1', text: '1 failing' }] as never }),
+    msg('assistant', 'One test fails.'),
+    msg('user', 'fix that test'),
+    msg('assistant', 'Fixed.'),
+  ]
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`Haiku compacts past 120k with a snapshot, no summary request (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], model: 'claude-haiku-4-5-20251001', usage: { tokens: 125_000, window: 200_000 } })
+        await $.session.start(start(surface))
+        await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
+        await w.clock.advance(0)
+
+        expect(w.commandsRun).toEqual(['compact'])
+        await $.session.compact({ trigger: 'manual', messages: history() }) // what core's /compact raises
+        expect(w.coreCompactions).toEqual([]) // answered in core's place
+        expect(w.logs).toContain('ccwarden: 125k tokens is past the 120k limit for claude-haiku-4-5-20251001; compacting.')
+        expect(w.logs.at(-1)).toMatch(/^ccwarden: snapshot compaction \(manual\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; no summary request\.$/)
+      })
+    }
+  }
+
+  test('Sonnet keeps going at 250k and compacts past 300k', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 250_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual([])
+
+    w.usage.tokens = 301_000
+    await $.turn.complete(turnDone())
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual(['compact'])
+  })
+
+  test('a model switch applies the new limit from the next turn', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 150_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual([])
+
+    w.model = 'claude-haiku-4-5-20251001'
+    await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
+    await w.clock.advance(0)
+    expect(w.commandsRun).toEqual(['compact'])
+  })
+
+  test('the snapshot: goal, verbatim asks, files with diff stat, branch, last error, then the last turns by handle', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 }, git: { branch: 'fix/login', numstat: '12\t3\tsrc/auth.ts\n' } })
+    await $.session.start(start('terminal'))
+    const messages = history()
+
+    const out = await $.session.compact({ trigger: 'auto', messages })
+
+    expect(out.skip).toBeUndefined()
+    const [snap, ...tail] = out.messages ?? []
+    expect(snap!.handle).toBeUndefined()
+    expect(snap!.text).toContain('[ccwarden snapshot]')
+    expect(snap!.text).toContain('## Goal (first request)\nFix the login timeout bug')
+    expect(snap!.text).toContain('1. also keep the old cookie name')
+    expect(snap!.text).toContain('- src/auth.ts (+12 -3)')
+    expect(snap!.text).toContain('## Branch\nfix/login')
+    expect(snap!.text).toContain('## Last error\nBash: 1 failing')
+    expect(tail.map(m => m.handle)).toEqual(messages.slice(4).map(m => m.handle)) // the last two turns
+  })
+
+  test('the goal survives a second compaction', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    const after = [msg('user', 'now the docs'), msg('assistant', 'Done.')]
+    const out = await $.session.compact({ trigger: 'auto', messages: after })
+    expect(out.messages?.[0]?.text).toContain('## Goal (first request)\nFix the login timeout bug')
+  })
+
+  test('precompute is vetoed in snapshot mode', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    const out = await $.session.compact({ trigger: 'precompute', messages: history() })
+    expect(out.skip).toContain('snapshot compaction is on')
+    expect(w.coreCompactions).toEqual([])
+  })
+
+  test('/compact <focus> keeps the engine summary, with the facts added', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    const out = await $.session.compact({ trigger: 'manual', instructions: 'the auth design', messages: history() })
+    expect(out.messages?.[0]?.text).toBe('core summary')
+    expect(w.coreCompactions).toHaveLength(1)
+    expect(w.coreCompactions[0]!.instructions).toMatch(/^the auth design\n\nKeep these facts from the session verbatim/)
+    expect(w.coreCompactions[0]!.instructions).toContain('fix that test')
+  })
+
+  test('compactMode summary: every compaction is the engine summary, with the facts', { options: { billing: 'metered', compactMode: 'summary' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    await $.session.compact({ trigger: 'precompute', messages: history() })
+    expect(w.coreCompactions.map(c => c.trigger)).toEqual(['auto', 'precompute'])
+    expect(w.coreCompactions[0]!.instructions).toContain('Keep these facts')
+    expect(w.coreCompactions[1]!.instructions).toBeUndefined()
+  })
+
+  test("a subagent's compaction passes through untouched", { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: history() })
+    expect(w.coreCompactions).toEqual([{ trigger: 'auto', instructions: undefined, agentId: 'a1' }])
   })
 })
