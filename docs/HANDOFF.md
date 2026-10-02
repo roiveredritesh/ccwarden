@@ -236,7 +236,7 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 - **Hogs:** every main-loop tool result of ≥ 2k est. tokens is recorded, in the conversation's top 20 (`$.state`) and in a per-day tally (`$.store` `hogDays`, the top 100 a day, 31 days).
 - **Known gap:** two sessions on one machine writing at the same moment can lose one update, because `$.store` has no compare-and-set. The error is small.
 
-**M3-T2. F11 month tracking and budget mode.**
+**M3-T2. F11 month tracking and budget mode.** *Done 2026-10-02* (SPEC F11 "As built").
 
 - `monthlyBudgetUsd`. `/cw spent <amount>` calibrates against the real figure.
 - Toasts at 50/80/100% with a projection.

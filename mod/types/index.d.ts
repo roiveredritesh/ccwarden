@@ -55,6 +55,8 @@ declare module 'claude-code' {
       transcriptPath: string
       /** The first-run billing question was asked in this session. */
       billingAsked: boolean
+      /** Budget mode is on (SPEC §3), as last worked out. */
+      budgetMode: boolean
       /** This conversation's figures (F1, F1b). */
       conversation: CcwardenConversation
     }

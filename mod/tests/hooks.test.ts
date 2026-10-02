@@ -1036,3 +1036,80 @@ describe('M3 spend ledger and context hogs', () => {
     expect(w.store.get('hogDays')).toEqual({ '2026-10-02': { 'Grep\tbig': 20_000 } })
   })
 })
+
+describe('F11 month tracking and budget mode', () => {
+  const OCT = Date.parse('2026-10-11T00:00:00Z') // 10 days into a 31-day month
+  const seeded = (usd: number) => ({ ledger: { days: { '2026-10-05': usd } } })
+  const cw = (args: string) => ({ command: 'cw', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } })
+
+  for (const surface of SURFACES) {
+    test(`toasts at 50% and 80% of the month budget, once each, with a projection; budget mode follows (${surface})`, { options: { billing: 'metered', monthlyBudgetUsd: 100, sessionAlertUsd: 1000 } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], store: seeded(45) })
+      await w.clock.advance(OCT)
+      await $.session.start(start(surface))
+      w.usage.usd = 6
+      await $.session.measure(measure(w))
+      expect(w.toasts).toEqual(['ccwarden: $51.00 of your $100 month budget so far (51%, est.). At this pace, ~$158 by month end.'])
+      w.usage.usd = 7
+      await $.session.measure(measure(w))
+      expect(w.toasts).toHaveLength(1)
+      expect(w.status.at(-1)).not.toContain('budget mode')
+
+      w.usage.usd = 37
+      await $.session.measure(measure(w))
+      expect(w.toasts.slice(1)).toEqual([
+        'ccwarden: $82.00 of your $100 month budget so far (82%, est.). At this pace, ~$254 by month end.',
+        'ccwarden: budget mode on (the month is at 82% of its budget): a stricter junk guard and earlier window alerts. /cw budget off to stop it.',
+      ])
+      expect(w.status.at(-1)).toContain('budget mode')
+
+      await $.session.start(start(surface)) // a reload: budget mode stays, unannounced
+      expect(w.toasts).toHaveLength(3)
+    })
+  }
+
+  test('no month toasts without a budget, or on window billing', { options: { billing: 'window', monthlyBudgetUsd: 100 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], store: seeded(90) })
+    await w.clock.advance(OCT)
+    await $.session.start(start('terminal'))
+    w.usage.usd = 20
+    await $.session.measure(measure(w))
+    expect(w.toasts).toEqual([])
+  })
+
+  test('/cw spent calibrates the month; /cw reports it', { options: { billing: 'metered', monthlyBudgetUsd: 200 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], store: seeded(10) })
+    await w.clock.advance(OCT)
+    await $.session.start(start('terminal'))
+    await $.command.run(cw('spent $60'))
+    w.usage.usd = 5
+    await $.session.measure(measure(w))
+    await $.command.run(cw(''))
+    expect(w.logs.at(-1)).toBe('ccwarden: this month $65.00 of your $200 budget on this machine (est.), ~$202 at this pace; budget mode off.')
+    await $.command.run(cw('spent lots'))
+    expect(w.logs.at(-1)).toContain('/cw spent <amount>')
+  })
+
+  for (const surface of SURFACES) {
+    test(`/cw budget on tightens the junk guard (800 lines) (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+      const file = Array.from({ length: 1_000 }, (_, i) => `line ${i}`).join('\n')
+      const w = world(on, { surfaces: [surface], files: { '/p/mid.ts': file } })
+      await $.session.start(start(surface))
+      expect((await $.tool.call({ tool: 'Read', file_path: '/p/mid.ts' })).deny).toBeUndefined()
+      await $.command.run(cw('budget on'))
+      expect(w.logs).toContain('ccwarden: budget mode on (set by hand): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
+      expect((await $.tool.call({ tool: 'Read', file_path: '/p/mid.ts' })).deny).toContain('more than 800')
+      expect(w.status.at(-1)).toContain('budget mode')
+      await $.command.run(cw('budget off'))
+      expect((await $.tool.call({ tool: 'Read', file_path: '/p/mid.ts' })).deny).toBeUndefined()
+    })
+  }
+
+  test('window billing: budget mode once the 5h window passes budgetModeAt', { options: { billing: 'window' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { rateLimits: [fiveHour(70)] } })
+    await $.session.start(start('terminal'))
+    w.usage.rateLimits = [fiveHour(81)]
+    await $.session.measure(measure(w))
+    expect(w.toasts.at(-1)).toBe('ccwarden: budget mode on (the 5h window is at 81%): a stricter junk guard and earlier window alerts. /cw budget off to stop it.')
+  })
+})

@@ -10,6 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
 import { appendJunk, countLines, isAllowlisted, isAlreadyFiltered, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { budgetConfig, isBudgetMode, monthStepsDue } from '../src/budget'
 import { addSpend, calibrate, costDelta, LEDGER_DAYS, monthToDate, projectMonth } from '../src/ledger'
 import { hogsOver, hogTarget, tallyHog, topHogs } from '../src/hogs'
 import { handoffModelLine, isEffortCacheSafe, startAdvice, switchNote } from '../src/advisor'
@@ -535,5 +536,30 @@ describe('M3 hogs', () => {
     days = tallyHog(days, '2026-09-30', hog(100))
     expect(hogsOver(days, '2026-10')).toEqual([{ tool: 'Read', target: '/f5', tokens: 10 }, { tool: 'Read', target: '/f3', tokens: 3 }])
     expect(hogsOver(days, '', 1)).toEqual([{ tool: 'Read', target: '/f100', tokens: 100 }])
+  })
+})
+
+describe('M3 budget', () => {
+  test('month steps: those reached and not yet sent', () => {
+    expect(monthStepsDue(40, 100, [])).toEqual([])
+    expect(monthStepsDue(55, 100, [])).toEqual([50])
+    expect(monthStepsDue(105, 100, [50])).toEqual([80, 100])
+    expect(monthStepsDue(105, 0, [])).toEqual([])
+  })
+  test('budget mode: by hand, or by the month or the window', () => {
+    const base = { manual: 'auto' as const, billing: 'metered' as const, budgetModeAt: 80 }
+    expect(isBudgetMode({ ...base, mtd: 79, budget: 100 })).toBe(false)
+    expect(isBudgetMode({ ...base, mtd: 80, budget: 100 })).toBe(true)
+    expect(isBudgetMode({ ...base, mtd: 80 })).toBe(false) // no budget set
+    expect(isBudgetMode({ ...base, billing: 'window', fiveHourPct: 85, mtd: 0, budget: 100 })).toBe(true)
+    expect(isBudgetMode({ ...base, manual: 'on' })).toBe(true)
+    expect(isBudgetMode({ ...base, manual: 'off', mtd: 99, budget: 100 })).toBe(false)
+  })
+  test('budget config tightens, never loosens', () => {
+    const c = budgetConfig(readConfig({ readMaxLines: 500, sessionAlertPct: 20 }))
+    expect(c.readMaxLines).toBe(500)
+    expect(c.bashMaxChars).toBe(12_000)
+    expect(c.sessionAlertPct).toBe(15)
+    expect(c.compactAt).toBe(45)
   })
 })

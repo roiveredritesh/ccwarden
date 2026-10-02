@@ -290,6 +290,13 @@ It never blocks and adds nothing to context.
 
 - **Total:** the month-to-date estimate, calibrated with `/cw spent <amount>`. *(As built, M3-T1: a per-UTC-day ledger in `$.store` from each conversation's engine total; resumes and reloads start from their current total, so nothing is counted twice.)*
 - **Toasts:** at 50%, 80% and 100% of `monthlyBudgetUsd`, with a projection ("at this pace $118 by month end"). The total is not in the status line, which stays per conversation.
+- **As built (M3-T2):**
+  - Each step toasts once a month on this machine (`$.store`), at spend priority. When one jump crosses several steps, only one toast is shown.
+  - `monthlyBudgetUsd` 0 means off. Window billing never gets month toasts.
+  - `/cw spent <amount>` records the real figure. The estimate counts on from it until the month ends.
+  - `/cw` (for now) logs month to date, the projection and the budget mode.
+  - **Budget mode** is on with `/cw budget on|off|auto` (auto by default), or automatically at `budgetModeAt`% of the month budget or the 5h window. It tightens `readMaxLines` (800), `bashMaxChars` (12k), `sessionAlertPct` (15) and `compactAt` (45), and never loosens a stricter setting.
+  - Budget mode shows in the status line and is announced once when it switches on by itself. The test-runner filter and turning prompt suggestions off are not built.
 
 **F12. Setup profile (installer).** It writes and explains each setting:
 
