@@ -4,6 +4,8 @@
 //         or a ranged Read (redirecting avoids blind retries).
 //   Bash: output over `bashMaxChars` → cut to head + tail, the full text
 //         saved to a file Claude can grep (no re-run needed).
+//   Tests: a test runner's output over `bashMaxChars` → its failure lines
+//         and the closing summary only, failed runs included.
 // `observe` mode only records what it would have done (in $.store), so the
 // thresholds can be checked for false positives before `enforce`. Pure: the
 // tool.call hooks in hooks/register.tsx apply it.
@@ -64,6 +66,55 @@ export function trimmedOutput(text: string, max: number, savedTo: string): strin
   return (
     `${head}\n\n[ccwarden junk guard: ${cut} characters cut from the middle of this output. ` +
     `The full output is in ${savedTo}: use Grep on that file for what you need (no need to re-run the command).]\n\n${tail}`
+  )
+}
+
+/** A test runner's command: npm/pnpm/yarn/bun test, jest, vitest, mocha, pytest, go/cargo/dotnet test, … */
+export function isTestCommand(command: string): boolean {
+  return /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(jest|vitest|mocha|pytest|py\.test|rspec|phpunit|nextest)\b|\b(go|cargo|dotnet|deno)\s+test\b|\bnode\s+--test\b|\bplugin\s+test\b|\bgradlew?\b[^|;&]*\btest\b|\bmvn\b[^|;&]*\btest\b/.test(command)
+}
+
+const FAILURE_LINE = /\b(fail(ed|ure|ures|ing)?|errors?|assert(ion)?(error)?|expected|received|panic(ked)?|traceback|exception)\b|[✗✕×]|^\s*(E\s|>\s)/i
+const AFTER_FAILURE = 3
+const SUMMARY_LINES = 15
+
+/**
+ * A test run cut to what Claude needs: each failure line with the lines just
+ * after it (the assertion, the stack's top), then the closing summary, all
+ * within `max` characters (head + tail of that, past it). With no failure
+ * line, the summary alone.
+ */
+export function failuresOnly(text: string, max: number): string {
+  const lines = text.split('\n')
+  const keep = new Set<number>()
+  lines.forEach((line, i) => {
+    if (!FAILURE_LINE.test(line)) return
+    for (let j = i; j <= Math.min(i + AFTER_FAILURE, lines.length - 1); j++) keep.add(j)
+  })
+  for (let j = Math.max(0, lines.length - SUMMARY_LINES); j < lines.length; j++) keep.add(j)
+  const out: string[] = []
+  let last = -1
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (i > last + 1) out.push(`… (${i - last - 1} lines)`)
+    out.push(lines[i]!)
+    last = i
+  }
+  const kept = out.join('\n')
+  if (kept.length <= max) return kept
+  const { head, tail, cut } = trimOutput(kept, max)
+  return `${head}\n… (${cut} characters)\n${tail}`
+}
+
+/**
+ * The filtered run as Claude reads it. A failed run goes back as a plain
+ * result (a hook can't shorten an error result), so it says it failed first.
+ */
+export function testOutput(text: string, max: number, savedTo: string, failed: boolean): string {
+  const exit = /^Exit code (\d+)/.exec(text)?.[1]
+  const status = failed ? `This test run FAILED${exit === undefined ? '' : ` (exit code ${exit})`}. ` : ''
+  return (
+    `[ccwarden junk guard: ${status}Kept the failure lines and the summary of ${text.length} characters of test output. ` +
+    `The full output is in ${savedTo}: use Grep on that file for more (no need to re-run the tests).]\n\n${failuresOnly(text, max)}`
   )
 }
 
