@@ -54,7 +54,7 @@ type $ = EngineInterface
 
 /** What the module tracks between events; a reload starts it over, harmlessly. */
 type Runtime = {
-  isCompacting: boolean
+  isCompactAdvised: boolean
   isTurnRunning: boolean
   isPinging: boolean
   /** F8: prompts submitted while idle, oldest first, each with what sent it (undefined: the user). */
@@ -92,7 +92,7 @@ const CHARS_PER_TOKEN = 4
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompacting: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -329,7 +329,6 @@ export const register: Register = (on, options) => {
         ))}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Button key="refresh" hotkey="r" onPress={() => void refresh()}>Refresh</Button>
-          <Button key="compact" hotkey="c" onPress={() => void $.command.run({ command: 'compact' })}>Compact</Button>
           <Button key="handoff" hotkey="h" onPress={() => void writeHandoff($, config, 'full')}>Handoff</Button>
           <Button key="budget" hotkey="b" onPress={async () => {
             await $.store.set(BUDGET_SWITCH_KEY, runtime.isBudget ? 'off' : 'on')
@@ -420,23 +419,20 @@ export const register: Register = (on, options) => {
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
-    // F3: past the model's limit, compact once the turn is over (the engine
-    // refuses mid-turn). Through `/compact`, not $.session.compact: a plugin's
-    // own call skips its own session.compact hook, so it would get the engine
-    // summary. The engine's own window stays the safety net.
+    // F3: past the model's limit, say so once. The mod can't run the compaction
+    // itself: `$.command.run('compact')` and `$.session.compact` both skip its own
+    // session.compact hook (SPEC §9 Q13, seen live), so only a `/compact` the
+    // person types gets the snapshot.
     const usage = await $.session.usage()
     const model = await $.session.model()
     const limit = await limitOf($, model, config, usage.context.window)
     const tokens = usage.context.tokens ?? 0
-    if (tokens > limit && !runtime.isCompacting) {
-      runtime.isCompacting = true
-      $.ui.log(`ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}; compacting.`)
-      $.clock.after(0, async () => {
-        const ran = await $.command.run({ command: 'compact' }).catch((err: unknown) => ({ error: String(err) }))
-        runtime.isCompacting = false
-        if ('error' in ran) $.ui.log(`ccwarden: compaction didn't run: ${ran.error}`)
-        await refreshStatus($, config)
-      })
+    if (tokens <= limit) runtime.isCompactAdvised = false
+    else if (!runtime.isCompactAdvised) {
+      runtime.isCompactAdvised = true
+      const text = `ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}. Type /compact: it keeps a snapshot, no summary request.`
+      $.ui.log(text)
+      await notify($, 'advisor', text)
     }
     return result
   })
