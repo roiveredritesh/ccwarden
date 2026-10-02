@@ -32,7 +32,7 @@ import type { SnapshotFacts } from '../src/snapshot'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
-import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
+import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
 import type { SessionFacts } from '../src/transcript'
 import { fiveHour, trackWindow } from '../src/window'
 
@@ -220,6 +220,9 @@ export const register: Register = (on, options) => {
     const before = (await $.state.get(conversation)).value ?? { alerted: 0 }
     const { ttl } = inferTtl({ observed: before.observedTtl, override: await ttlOverride($), billing: config.billing })
     const tokens = usage.context.tokens
+    // F2: a resumed conversation's state starts without its last response, so
+    // the cache's age comes from the transcript (until the first response).
+    const seeded = before.lastResponseAt === undefined ? await transcriptLastResponse($) : undefined
     // F6: the prompt keep-warm waits for; and the rebuild a ping avoided, if any.
     const saved = avoidedRebuild({
       now, lastResponseAt: before.lastResponseAt, keepWarmAt: before.keepWarmAt, ttlMs: TTL_MS[ttl],
@@ -227,6 +230,7 @@ export const register: Register = (on, options) => {
     })
     const conv = await update($, conversation, prev => {
       const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }), lastPromptAt: now }
+      if (c.lastResponseAt === undefined && seeded !== undefined) c.lastResponseAt = seeded
       if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
       return c
     })
@@ -939,6 +943,16 @@ async function askBilling($: $, config: Config): Promise<Billing | undefined> {
   config.billing = billing
   await refreshStatus($, config)
   return billing
+}
+
+/** When the transcript's last main-thread response was written, if the transcript is known and readable. */
+async function transcriptLastResponse($: $): Promise<number | undefined> {
+  const path = (await $.state.get(transcriptPath)).value
+  if (path === undefined || path === '') return undefined
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined || stat.size > MAX_TRANSCRIPT_BYTES) return undefined
+  const text = await $.fs.read(path).catch(() => undefined)
+  return text === undefined ? undefined : lastResponseTime(parseJsonl(text))
 }
 
 /**
