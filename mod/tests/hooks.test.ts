@@ -24,13 +24,20 @@ function world(on: On, opts: {
   files?: Record<string, string>
   bashOut?: { stdout: string; persistedOutputPath?: string }
   isWriteRefused?: boolean
+  store?: Record<string, unknown>
 } = {}) {
   const clock = mock.clock(on)
-  mock.store(on)
+  // $.store in memory, readable by the test (mock.store's isn't).
+  const store = new Map<string, unknown>(Object.entries(opts.store ?? {}))
+  on('store.get', (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_$, e) => { store.set(e.key, JSON.parse(JSON.stringify(e.value))); return { value: undefined } })
+  on('store.delete', (_$, e) => { store.delete(e.key); return { value: undefined } })
+  on('store.keys', () => ({ value: [...store.keys()] }))
   mock.env(on, opts.env ?? {})
   const usage: Usage = { window: 1_000_000, usd: 0, rateLimits: [], ...opts.usage }
   const shown = {
     clock,
+    store,
     usage,
     model: opts.model ?? 'claude-sonnet-5-5',
     toasts: [] as string[],
@@ -92,6 +99,7 @@ function world(on: On, opts: {
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
+  on('tool.call', { tool: 'Grep' }, (_$, e) => ({ result: { mode: 'content' } as never, text: (e as unknown as { pattern: string }).pattern === 'big' ? 'x'.repeat(40_000) : 'small' }))
   on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
@@ -979,5 +987,52 @@ describe('F9 model and effort advice', () => {
     await $.session.start(start('terminal'))
     await $.command.run({ command: 'handoff', args: 'quick', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
     expect(w.writes[0]!.text).toContain('_Next session: for routine steps, start on haiku (`/model haiku`) before the first prompt; a switch then costs nothing._')
+  })
+})
+
+describe('M3 spend ledger and context hogs', () => {
+  const DAY = Date.parse('2026-10-02T10:00:00Z')
+  const ledgerDays = (w: World) => (w.store.get('ledger') as { days: Record<string, number> } | undefined)?.days ?? {}
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`each day's spend counts once: a resume, a reload and a /clear (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], usage: { usd: 2 } }) // a resumed conversation that already spent $2
+        await w.clock.advance(DAY)
+        await $.session.start(start(surface))
+        w.usage.usd = 2.5
+        await $.session.measure(measure(w))
+        await $.session.start(start(surface)) // a reload keeps the count
+        w.usage.usd = 3
+        await $.session.measure(measure(w))
+        await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+        w.usage.usd = 0.25 // the new conversation's own total
+        await $.session.measure(measure(w))
+        expect(ledgerDays(w)).toEqual({ '2026-10-02': 1.25 })
+      })
+    }
+  }
+
+  test('spend lands on the day it happened', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await w.clock.advance(Date.parse('2026-10-02T23:59:00Z'))
+    await $.session.start(start('terminal'))
+    w.usage.usd = 1
+    await $.session.measure(measure(w))
+    await w.clock.advance(2 * MIN)
+    w.usage.usd = 1.5
+    await $.session.measure(measure(w))
+    expect(ledgerDays(w)).toEqual({ '2026-10-02': 1, '2026-10-03': 0.5 })
+  })
+
+  test('big main-loop tool results are tallied as hogs; small ones and subagents\' are not', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await w.clock.advance(DAY)
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Grep', pattern: 'big' } as never)
+    await $.tool.call({ tool: 'Grep', pattern: 'big' } as never)
+    await $.tool.call({ tool: 'Grep', pattern: 'small' } as never)
+    await $.tool.call({ tool: 'Grep', pattern: 'big', agentId: 'a1' } as never)
+    expect(w.store.get('hogDays')).toEqual({ '2026-10-02': { 'Grep\tbig': 20_000 } })
   })
 })

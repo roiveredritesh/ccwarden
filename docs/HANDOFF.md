@@ -228,6 +228,25 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 
 **M2-T4. F12, setup profile.** *Done 2026-10-02* (`setup/setup.js`, SPEC F12 "As built"; CI runs its tests). A Node installer outside the mod, so it can also set `CLAUDE_CODE_PLUGIN_DIRS`. It writes and explains each setting, with `--dry-run`, a backup and `--uninstall`. Only settings that are documented, or present in the pinned binary and listed in SPEC §9.
 
+## 5c. M3 task list (SPEC §8: F10, F11; exit check: dashboard within 10% of `/usage`)
+
+**M3-T1. Spend ledger and context hogs** (the data both features read). *Done 2026-10-02.*
+
+- **Ledger:** this machine's est. spend per UTC day goes into `$.store` `ledger`. It grows from each conversation's engine total, counting the rise since the last reading, or the new total after `/clear`. A resumed or reloaded conversation starts from its current total, so nothing is counted twice. It keeps 62 days.
+- **Hogs:** every main-loop tool result of ≥ 2k est. tokens is recorded, in the conversation's top 20 (`$.state`) and in a per-day tally (`$.store` `hogDays`, the top 100 a day, 31 days).
+- **Known gap:** two sessions on one machine writing at the same moment can lose one update, because `$.store` has no compare-and-set. The error is small.
+
+**M3-T2. F11 month tracking and budget mode.**
+
+- `monthlyBudgetUsd`. `/cw spent <amount>` calibrates against the real figure.
+- Toasts at 50/80/100% with a projection.
+- Budget mode at `budgetModeAt`% of the month budget (metered) or of the 5h window (window), or `/cw budget on|off`. It tightens `compactAt`, the junk guard thresholds and `sessionAlertPct` (SPEC §3).
+
+**M3-T3. F10 `/cw` dashboard.**
+
+- A pane with: this session (context, cache hits, rebuilds and their cause, compactions, subagents), guard savings, month-to-date, top hogs, and the 7-day transcript report (`report.js` logic, ported).
+- Buttons: [Compact] [Handoff] [Budget mode] [Copy report].
+
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 
 `probe/` runs each check below; its README maps each one to a `/cw-probe` command.

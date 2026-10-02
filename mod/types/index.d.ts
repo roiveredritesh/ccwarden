@@ -36,6 +36,10 @@ export type CcwardenConversation = {
   agents?: { byId: Record<string, number>; warned: string[] }
   /** Turns the user didn't type (F8): their cost (est.) and the kinds already named in a toast. */
   background?: { usd: number; toasted: string[] }
+  /** The engine's cost total the spend ledger last counted up to (M3). */
+  ledgerUsd?: number
+  /** The conversation's biggest tool results (F10), largest first. */
+  hogs?: { tool: string; target: string; tokens: number }[]
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
 }
