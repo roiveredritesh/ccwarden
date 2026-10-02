@@ -12,3 +12,17 @@ export function joinPath(base: string, rel: string): string {
   const head = base.replace(/[\\/]+$/, '')
   return `${head}${sep}${sep === '\\' ? rel.replace(/\//g, '\\') : rel}`
 }
+
+/** `path` with `/` separators: on Windows the engine and the model's tool calls mix both. */
+export function slashed(path: string): string {
+  return path.replace(/\\/g, '/')
+}
+
+/** `path` under `cwd` as git prints it (`/`-separated, relative), else `path` slashed. */
+export function relativeTo(path: string, cwd: string | undefined): string {
+  const p = slashed(path)
+  if (cwd === undefined || cwd === '') return p
+  const root = `${slashed(cwd).replace(/\/+$/, '')}/`
+  // ponytail: case-blind so `d:` matches `D:`; a case-only clash on Linux would wrongly match
+  return p.toLowerCase().startsWith(root.toLowerCase()) ? p.slice(root.length) : p
+}

@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { slashed } from './paths'
 import { SNAPSHOT_TAG } from './snapshot'
 
 // Session facts for the snapshot (F3) and handoffs (F7): the user's verbatim
@@ -122,7 +123,7 @@ class FactsBuilder {
   toolUse(name: string, input: Record<string, unknown>): void {
     if (EDIT_TOOLS.has(name)) {
       const file = input.file_path ?? input.notebook_path
-      if (typeof file === 'string') this.edited.set(file, this.order++)
+      if (typeof file === 'string') this.edited.set(slashed(file), this.order++)
     } else if (name === 'TodoWrite' && Array.isArray(input.todos)) {
       this.todos = (input.todos as unknown[]).filter(isTodo)
     }
