@@ -19,3 +19,28 @@ jobs:
       - name: Unit tests
         working-directory: hooks-edition
         run: node --test "test/*.test.js"
+
+  mod:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      # The plugin API is early access: pin the version the types were read from.
+      CLAUDE_CODE_VERSION: 2.1.287
+      DISABLE_AUTOUPDATER: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - name: Validate
+        run: |
+          claude plugin validate mod
+          claude plugin validate probe
+      - name: Tests (terminal + desktop)
+        run: |
+          claude plugin test mod
+          claude plugin test probe

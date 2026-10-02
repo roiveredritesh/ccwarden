@@ -1,6 +1,149 @@
 {
   "name": "ccwarden",
   "version": "0.1.0",
-  "author": { "name": "roiveredritesh" },
-  "description": "Cost and context guard for Claude Code: per-conversation spend alerts, smarter compaction, prompt-cache protection."
+  "author": {
+    "name": "roiveredritesh"
+  },
+  "description": "Cost and context guard for Claude Code: per-conversation spend alerts, smarter compaction, prompt-cache protection.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "billing": {
+      "type": "string",
+      "title": "Billing on this machine",
+      "description": "metered: usage-billed plan or API key ($ per conversation). window: Pro/Max/Team subscription (% of the 5-hour window). ask: the mod asks once, on the next session start.",
+      "options": [
+        "ask",
+        "metered",
+        "window"
+      ],
+      "default": "ask"
+    },
+    "sessionAlertUsd": {
+      "type": "number",
+      "title": "Spend alert step ($, metered)",
+      "description": "Toast each time this conversation's estimated spend crosses another step.",
+      "default": 5
+    },
+    "sessionAlertPct": {
+      "type": "number",
+      "title": "Spend alert step (% of 5h window, window)",
+      "description": "Toast each time this conversation uses another step of the 5-hour window.",
+      "default": 20
+    },
+    "sessionAlertRepeat": {
+      "type": "boolean",
+      "title": "Repeat spend alerts",
+      "description": "Alert at every further step; off alerts only once per conversation.",
+      "default": true
+    },
+    "coldMinTokens": {
+      "type": "number",
+      "title": "Cold-cache guard threshold (tokens)",
+      "description": "Ask before sending a prompt over an expired cache only when the context is at least this large.",
+      "default": 50000
+    },
+    "limitHaiku": {
+      "type": "number",
+      "title": "Context limit: Haiku (tokens)",
+      "description": "Snapshot-compact Haiku conversations past this size.",
+      "default": 120000
+    },
+    "limitOther": {
+      "type": "number",
+      "title": "Context limit: Sonnet, Opus, Fable (tokens)",
+      "description": "Snapshot-compact other models' conversations past this size.",
+      "default": 300000
+    },
+    "compactMode": {
+      "type": "string",
+      "title": "Compaction",
+      "description": "snapshot: the mod builds the compacted conversation, no summary tokens. summary: the engine's summary.",
+      "options": [
+        "snapshot",
+        "summary"
+      ],
+      "default": "snapshot"
+    },
+    "compactAt": {
+      "type": "number",
+      "title": "Advisor: suggest compacting at (% of the model limit)",
+      "default": 55,
+      "description": "The advisor suggests compacting once the context passes this share of the model limit."
+    },
+    "junkGuard": {
+      "type": "string",
+      "title": "Junk guard",
+      "description": "observe: only log what it would block. enforce: block oversized reads and trim Bash output. off.",
+      "options": [
+        "observe",
+        "enforce",
+        "off"
+      ],
+      "default": "observe"
+    },
+    "readMaxLines": {
+      "type": "number",
+      "title": "Junk guard: max lines for a Read without a limit",
+      "default": 2000,
+      "description": "A Read with no limit on a longer file is redirected to Grep or a ranged Read."
+    },
+    "bashMaxChars": {
+      "type": "number",
+      "title": "Junk guard: max Bash output characters",
+      "default": 30000,
+      "description": "Longer Bash output is cut to head and tail; the full text is saved to a file Claude can grep."
+    },
+    "subagentModel": {
+      "type": "string",
+      "title": "Subagent model",
+      "description": "Model alias subagents are pinned to, unless their type is allowlisted.",
+      "default": "haiku"
+    },
+    "subagentAllowlist": {
+      "type": "string",
+      "title": "Subagent types that keep their own model",
+      "description": "Comma-separated agent types, e.g. Plan,code-reviewer.",
+      "default": ""
+    },
+    "maxParallelAgents": {
+      "type": "number",
+      "title": "Max subagents running at once",
+      "default": 3,
+      "description": "A spawn past this many running subagents is denied with the reason."
+    },
+    "keepWarm": {
+      "type": "boolean",
+      "title": "Keep-warm (metered, experimental)",
+      "description": "Refresh the active session's prompt cache while you are briefly away, within a $ cap.",
+      "default": true
+    },
+    "keepWarmMaxMin": {
+      "type": "number",
+      "title": "Keep-warm: stop after (minutes since your last prompt)",
+      "default": 30,
+      "description": "Keep-warm stops this many minutes after your last prompt."
+    },
+    "keepWarmCapUsd": {
+      "type": "number",
+      "title": "Keep-warm: $ cap per session",
+      "default": 0.5,
+      "description": "Keep-warm stops once its pings cost this much in a session."
+    },
+    "budgetModeAt": {
+      "type": "number",
+      "title": "Budget mode at (% of month budget or 5h window)",
+      "default": 80,
+      "description": "Stricter thresholds and earlier suggestions from this share of the month budget (metered) or 5-hour window (window)."
+    },
+    "alertTiming": {
+      "type": "string",
+      "title": "When spend alerts show",
+      "options": [
+        "immediate",
+        "turnEnd"
+      ],
+      "default": "immediate",
+      "description": "immediate: as soon as the step is crossed. turnEnd: held until the turn ends."
+    }
+  }
 }

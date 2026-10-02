@@ -27,5 +27,6 @@ Cost and context guard for Claude Code. Two editions:
 
 - The mod runs in its own environment: no Node, no `require`, no dynamic `import()`. Use `$.fs`, `$.process`, `$.clock` and `$.store`.
 - `$.env.get/set` take string-literal names only.
+- Every hook and `$` call lives in `mod/hooks/register.ts`, because `claude plugin validate` doesn't follow `$` across imports. `mod/src/` holds pure logic with its tests in `mod/tests/`.
 - The maintainer talks in Hinglish; reply in Hinglish. Code, comments, commits and docs are in English.
 - Work on a branch per milestone task, open a PR to `main`, and keep CI green.

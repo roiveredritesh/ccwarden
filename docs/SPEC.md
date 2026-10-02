@@ -262,21 +262,23 @@ It never blocks and adds nothing to context.
 
 | Key | Default | Feature |
 |---|---|---|
-| `billing` | asked on first run | §1 |
+| `billing` | `ask`: asked on the next session start, then `metered` or `window` | §1 |
 | `sessionAlertUsd` / `sessionAlertPct` / `sessionAlertRepeat` | 5 / 20 / same step | F1b |
 | `coldMinTokens` | 50000 | F2 |
-| `modelLimits` | haiku 120000 · sonnet/opus/fable 300000 | F3 |
+| `limitHaiku` / `limitOther` | 120000 / 300000 (Sonnet, Opus, Fable) | F3 |
 | `compactMode` | `snapshot` (`summary` for manual `/compact <focus>`) | F3 |
 | `compactAt` | 55 (% of the model limit) | §3 |
 | `junkGuard` | `observe` → `enforce` | F4 |
 | `readMaxLines` / `bashMaxChars` | 2000 / 30000 | F4 |
-| `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | haiku / [] / 3 | F5 |
+| `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | haiku / `""` (comma-separated types) / 3 | F5 |
 | `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | on (metered) / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |
 | `budgetModeAt` | 80 (% of month budget or 5h window) | §3 budget mode |
 | `alertTiming` | `immediate` | F1b |
 | `handoffDir` / `handoffOnCompact` | `.claude/handoffs` / off | F7 |
 | `topicShiftHint` | off | F13 |
+
+M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.
 
 ## 6. State
 
@@ -288,7 +290,8 @@ It never blocks and adds nothing to context.
 
 ```
 hooks-edition/   v0.1, documented hooks + status line (works today)
-mod/             the plugin: .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.ts, src/…
+mod/             the plugin: .claude-plugin/plugin.json, hooks/hooks.json, hooks/register.ts (all hooks and $ calls),
+                 src/ (pure logic), types/index.d.ts ($.state contract), tests/
 probe/           dev-only day-one probe for §9 (never shipped)
 docs/            this spec
 ```

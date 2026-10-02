@@ -7,7 +7,7 @@ Written 2026-10-02 at the end of the design session that produced this repo. It 
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | First slice only, in `hooks/register.ts`: this conversation's $ in the status line, and a toast every $5. It passes `claude plugin validate` and type-checks against the v2.1.287 API. **It has not run in a live session yet.** |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. Also the first F1/F1b slice: this conversation's $ in the status line, and a toast every `sessionAlertUsd`. It validates, type-checks, and passes 23 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F11, milestones, open questions. §9 now records what the types answer. |
 
@@ -121,7 +121,13 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 - *Status 2026-10-02:* the type-level answers are in SPEC §9. Q9, Q11 and Q12 are answered there, and Q4 and Q6 look likely. `probe/` is the runbook for the rest; see `probe/README.md`. What remains is for the maintainer: run it on the `metered` and `window` machines, terminal and Desktop, and paste `~/.claude/ccwarden-probe.jsonl` back into SPEC §9.
 - T1 can start in parallel. It doesn't depend on any open answer.
 
-**T1. Foundation.**
+**T1. Foundation.** *Done 2026-10-02.* Notes for what follows:
+
+- `src/` is pure, and every hook and `$` call is in `hooks/register.ts` (see the §7 gotcha).
+- `sessionFacts($, path)` is in `register.ts`, ready for T3. It takes the path from `$.state` `transcriptPath`, which `classic.SessionStart` keeps current.
+- A toast that R9 holds back is kept in `$.state` `heldNote` for the band (T2+).
+- Not yet live-checked: whether `$.config.set` on `<plugin>.billing` writes `~/.claude/settings.json` for a `--plugin-dir` plugin (the row's key is looked up, not assumed), and how `$.ui.ask` looks in Desktop (Q8).
+
 
 - **Layout:** `mod/src/` modules, `mod/types/index.d.ts` (the `$.state` contract), and `userConfig` in `plugin.json` (SPEC §5).
 - **First-run `billing` question:** `$.ui.ask`, saved with `$.config.set`.
@@ -190,6 +196,12 @@ Each task: a branch, tests on `['terminal', 'desktop']` × `['metered', 'window'
 | Q12 | Is the real month-to-date spend readable locally? | Check `/usage` and the plugin API; if not, F11 stays an estimate |
 
 ## 7. Gotchas learned the hard way
+
+- **`$` can't cross an import.** `claude plugin validate` follows `$` only into functions declared in the same file. So every `$` call lives in `hooks/register.ts`, and `src/` is pure logic, which also makes it easy to test.
+- **A `$.state` reference is a `const` used only as a `$.state` argument.** Reading one in a helper function that nothing calls yet failed validation ("what it holds at the call could not be listed"). Pass the value in instead.
+- **`userConfig`:** every field needs a `description`, and a field with `options` needs a `default` among them (or `required: true`). Values are string, number, boolean or string list only.
+- **Tests:** `test(name, { options }, body)` sets `userConfig`. Ops the mod calls (`session.usage`, `session.surfaces`, `config.list`, `ui.toast`, …) need a test hook that answers `{ value }`. `$.state` works in tests without one. `$.ui.ask` is answered through `tool.call` `AskUserQuestion` (`{ result: { questions, answers } }`, or `{ deny }` for a dismissal). See `world()` in `mod/tests/hooks.test.ts`.
+- **CI:** `npm install -g @anthropic-ai/claude-code@<version>` runs `plugin validate` and `plugin test` with no login.
 
 - **`claude plugin test` doesn't validate a `tool.call` answer against the tool's output schema.** A malformed Bash result passes in a test, so schema questions (Q6) need a live session.
 - **In tests, the engine's `$` has only event nouns.** There's no `$.store` to read back, and `ui.log`, `ui.status` and `command.register` need a test-level hook beneath, or the plugin's call fails with "no implementation". See `world()` in `probe/hooks/probe.test.ts`.
