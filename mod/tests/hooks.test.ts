@@ -675,6 +675,19 @@ describe('F2 cold-cache guard', () => {
     expect(w.fills).toEqual(['go'])
   })
 
+  test('a resumed conversation: the first prompt is asked about, its cache age from the transcript', { options: { billing: 'metered' } }, async ($, on) => {
+    const NOW = Date.parse('2026-10-02T12:00:00Z')
+    const last = { type: 'assistant', timestamp: new Date(NOW - 40 * MIN).toISOString(), message: { content: [] } }
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 }, files: { '/t.jsonl': JSON.stringify(last) } })
+    await w.clock.advance(NOW)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    await $.session.start(start('terminal'))
+    const out = await $.prompt.submit(typed('continue'))
+    expect(w.asks).toHaveLength(1)
+    expect(w.asks[0]).toContain('went cold 35m ago')
+    expect(out.drop).toBeDefined()
+  })
+
   test('a prompt asking Claude for a handoff is asked about again in the same cold spell', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 } })
     await $.session.start(start('terminal'))

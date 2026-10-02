@@ -3,7 +3,7 @@ import type { ConfigRow, SessionMessage } from 'claude-code'
 import { billingFrom, billingRow, BILLING_OPTIONS } from '../src/billing'
 import { compactWindowFor, DEFAULTS, limitFor, readConfig } from '../src/config'
 import { admit } from '../src/toasts'
-import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
+import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
 import { alertStep, isAlertDue } from '../src/alerts'
 import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, ttlContradicts } from '../src/cache'
 import { familyOf, rebuildUsd } from '../src/prices'
@@ -132,6 +132,17 @@ describe('transcript facts', () => {
     ])
     expect(facts.files).toEqual(['/p/src/auth.ts', '/p/test/auth.test.ts'])
     expect(facts.todos).toEqual(TODOS)
+  })
+
+  test('last response time: the newest main-thread assistant entry, else undefined', () => {
+    const at = (timestamp: string, extra = {}) => line({ type: 'assistant', timestamp, message: { content: [] }, ...extra })
+    expect(lastResponseTime(parseJsonl([
+      at('2026-10-01T10:00:00.000Z'),
+      at('2026-10-01T11:00:00.000Z'),
+      at('2026-10-01T12:00:00.000Z', { isSidechain: true }),
+      user('next ask', { timestamp: '2026-10-01T13:00:00.000Z' }),
+    ].join('\n')))).toBe(Date.parse('2026-10-01T11:00:00.000Z'))
+    expect(lastResponseTime(parseJsonl(JSONL))).toBe(undefined)
   })
 
   test('from $.session.messages(): the same facts where they are present', () => {
