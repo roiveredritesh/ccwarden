@@ -149,9 +149,11 @@ export const register: Register = on => {
       case 'compact':
         snapshotArmed = true
         // Detached: compaction runs between turns, not inside this command.
+        // Through `/compact`: a plugin's own $.session.compact skips its own
+        // session.compact hook, so the snapshot would never be answered.
         $.clock.after(0, async () => {
-          const done = await $.session.compact({ instructions: 'cw-probe Q3' }).catch((err: unknown) => ({ skip: String(err) }))
-          if (done.skip !== undefined) await record($, 'Q3', { skipped: done.skip })
+          const ran = await $.command.run({ command: 'compact' }).catch((err: unknown) => ({ error: String(err) }))
+          if ('error' in ran) await record($, 'Q3', { skipped: ran.error })
         })
         break
       case 'newchat':

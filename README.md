@@ -55,17 +55,25 @@ Tests: `cd hooks-edition && node --test test/*.test.js`.
 
 One plugin for the Claude Code CLI and the Desktop app's Code tab. Planned first milestone:
 
-1. **This conversation's spend in the status line**, with a toast every $5 (or a share of your 5-hour window on subscription plans). *(first slice in [`mod/`](mod/))*
-2. **Per-model context limits** (e.g. Haiku 120K, Sonnet/Opus 300K) with **snapshot compaction**: the mod hands the engine its own compacted conversation, so no summary is generated.
+1. **This conversation's spend in the status line**, with a toast every $5 (or a share of your 5-hour window on subscription plans), plus the model, context against its limit, and whether the prompt cache is warm. *(in [`mod/`](mod/))*
+2. **Per-model context limits** (e.g. Haiku 120K, Sonnet/Opus 300K) with **snapshot compaction**: the mod hands the engine its own compacted conversation, so no summary is generated. *(in [`mod/`](mod/))*
 3. **Junk guard**: oversized reads and outputs are redirected to `Grep`/ranged reads; full outputs are saved to a file.
 4. **Subagent guard**: pins subagents to a cheaper model, caps their report size and how many run at once.
 5. **Cold-cache guard + keep-warm** for the active session only.
 
-Try the first slice:
+Try it:
 
 ```bash
 claude --plugin-dir ./mod
 ```
+
+The mod compacts at turn end, and the engine can't compact mid-turn. So set the engine's own auto-compaction window to the largest per-model limit as a safety net for one very long turn. Put this in the `env` block of `~/.claude/settings.json`:
+
+```json
+{ "env": { "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000" } }
+```
+
+For the Desktop app's Code tab, add `"CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/ccwarden/mod"` to the same `env` block.
 
 ## Privacy
 

@@ -20,6 +20,8 @@ export type CcwardenConversation = {
   ttlCheckedAt?: number
   /** The billing/TTL mismatch toast was shown (SPEC §1). */
   ttlWarned?: boolean
+  /** The conversation's first ask, kept across snapshot compactions (F3). */
+  goal?: string
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
 }
