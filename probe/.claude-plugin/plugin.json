@@ -1,0 +1,6 @@
+{
+  "name": "ccwarden-probe",
+  "version": "0.1.0",
+  "author": { "name": "roiveredritesh" },
+  "description": "Dev-only probe for the M1 day-one checks (SPEC §9). Not shipped; load it next to the mod with --plugin-dir."
+}
