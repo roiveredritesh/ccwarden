@@ -93,6 +93,12 @@
       "default": 30000,
       "description": "Longer Bash output is cut to head and tail; the full text is saved to a file Claude can grep."
     },
+    "junkAllowlist": {
+      "type": "string",
+      "title": "Junk guard: paths it leaves alone",
+      "description": "Comma-separated globs, e.g. **/*.lock,docs/**. A Read of a matching file is never denied.",
+      "default": ""
+    },
     "subagentGuard": {
       "type": "boolean",
       "title": "Subagent guard",

@@ -20,8 +20,12 @@ function world(on: On, opts: {
   settings?: Record<string, unknown>
   transcript?: string
   git?: { branch?: string; numstat?: string }
+  files?: Record<string, string>
+  bashOut?: { stdout: string; persistedOutputPath?: string }
+  isWriteRefused?: boolean
 } = {}) {
   const clock = mock.clock(on)
+  mock.store(on)
   mock.env(on, opts.env ?? {})
   const usage: Usage = { window: 1_000_000, usd: 0, rateLimits: [], ...opts.usage }
   const shown = {
@@ -42,6 +46,9 @@ function world(on: On, opts: {
     // Prompts that reached core, and what was put back in the prompt box.
     sent: [] as string[],
     fills: [] as string[],
+    // Tool calls that reached core, and files the mod wrote.
+    reads: [] as string[],
+    writes: [] as { path: string; text: string }[],
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -52,8 +59,24 @@ function world(on: On, opts: {
     value: { startedAt: 0, context: { tokens: usage.tokens, window: usage.window }, rateLimits: usage.rateLimits, cost: { usd: usage.usd } },
   }))
   on('settings.read', () => ({ value: opts.settings ?? {} }))
-  on('fs.stat', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: opts.transcript.length, mtimeMs: 0, isLink: false } }))
-  on('fs.read', () => (opts.transcript === undefined ? Promise.reject(new Error('ENOENT')) : { value: opts.transcript }))
+  const file = (path: string) => opts.files?.[path] ?? opts.transcript
+  on('fs.stat', (_$, e) => {
+    const text = file(e.path)
+    return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
+  })
+  on('fs.read', (_$, e) => {
+    const text = file(e.path)
+    return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: text }
+  })
+  on('fs.write', (_$, e) => {
+    if (opts.isWriteRefused) return Promise.reject(new Error('EACCES'))
+    shown.writes.push({ path: e.path, text: e.text })
+    return { value: undefined }
+  })
+  on('session.id', () => ({ value: 'sess1' }))
+  on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
   on('agent.list', () => ({ value: shown.agents }))
   on('prompt.submit', (_$, e) => { shown.sent.push(e.text); return { text: e.text } })
@@ -563,5 +586,83 @@ describe('F2 cold-cache guard', () => {
     await $.prompt.submit(typed('small'))
     expect(w.asks).toEqual([])
     expect(w.sent).toEqual(['first prompt', 'warm', 'mid-turn', 'from a plugin', 'small'])
+  })
+})
+
+describe('F4 junk guard', () => {
+  const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+  const SHORT = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
+  const BIG = 'x'.repeat(50_000)
+  const files = { '/p/big.log': LONG, '/p/small.ts': SHORT, '/p/yarn.lock': LONG }
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`observe (the default): nothing changes, every would-be action is logged (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], files, bashOut: { stdout: BIG }, env: { HOME: '/home/u' } })
+        await $.session.start(start(surface))
+
+        expect((await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })).deny).toBeUndefined()
+        const bash = await $.tool.call({ tool: 'Bash', command: 'cat big.log' })
+        expect((bash.result as { stdout: string }).stdout).toBe(BIG)
+        expect(w.reads).toEqual(['/p/big.log'])
+        expect(w.writes).toEqual([])
+
+        await $.command.run({ command: 'ccwarden-junk', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+        expect(w.logs.find(l => l.startsWith('ccwarden junk guard (observe): 2 events'))).toBeDefined()
+        expect(w.logs.filter(l => / observe (Read 3000 lines|Bash 50000 chars): /.test(l))).toHaveLength(2)
+      })
+    }
+
+    test(`enforce: a long whole-file Read is denied with a pointer to Grep (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce', junkAllowlist: '**/*.lock' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files })
+      await $.session.start(start(surface))
+
+      const denied = await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+      expect(denied.deny).toBe('ccwarden junk guard: /p/big.log has 3000 lines (more than 2000), so reading it whole would put all of it in the context. Use Grep to find what you need in it, or Read it with offset and limit.')
+
+      await $.tool.call({ tool: 'Read', file_path: '/p/big.log', offset: 1, limit: 100 })
+      await $.tool.call({ tool: 'Read', file_path: '/p/small.ts' })
+      await $.tool.call({ tool: 'Read', file_path: '/p/yarn.lock' })
+      await $.tool.call({ tool: 'Read', file_path: '/p/missing.ts' })
+      expect(w.reads).toEqual(['/p/big.log', '/p/small.ts', '/p/yarn.lock', '/p/missing.ts'])
+    })
+
+    test(`enforce: long Bash output is cut to head + tail, the full text saved (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+      const out = 'a'.repeat(30_000) + 'b'.repeat(20_000)
+      const w = world(on, { surfaces: [surface], bashOut: { stdout: out }, env: { HOME: '/home/u' } })
+      await $.session.start(start(surface))
+
+      const ran = await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'tu1' })
+      const stdout = (ran.result as { stdout: string }).stdout
+      expect(w.writes).toEqual([{ path: '/home/u/.claude/ccwarden/outputs/sess1-tu1.txt', text: out }])
+      expect(stdout.startsWith('a'.repeat(18_000) + '\n\n[ccwarden junk guard: 20000 characters cut')).toBe(true)
+      expect(stdout).toContain('The full output is in /home/u/.claude/ccwarden/outputs/sess1-tu1.txt: use Grep on that file')
+      expect(stdout.endsWith('b'.repeat(12_000))).toBe(true)
+    })
+  }
+
+  test('enforce leaves alone: filtered commands, engine-persisted output, short output, an unsaved file', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], bashOut: { stdout: BIG }, env: { HOME: '/home/u' }, isWriteRefused: true })
+    await $.session.start(start('terminal'))
+    for (const command of ['cat big.log | head -50', 'cat big.log']) {
+      expect(((await $.tool.call({ tool: 'Bash', command })).result as { stdout: string }).stdout).toBe(BIG)
+    }
+    expect(w.writes).toEqual([])
+  })
+
+  test('engine-persisted output is the engine\'s business', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], bashOut: { stdout: BIG, persistedOutputPath: '/tmp/x' }, env: { HOME: '/home/u' } })
+    await $.session.start(start('terminal'))
+    expect(((await $.tool.call({ tool: 'Bash', command: 'cat big.log' })).result as { stdout: string }).stdout).toBe(BIG)
+    expect(w.writes).toEqual([])
+  })
+
+  test('off: no checks at all', { options: { billing: 'metered', junkGuard: 'off' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], files, bashOut: { stdout: BIG }, env: { HOME: '/home/u' } })
+    await $.session.start(start('terminal'))
+    expect((await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })).deny).toBeUndefined()
+    await $.tool.call({ tool: 'Bash', command: 'cat big.log' })
+    await $.command.run({ command: 'ccwarden-junk', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    expect(w.logs.find(l => l.startsWith('ccwarden junk guard (off): 0 events'))).toBeDefined()
   })
 })
