@@ -346,7 +346,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'ccwarden-junk' }, async ($) => {
     const log = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
     const saved = log.reduce((sum, ev) => sum + ev.savedChars, 0)
-    $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} events, ~${Math.round(saved / 4 / 1000)}k tokens kept out of context (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
+    $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} event${log.length === 1 ? '' : 's'}, ~${Math.round(saved / 4 / 1000)}k tokens ${config.junkGuard === 'enforce' ? 'kept out' : 'would be kept out'} of context (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
     for (const ev of log.slice(-JUNK_SHOWN)) {
       $.ui.log(`  ${new Date(ev.at).toISOString()} ${ev.mode} ${ev.tool} ${ev.tool === 'Read' ? `${ev.size} lines` : `${ev.size} chars`}: ${ev.target}`)
     }
