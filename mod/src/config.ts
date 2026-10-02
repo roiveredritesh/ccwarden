@@ -126,3 +126,12 @@ export function readConfig(options: PluginOptions): Config {
 export function limitFor(model: string, config: Config): number {
   return /haiku/i.test(model) ? config.limitHaiku : config.limitOther
 }
+
+/**
+ * The engine's auto-compact window for a model: its limit within its real
+ * window, kept to the 100k–1M the variable takes. The engine compacts there,
+ * and F3's session.compact hook answers with the snapshot.
+ */
+export function compactWindowFor(limit: number, window: number): number {
+  return Math.max(100_000, Math.min(limit, window, 1_000_000))
+}

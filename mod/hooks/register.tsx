@@ -15,7 +15,7 @@ import { BILLING_HEADER, BILLING_OPTIONS, BILLING_QUESTION, billingFrom, billing
 import { cacheMiss, cacheView, inferTtl, latestWriteTtl, parseTtl, TTL_MS, ttlContradicts } from '../src/cache'
 import { COLD_CANCEL, COLD_CONTINUE, coldDropReason, coldQuestion, isColdAskDue } from '../src/cold'
 import type { Ttl } from '../src/cache'
-import { limitFor, readConfig } from '../src/config'
+import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
 import { rebuildUsd } from '../src/prices'
@@ -119,6 +119,7 @@ export const register: Register = (on, options) => {
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
+    await syncCompactWindow($, config)
     await refreshStatus($, config)
     return result
   })
@@ -447,10 +448,11 @@ export const register: Register = (on, options) => {
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
-    // F3: past the model's limit, say so once. The mod can't run the compaction
-    // itself: `$.command.run('compact')` and `$.session.compact` both skip its own
-    // session.compact hook (SPEC §9 Q13, seen live), so only a `/compact` the
-    // person types gets the snapshot.
+    // F3: the engine's auto-compaction runs at the model's limit and is a
+    // snapshot. Should the context still be past it (one long turn), say so
+    // once: the mod can't compact itself, since `$.command.run('compact')` and
+    // `$.session.compact` both skip its own session.compact hook (SPEC §9 Q13).
+    await syncCompactWindow($, config)
     const usage = await $.session.usage()
     const model = await $.session.model()
     const limit = await limitOf($, model, config, usage.context.window)
@@ -751,6 +753,21 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
       usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
     },
   }))
+}
+
+/**
+ * F3: the engine's auto-compact window follows the model's limit. The engine
+ * re-reads the variable live (SPEC §9 Q5), so it compacts at the limit, and
+ * that compaction (the engine's own, unlike a mod-run /compact: Q13) reaches
+ * the session.compact hook and is a snapshot. Overrides a value set by hand:
+ * the per-model limits are limitHaiku/limitOther.
+ */
+async function syncCompactWindow($: $, config: Config): Promise<void> {
+  const usage = await $.session.usage()
+  const target = String(compactWindowFor(limitFor(await $.session.model(), config), usage.context.window))
+  if ((await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')) === target) return
+  await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', target)
+  $.ui.log(`ccwarden: auto-compact window set to ${target} tokens for ${await $.session.model()}.`, { to: 'debug' })
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { ConfigRow, SessionMessage } from 'claude-code'
 import { billingFrom, billingRow, BILLING_OPTIONS } from '../src/billing'
-import { DEFAULTS, limitFor, readConfig } from '../src/config'
+import { compactWindowFor, DEFAULTS, limitFor, readConfig } from '../src/config'
 import { admit } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, parseJsonl } from '../src/transcript'
 import { alertStep, isAlertDue } from '../src/alerts'
@@ -243,6 +243,14 @@ describe('T2 pure logic', () => {
     expect(at(150_000, 55)).not.toContain('/compact at a break') // 50%
     expect(at(165_000, 55)).toContain('ctx ▓▓▓▓▓▓░░░░ 55% 165k/300k · /compact at a break · cache –')
     expect(at(150_000, 45)).toContain('/compact at a break') // budget mode
+  })
+})
+
+describe('compactWindowFor', () => {
+  test("the model's limit within its window, kept to the variable's 100k–1M", () => {
+    expect(compactWindowFor(300_000, 1_000_000)).toBe(300_000)
+    expect(compactWindowFor(300_000, 200_000)).toBe(200_000)
+    expect(compactWindowFor(80_000, 200_000)).toBe(100_000)
   })
 })
 
