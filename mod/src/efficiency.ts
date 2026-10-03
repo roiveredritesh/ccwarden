@@ -5,6 +5,11 @@ import type { JunkEvent } from './junk'
 import { analyze, requestsOf } from './report'
 import type { Request } from './report'
 import type { TranscriptEntry } from './transcript'
+import type { Billing } from './config'
+import { hogsOver } from './hogs'
+import type { Hog, HogDays } from './hogs'
+import type { JunkMode } from './junk'
+import type { Ledger } from './ledger'
 
 
 // F14 efficiency dashboard: what ccwarden saved (est.), and a measured
@@ -155,6 +160,194 @@ export type HostOs = 'windows' | 'mac' | 'linux'
 export function openerArgv(os: HostOs, path: string): string[] {
   if (os === 'windows') return ['cmd', '/c', 'start', '', path]
   return [os === 'mac' ? 'open' : 'xdg-open', path]
+}
+
+export type Range = '7d' | '30d' | 'install'
+export const RANGES: readonly Range[] = ['7d', '30d', 'install']
+/** Transcripts found, read (or from the cache), skipped for size, failed, and not read yet (session end parses none). */
+export type Coverage = { total: number; read: number; skippedBig: number; failed: number; pending: number }
+export type Confidence = 'high' | 'medium' | 'low' | 'count only'
+export type SavingRow = { feature: string; did: string; count: number; tokens: number; usd: number; unpriced: number; formula: string; confidence: Confidence; isInTotal: boolean }
+export type Measured = { requests: number; usdPerRequest: number; hitPct: number; rebuildsPer100: number; avgContext: number }
+export type ProjectRow = { project: string; usd: number; sessions: number; requests: number; hitPct?: number; rebuilds: number; topHog?: Hog; savedUsd: number }
+export type View = { savings: SavingRow[]; totalTokens: number; totalUsd: number; before?: Measured; after?: Measured; spend: { day: string; usd: Record<string, number> }[] }
+/** One range: its first day, the project table, a view per project (`''`: all of them), and what to do. */
+export type RangeData = { from: string; projects: ProjectRow[]; views: Record<string, View>; actions: string[] }
+export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; ranges: Record<Range, RangeData> }
+export type EfficiencyInput = {
+  now: number
+  billing?: Billing
+  junkMode: JunkMode
+  ledger?: Ledger
+  projectDays?: ProjectDays
+  junkLog?: readonly JunkEvent[]
+  hogDays?: HogDays
+  /** Transcript path → summary. */
+  summaries: Record<string, TranscriptSummary>
+  coverage: Coverage
+}
+
+/** Everything the page shows, for every range and project. */
+export function efficiencyData(input: EfficiencyInput): EfficiencyData {
+  const install = installDay(input.ledger, input.projectDays)
+  const byDay = spendByDay(input)
+  const prices = new Map<string, JunkPrice>()
+  for (const [path, s] of Object.entries(input.summaries)) for (const j of s.junk) prices.set(`${sessionOf(path)}@${j.at}`, j)
+  const projects = [...new Set([
+    ...Object.keys(input.projectDays ?? {}),
+    ...Object.values(input.summaries).map(s => s.project ?? UNATTRIBUTED),
+    ...(input.junkLog ?? []).map(ev => ev.project ?? UNATTRIBUTED),
+    ...Object.values(byDay).flatMap(by => Object.keys(by)),
+  ])].sort()
+  const ranges = {} as Record<Range, RangeData>
+  for (const range of RANGES) {
+    const from = range === 'install' ? (install ?? dayKey(input.now)) : dayKey(input.now - (range === '7d' ? 6 : 29) * DAY_MS)
+    const views: Record<string, View> = {}
+    for (const p of ['', ...projects]) views[p] = viewOf(input, prices, byDay, p, from, install)
+    const rows = projects.map(p => projectRow(input, byDay, p, from, views[p]!.totalUsd)).sort((a, b) => b.usd - a.usd || b.requests - a.requests)
+    ranges[range] = { from, projects: rows, views, actions: actionsFor(views['']!, input.junkMode, rows) }
+  }
+  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, ranges }
+}
+
+/** The first day ccwarden recorded anything: the earliest in the ledger or `projectDays`. */
+export function installDay(ledger: Ledger | undefined, pd: ProjectDays | undefined): string | undefined {
+  const days = [...Object.keys(ledger?.days ?? {}), ...Object.values(pd ?? {}).flatMap(d => Object.keys(d))].sort()
+  return days[0]
+}
+
+/** Est. $ per day and project: `projectDays`, plus what the ledger counted that no project did (spend from before F14). */
+function spendByDay(input: EfficiencyInput): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {}
+  for (const [project, days] of Object.entries(input.projectDays ?? {})) {
+    for (const [day, f] of Object.entries(days)) if ((f.usd ?? 0) > 0) (out[day] ??= {})[project] = f.usd!
+  }
+  for (const [day, usd] of Object.entries(input.ledger?.days ?? {})) {
+    const rest = usd - Object.values(out[day] ?? {}).reduce((s, v) => s + v, 0)
+    if (rest >= 0.005) (out[day] ??= {})[UNATTRIBUTED] = round4(rest) // ponytail: half a cent of rounding drift isn't a project
+  }
+  return out
+}
+
+function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: Record<string, Record<string, number>>, project: string, from: string, install: string | undefined): View {
+  const isIn = (p: string | undefined) => project === '' || (p ?? UNATTRIBUTED) === project
+  const savings = savingsRows(input, prices, isIn, from)
+  const counted = savings.filter(r => r.isInTotal)
+  const days = Object.values(input.summaries).filter(s => isIn(s.project)).flatMap(s => Object.entries(s.days))
+  const spend: View['spend'] = []
+  for (let t = Date.parse(from); dayKey(t) <= dayKey(input.now); t += DAY_MS) {
+    const day = dayKey(t)
+    spend.push({ day, usd: Object.fromEntries(Object.entries(byDay[day] ?? {}).filter(([p]) => isIn(p))) })
+  }
+  return {
+    savings,
+    totalTokens: counted.reduce((s, r) => s + r.tokens, 0),
+    totalUsd: counted.reduce((s, r) => s + r.usd, 0),
+    ...(install === undefined ? {} : {
+      before: measured(days.filter(([d]) => d < install).map(([, u]) => u)),
+      after: measured(days.filter(([d]) => d >= install).map(([, u]) => u)),
+    }),
+    spend,
+  }
+}
+
+function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isIn: (p: string | undefined) => boolean, from: string): SavingRow[] {
+  const rows: SavingRow[] = []
+  for (const mode of ['enforce', 'observe'] as const) {
+    const events = (input.junkLog ?? []).filter(ev => ev.mode === mode && isIn(ev.project) && dayKey(ev.at) >= from)
+    if (events.length === 0) continue
+    const row: SavingRow = {
+      feature: mode === 'enforce' ? 'Junk guard' : 'Junk guard (observe)',
+      did: mode === 'enforce' ? 'oversized output kept out of the context' : 'oversized output it would have kept out',
+      count: events.length, tokens: 0, usd: 0, unpriced: 0,
+      formula: 'tokens × (write5m + read × requests after, to the session end or next compaction)',
+      confidence: 'medium', isInTotal: mode === 'enforce',
+    }
+    for (const ev of events) {
+      const price = ev.session === undefined ? undefined : prices.get(`${ev.session}@${ev.at}`)
+      if (price?.family === undefined) {
+        row.unpriced++
+        continue
+      }
+      const tokens = ev.savedChars / 4
+      const p = PRICES[price.family]
+      row.tokens += tokens * (1 + price.requestsAfter)
+      row.usd += (tokens * (p.write5m + p.read * price.requestsAfter)) / 1e6
+    }
+    rows.push(row)
+  }
+  const f: DayFigures = {}
+  for (const [p, days] of Object.entries(input.projectDays ?? {})) {
+    if (!isIn(p)) continue
+    for (const [day, x] of Object.entries(days)) {
+      if (day < from) continue
+      for (const [k, v] of Object.entries(x) as [keyof DayFigures, number][]) f[k] = (f[k] ?? 0) + v
+    }
+  }
+  if ((f.keepWarmPings ?? 0) > 0) {
+    rows.push({ feature: 'Keep-warm', did: 'pings that kept the cache warm', count: f.keepWarmPings!, tokens: f.keepWarmSavedTokens ?? 0, usd: (f.keepWarmSavedUsd ?? 0) - (f.keepWarmSpentUsd ?? 0), unpriced: 0, formula: 'rebuilds avoided − pings spent', confidence: 'high', isInTotal: true })
+  }
+  if ((f.snapshots ?? 0) > 0) {
+    rows.push({ feature: 'Snapshot compaction', did: 'compactions with no summary request', count: f.snapshots!, tokens: f.snapshotSavedTokens ?? 0, usd: f.snapshotSavedUsd ?? 0, unpriced: 0, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low', isInTotal: true })
+  }
+  const counts = [['coldAsks', 'Cold-cache guard', 'asked before a send over a cold cache'], ['topicClears', 'Unrelated-prompt hint', 'cleared for a new topic'], ['handoffs', 'Handoffs', 'notes written']] as const
+  for (const [key, feature, did] of counts) {
+    if ((f[key] ?? 0) > 0) rows.push({ feature, did, count: f[key]!, tokens: 0, usd: 0, unpriced: 0, formula: 'count only', confidence: 'count only', isInTotal: false })
+  }
+  return rows
+}
+
+function measured(days: readonly DayUsage[]): Measured | undefined {
+  const t = sumUsage(days)
+  if (t.requests === 0) return undefined
+  const all = t.input + t.read + t.write
+  return { requests: t.requests, usdPerRequest: t.usd / t.requests, hitPct: all > 0 ? (t.read / all) * 100 : 0, rebuildsPer100: (t.rebuilds / t.requests) * 100, avgContext: t.context / t.requests }
+}
+
+function sumUsage(days: readonly DayUsage[]): DayUsage {
+  const t: DayUsage = { requests: 0, input: 0, read: 0, write: 0, output: 0, usd: 0, rebuilds: 0, context: 0 }
+  for (const d of days) for (const k of Object.keys(t) as (keyof DayUsage)[]) t[k] += d[k]
+  return t
+}
+
+function projectRow(input: EfficiencyInput, byDay: Record<string, Record<string, number>>, project: string, from: string, savedUsd: number): ProjectRow {
+  const sessions = Object.values(input.summaries)
+    .filter(s => (s.project ?? UNATTRIBUTED) === project)
+    .map(s => Object.entries(s.days).filter(([d]) => d >= from).map(([, u]) => u))
+    .filter(days => days.some(u => u.requests > 0))
+  const t = sumUsage(sessions.flat())
+  const all = t.input + t.read + t.write
+  // ponytail: hogDays has no project, so only file hogs under its path count; Bash and Grep hogs aren't attributed
+  const root = `${project.toLowerCase()}/`
+  const hogs = hogsOver(Object.fromEntries(Object.entries(input.hogDays ?? {}).filter(([d]) => d >= from)), '', 100)
+  const topHog = hogs.find(h => slashed(h.target).toLowerCase().startsWith(root))
+  return {
+    project,
+    usd: round4(Object.entries(byDay).filter(([d]) => d >= from).reduce((s, [, by]) => s + (by[project] ?? 0), 0)),
+    sessions: sessions.length,
+    requests: t.requests,
+    ...(all > 0 ? { hitPct: (t.read / all) * 100 } : {}),
+    rebuilds: t.rebuilds,
+    ...(topHog === undefined ? {} : { topHog }),
+    savedUsd,
+  }
+}
+
+/** Up to three things to change, each naming the figure behind it. */
+function actionsFor(all: View, junkMode: JunkMode, rows: readonly ProjectRow[]): string[] {
+  const out: string[] = []
+  const observe = all.savings.find(r => r.feature === 'Junk guard (observe)')
+  if (junkMode === 'observe' && observe !== undefined && observe.usd >= 0.01) out.push(`Junk guard in observe would have saved ~$${observe.usd.toFixed(2)} (est.): set junkGuard to enforce in /config.`)
+  const kw = all.savings.find(r => r.feature === 'Keep-warm')
+  if (kw !== undefined && kw.usd < 0) out.push(`Keep-warm cost ~$${(-kw.usd).toFixed(2)} more than it saved (est.): switch keepWarm off in /config.`)
+  if (all.before !== undefined && all.after !== undefined && all.after.hitPct < all.before.hitPct - 5) {
+    out.push(`Cache hits fell from ${Math.round(all.before.hitPct)}% to ${Math.round(all.after.hitPct)}% since install: /cw names this session's rebuild causes.`)
+  } else if (all.after !== undefined && all.after.rebuildsPer100 > 10) {
+    out.push(`${Math.round(all.after.rebuildsPer100)} rebuilds per 100 requests since install: idle gaps past the cache TTL are the usual cause; /cw names them.`)
+  }
+  const low = rows.find(r => r.hitPct !== undefined && r.hitPct < 60 && r.requests >= 20)
+  if (low !== undefined) out.push(`${low.project} had ${Math.round(low.hitPct!)}% cache hits over ${low.requests} requests: its prompt prefix changed or went cold often.`)
+  return out.slice(0, 3)
 }
 
 function round4(n: number): number {

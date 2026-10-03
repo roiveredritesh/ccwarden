@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { addProjectDay, claudeDirOf, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
+import { addProjectDay, claudeDirOf, efficiencyData, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
+import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
 
 // Floating sums compared to 4 decimals (the kit has no toBeCloseTo).
@@ -91,5 +92,107 @@ describe('F14 transcript summaries', () => {
     expect(openerArgv('windows', 'C:\\u\\d.html')).toEqual(['cmd', '/c', 'start', '', 'C:\\u\\d.html'])
     expect(openerArgv('mac', '/u/d.html')).toEqual(['open', '/u/d.html'])
     expect(openerArgv('linux', '/u/d.html')).toEqual(['xdg-open', '/u/d.html'])
+  })
+})
+
+const AT = Date.parse('2026-10-03T10:00:00Z')
+const use = (u: Partial<DayUsage>): DayUsage => ({ requests: 0, input: 0, read: 0, write: 0, output: 0, usd: 0, rebuilds: 0, context: 0, ...u })
+const FIXTURE: EfficiencyInput = {
+  now: Date.parse('2026-10-03T12:00:00Z'),
+  billing: 'metered',
+  junkMode: 'observe',
+  ledger: { days: { '2026-10-02': 5, '2026-10-03': 2 } },
+  projectDays: { '/p': { '2026-10-03': { usd: 2, keepWarmPings: 3, keepWarmSavedUsd: 0.1, keepWarmSavedTokens: 40_000, keepWarmSpentUsd: 0.25, snapshots: 1, snapshotSavedUsd: 0.04, snapshotSavedTokens: 102_000, coldAsks: 2, handoffs: 1 } } },
+  junkLog: [
+    { at: AT, tool: 'Read', mode: 'enforce', target: '/p/big.log', size: 3_000, savedChars: 40_000, project: '/p', session: 's1' },
+    { at: AT + 1_000, tool: 'Bash', mode: 'observe', target: 'cat x', size: 80_000, savedChars: 80_000, project: '/p', session: 's1' },
+    { at: AT + 2_000, tool: 'Read', mode: 'enforce', target: '/q/old.log', size: 3_000, savedChars: 4_000 }, // from before F14
+  ],
+  hogDays: { '2026-10-03': { 'Read\t/p/src/big.ts': 9_000, 'Read\t/elsewhere/x.ts': 20_000, 'Bash\tnpm test': 30_000 } },
+  summaries: {
+    '/h/.claude/projects/-p/s1.jsonl': {
+      project: '/p',
+      days: {
+        '2026-10-01': use({ requests: 10, read: 50_000, write: 50_000, usd: 1, rebuilds: 2, context: 1_000_000 }),
+        '2026-10-03': use({ requests: 10, read: 90_000, write: 10_000, usd: 0.5, context: 1_000_000 }),
+      },
+      junk: [{ at: AT, requestsAfter: 2, family: 'sonnet' }, { at: AT + 1_000, requestsAfter: 0, family: 'sonnet' }],
+    },
+  },
+  coverage: { total: 2, read: 1, skippedBig: 1, failed: 0, pending: 0 },
+}
+
+describe('F14 aggregation and savings', () => {
+  const data = efficiencyData(FIXTURE)
+  const week = data.ranges['7d']
+  const all = week.views['']!
+  const row = (feature: string) => all.savings.find(r => r.feature === feature)!
+
+  test('install day: the first day in the ledger or projectDays', () => {
+    expect(installDay(FIXTURE.ledger, FIXTURE.projectDays)).toBe('2026-10-02')
+    expect(installDay(undefined, undefined)).toBeUndefined()
+    expect(data.ranges.install.from).toBe('2026-10-02')
+    expect(week.from).toBe('2026-09-27')
+  })
+
+  test('junk guard enforce: tokens × (write5m + read × requests after); events from before F14 counted, not priced', () => {
+    const r = row('Junk guard')
+    expect([r.count, r.unpriced, r.tokens, r.isInTotal, r.confidence]).toEqual([2, 1, 30_000, true, 'medium'])
+    expect(r4(r.usd)).toBe(0.029) // 10k × ($2.50 + $0.20 × 2) / 1M
+  })
+
+  test('junk guard observe: "would save", not in the total', () => {
+    const r = row('Junk guard (observe)')
+    expect([r.count, r.tokens, r.isInTotal]).toEqual([1, 20_000, false])
+    expect(r4(r.usd)).toBe(0.05)
+  })
+
+  test('keep-warm may be negative and is shown so; snapshot priced when it happened; F2 and handoffs count only', () => {
+    expect(r4(row('Keep-warm').usd)).toBe(-0.15)
+    expect(row('Keep-warm').confidence).toBe('high')
+    expect([row('Snapshot compaction').usd, row('Snapshot compaction').confidence]).toEqual([0.04, 'low'])
+    expect([row('Cold-cache guard').count, row('Cold-cache guard').isInTotal]).toEqual([2, false])
+    expect(row('Handoffs').count).toBe(1)
+    expect(r4(all.totalUsd)).toBe(-0.081) // 0.029 − 0.15 + 0.04: observe left out
+    expect(all.totalTokens).toBe(172_000)
+  })
+
+  test('before and after install, measured from the transcripts', () => {
+    expect(all.before).toEqual({ requests: 10, usdPerRequest: 0.1, hitPct: 50, rebuildsPer100: 20, avgContext: 100_000 })
+    expect(all.after).toEqual({ requests: 10, usdPerRequest: 0.05, hitPct: 90, rebuildsPer100: 0, avgContext: 100_000 })
+  })
+
+  test('projects: spend from projectDays, the ledger rest as unattributed, transcript figures, the top file hog', () => {
+    expect(data.projects).toEqual(['/p', 'unattributed'])
+    expect(week.projects.map(p => [p.project, p.usd, p.sessions, p.requests, p.rebuilds])).toEqual([['unattributed', 5, 0, 0, 0], ['/p', 2, 1, 20, 2]])
+    const p = week.projects[1]!
+    expect(Math.round(p.hitPct!)).toBe(70)
+    expect(p.topHog).toEqual({ tool: 'Read', target: '/p/src/big.ts', tokens: 9_000 })
+    expect(r4(p.savedUsd)).toBe(-0.081)
+  })
+
+  test('a project view holds only its own events and spend', () => {
+    expect(week.views['/p']!.savings.find(r => r.feature === 'Junk guard')!.count).toBe(1)
+    expect(week.views.unattributed!.savings.map(r => [r.feature, r.count, r.unpriced])).toEqual([['Junk guard', 1, 1]])
+    expect(all.spend.map(d => d.day)).toEqual(['2026-09-27', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03'])
+    expect(all.spend.at(-2)!.usd).toEqual({ unattributed: 5 })
+    expect(all.spend.at(-1)!.usd).toEqual({ '/p': 2 })
+    expect(week.views['/p']!.spend.at(-2)!.usd).toEqual({})
+  })
+
+  test('what to do: each line names its figure', () => {
+    expect(week.actions).toEqual([
+      'Junk guard in observe would have saved ~$0.05 (est.): set junkGuard to enforce in /config.',
+      'Keep-warm cost ~$0.15 more than it saved (est.): switch keepWarm off in /config.',
+    ])
+  })
+
+  test('an empty machine: no install day, nothing saved, no NaN', () => {
+    const empty = efficiencyData({ now: FIXTURE.now, junkMode: 'observe', summaries: {}, coverage: { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 } })
+    expect(empty.installDay).toBeUndefined()
+    expect(empty.projects).toEqual([])
+    expect(empty.ranges['30d'].views['']!).toMatchObject({ savings: [], totalUsd: 0, totalTokens: 0 })
+    expect(empty.ranges['30d'].views['']!.before).toBeUndefined()
+    expect(empty.ranges['30d'].actions).toEqual([])
   })
 })
