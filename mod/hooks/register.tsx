@@ -806,6 +806,7 @@ async function offerHandoff($: $, config: Config): Promise<void> {
 async function recordJunk($: $, event: JunkEvent): Promise<void> {
   const tagged: JunkEvent = { ...event, project: projectKey(await $.session.root()), session: await $.session.id() }
   await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, tagged))
+  $.ui.log(`ccwarden junk guard (${event.mode}): ${event.tool} ${event.target}`, { to: 'debug' })
 }
 
 /** Saves a tool's full output under the home folder for Claude to grep; undefined when it couldn't. */
