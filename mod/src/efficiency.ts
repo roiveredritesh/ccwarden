@@ -12,6 +12,8 @@ import type { Hog, HogDays } from './hogs'
 import type { JunkMode } from './junk'
 import type { Ledger } from './ledger'
 import type { Feature, FeatureTotals, MetricsSummary } from './metrics'
+import { proof } from './proof'
+import type { ProofResult } from './proof'
 
 
 // F14 efficiency dashboard: what ccwarden saved (est.), and a measured
@@ -176,7 +178,7 @@ export type View = { savings: SavingRow[]; totalTokens: number; totalUsd: number
 /** One range: its first day, the project table, a view per project (`''`: all of them), and what to do. */
 export type RangeData = { from: string; projects: ProjectRow[]; views: Record<string, View>; actions: string[] }
 /** `projects`: those used with ccwarden (any activity since install); `hiddenProjects` counts the rest. */
-export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; hiddenProjects: number; ranges: Record<Range, RangeData> }
+export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; hiddenProjects: number; ranges: Record<Range, RangeData>; proof: ProofResult }
 export type EfficiencyInput = {
   now: number
   billing?: Billing
@@ -217,7 +219,11 @@ export function efficiencyData(input: EfficiencyInput): EfficiencyData {
     const rows = projects.map(p => projectRow(input, byDay, p, from, views[p]!.totalUsd)).sort((a, b) => b.usd - a.usd || b.requests - a.requests)
     ranges[range] = { from, projects: rows, views, actions: actionsFor(views['']!, input.junkMode, rows) }
   }
-  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, hiddenProjects: all.length - projects.length, ranges }
+  // ponytail: a file's estimate is spread evenly over its /clear parts; per-part estimates if parts ever matter
+  const proofSessions = Object.values(input.metrics ?? {})
+    .filter(m => used.has(m.project ?? UNATTRIBUTED))
+    .flatMap(m => m.records.map(record => ({ record, estUsd: m.estUsd / Math.max(1, m.records.length) })))
+  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, hiddenProjects: all.length - projects.length, ranges, proof: proof(proofSessions) }
 }
 
 /** Any spend, request, live figure or junk event for `project` on or after `install`. */

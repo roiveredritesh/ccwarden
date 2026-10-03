@@ -1,6 +1,8 @@
 import type { Coverage, EfficiencyData, Measured, Range, RangeData, SavingRow, View } from './efficiency'
 import { RANGES, UNATTRIBUTED } from './efficiency'
 import { fmtTokens } from './status'
+import { MIN_HOLDOUT, MIN_PROTECTED, proofClaim, selfCheck } from './proof'
+import type { ProofResult } from './proof'
 
 // F14: the efficiency dashboard as one self-contained HTML page: inline CSS,
 // SVG charts, and a few lines of JS for the range and project filters.
@@ -39,6 +41,7 @@ export function dashboardHtml(d: EfficiencyData): string {
 <header><h1>ccwarden efficiency</h1>
 <p class="dim">Updated ${updated} UTC · billing ${escapeHtml(d.billing ?? 'not set')} · tokens first, ${money}${d.installDay === undefined ? '' : ` · installed ${escapeHtml(d.installDay)}`}</p>
 <nav><span class="seg">${RANGES.map(r => `<button data-set-range="${r}">${RANGE_LABEL[r]}</button>`).join('')}</span><button data-set-project="">All projects</button></nav></header>
+${proofHtml(d.proof)}
 ${RANGES.map(r => rangeHtml(r, d.ranges[r], index, colors, d.hiddenProjects)).join('\n')}
 <footer class="dim">${escapeHtml(coverageLine(d.coverage))}. Transcripts over 4 MiB are left out before and after alike, so the longest sessions are not in the measured figures.</footer>
 <script>${SCRIPT}</script></body></html>
@@ -209,6 +212,21 @@ function spendHtml(v: View, colors: Map<string, number>): string {
   return `<section><h2>Spend over time</h2><p class="dim">Est. $ per day; the tallest bar is ${usd(max)}. Hover a bar for its project.</p><svg viewBox="0 0 ${W} ${H + 18}" role="img" aria-label="Spend per day">${bars}${ticks}</svg>${shown.length > 1 ? `<p class="legend">${legend}</p>` : ''}</section>`
 }
 
+function proofHtml(p: ProofResult): string {
+  const claim = escapeHtml(proofClaim(p))
+  if (p.kind === 'off') return `<section class="proof"><h2>Proof (holdout)</h2><p>${claim}</p></section>`
+  if (p.kind === 'collecting') {
+    const bar = (n: number, of: number) => `<span class="bar"><i style="width:${Math.min(100, (n / of) * 100).toFixed(0)}%"></i></span>`
+    return `<section class="proof"><h2>Proof (holdout)</h2><p>${claim}</p><p class="dim">Holdout ${p.holdout}/${MIN_HOLDOUT}${bar(p.holdout, MIN_HOLDOUT)}Protected ${p.protected}/${MIN_PROTECTED}${bar(p.protected, MIN_PROTECTED)}</p></section>`
+  }
+  const lo = Math.min(-20, p.lowPct - 5)
+  const hi = Math.max(40, p.highPct + 5)
+  const x = (v: number) => (((v - lo) / (hi - lo)) * 600 + 60).toFixed(1)
+  const svg = `<svg viewBox="0 0 720 60" role="img" aria-label="${claim}"><line class="axis" x1="60" x2="660" y1="30" y2="30"/><line class="zero" x1="${x(0)}" x2="${x(0)}" y1="12" y2="48"/><text class="axis" x="${x(0)}" y="58" text-anchor="middle">0%</text><line class="range" x1="${x(p.lowPct)}" x2="${x(p.highPct)}" y1="30" y2="30" data-tip="${escapeHtml(`90% range ${Math.round(p.lowPct)}% to ${Math.round(p.highPct)}%`)}"/><circle class="point" cx="${x(p.lessPct)}" cy="30" r="6" data-tip="${escapeHtml(`${Math.round(p.lessPct)}% less per prompt`)}"/><text class="axis" x="60" y="12">more per prompt</text><text class="axis" x="660" y="12" text-anchor="end">less per prompt</text></svg>`
+  const check = selfCheck(p)
+  return `<section class="proof"><h2>Proof (holdout)</h2><p class="total">${claim}</p>${svg}<p class="dim">Median per prompt: holdout $${p.holdoutMedian.toFixed(3)}, protected $${p.protectedMedian.toFixed(3)}.${check === undefined ? '' : ` ${escapeHtml(check)}`}</p></section>`
+}
+
 function actionsHtml(actions: readonly string[]): string {
   const body = actions.length === 0 ? '<p class="dim">Nothing stands out.</p>' : `<ul>${actions.map(a => `<li>${escapeHtml(a)}</li>`).join('')}</ul>`
   return `<section class="actions"><h2>What to do</h2>${body}</section>`
@@ -243,6 +261,8 @@ button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:
 svg{width:100%;height:auto}text.axis{fill:var(--dim);font-size:11px}
 .legend span{margin-right:14px;white-space:nowrap}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
 footer{margin-top:24px;font-size:12px}
+.proof{border-left:3px solid var(--on);padding-left:12px}.proof .total{font-size:16px;font-weight:600}
+line.axis{stroke:var(--line)}line.zero{stroke:var(--dim);stroke-dasharray:3 3}line.range{stroke:var(--on);stroke-width:4;stroke-linecap:round}circle.point{fill:var(--on);stroke:var(--bg);stroke-width:2}
 `
 
 // Shows one range and one project; kept in the URL's hash so the minute refresh keeps them.

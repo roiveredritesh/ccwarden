@@ -4,6 +4,7 @@ import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
 import { coverageLine, dashboardHtml, escapeHtml } from '../src/htmlDashboard'
 import type { MetricsSummary } from '../src/metrics'
+import { newRecord } from '../src/metrics'
 
 // Floating sums compared to 4 decimals (the kit has no toBeCloseTo).
 const r4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -255,6 +256,11 @@ describe('F14 the page', () => {
     expect(page).toContain('1 folder with no activity in this range not shown.')
   })
 
+  test('the proof section: with no holdout data it says how to start one', () => {
+    expect(html).toContain('<section class="proof"><h2>Proof (holdout)</h2>')
+    expect(html).toContain('Not proven yet: turn on measureHoldout in /config')
+  })
+
   test('an empty machine still renders, with no NaN or Infinity', () => {
     const empty = dashboardHtml(efficiencyData({ now: FIXTURE.now, junkMode: 'observe', summaries: {}, coverage: { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 } }))
     expect(empty).toContain('Nothing yet in this range.')
@@ -323,5 +329,16 @@ describe('F15 rows from the metrics log', () => {
   test('a project with only metrics since install is a used project', () => {
     const only = { ...SUMMARY, project: '/m' }
     expect(efficiencyData({ ...FIXTURE, metrics: { x: only } }).projects).toContain('/m')
+  })
+
+  test('the proof is worked out from the log\'s records of used projects', () => {
+    const rec = (id: string, holdout: boolean, usd: number) => ({ ...newRecord({ session: id, project: '/p', now: Date.parse('2026-10-03T10:00:00Z'), measuring: true }), holdout, family: 'sonnet' as const, prompts: 10, usd })
+    const files = Object.fromEntries([
+      ...Array.from({ length: 12 }, (_, i) => rec(`h${i}`, true, 10)),
+      ...Array.from({ length: 30 }, (_, i) => rec(`p${i}`, false, 7)),
+    ].map(r => [r.session, { session: r.session, project: '/p', records: [r], days: { '2026-10-03': {} }, estUsd: 0, wouldUsd: 0, skipped: 0 }]))
+    const p = efficiencyData({ ...FIXTURE, metrics: files }).proof
+    expect(p.kind).toBe('measured')
+    expect(efficiencyData(FIXTURE).proof).toEqual({ kind: 'off' })
   })
 })
