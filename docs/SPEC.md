@@ -478,7 +478,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | Not needed: the types state a subagent run ends in a `turn.complete` carrying its `agentId` and summed `usage`; F15 reads that, as F5 does. | answered by the types |
 | 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | **yes** (2026-10-03, Windows terminal): the first write created `~/.claude/ccwarden/metrics/` |
 | 22 | **Session id after `/clear` (F15):** does the next conversation get a new `$.session.id()`? | Not stated. | open: one file per conversation, or `part` records |
-| 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | open: the fallback selects the text |
+| 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | **Chrome: yes** (2026-10-03, Windows): Copy summary put the Markdown on the clipboard. Edge, Safari: open; the fallback selects the text |
 
 ## 10. Gaps found in design review, and resolutions
 

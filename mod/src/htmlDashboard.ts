@@ -67,6 +67,12 @@ ${views(v => spendHtml(v, colors))}
 </main>`
 }
 
+/** "~12k tokens", or undefined when the savings are $ only (F5 pins save price, not tokens). */
+function savedTokens(v: View): string | undefined {
+  const t = Math.round(v.totalTokens)
+  return t > 0 ? `~${fmtTokens(t)} tokens` : undefined
+}
+
 function usd(n: number): string {
   return `${n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}`
 }
@@ -97,7 +103,7 @@ function card(label: string, value: string, note: string): string {
 function cardsHtml(v: View): string {
   const counted = v.savings.filter(r => r.isInTotal)
   const saved = v.totalTokens > 0 || v.totalUsd !== 0
-    ? card('Saved by ccwarden (est.)', `~${fmtTokens(Math.round(v.totalTokens))} tokens`, `~${usd(v.totalUsd)} est. from ${counted.reduce((s, r) => s + r.count, 0)} actions`)
+    ? card('Saved by ccwarden (est.)', savedTokens(v) ?? `~${usd(v.totalUsd)}`, `${savedTokens(v) === undefined ? '' : `~${usd(v.totalUsd)} `}est. from ${counted.reduce((s, r) => s + r.count, 0)} actions`)
     : card('Saved by ccwarden (est.)', 'Nothing counted yet', escapeHtml(whyNothing(v)))
   const { before: b, after: a } = v
   const both = b !== undefined && a !== undefined
@@ -124,9 +130,11 @@ function whyNothing(v: View): string {
 
 function savedCell(s: SavingRow): string {
   if (s.confidence === 'count only') return '–'
-  const tokens = `${s.isInTotal ? '' : 'would save '}~${fmtTokens(Math.round(s.tokens))} tokens`
+  const prefix = s.isInTotal ? '' : 'would save '
+  const tokens = `${prefix}~${fmtTokens(Math.round(s.tokens))} tokens`
   // ponytail: an event with no price still kept its tokens out once; showing $0.00 for it would read as "saved nothing"
-  return s.unpriced === s.count ? `${tokens} (est.)` : `${tokens} · ~${usd(s.usd)} est.`
+  if (s.unpriced === s.count) return `${tokens} (est.)`
+  return Math.round(s.tokens) > 0 ? `${tokens} · ~${usd(s.usd)} est.` : `${prefix}~${usd(s.usd)} est.` // a pin saves price, not tokens
 }
 
 function savingsHtml(v: View): string {
@@ -140,7 +148,7 @@ function savingsHtml(v: View): string {
   const table = rows === ''
     ? '<p class="dim">Nothing yet in this range.</p>'
     : `<details><summary>How it's computed</summary><table><tr><th>Feature and formula</th><th>What it did</th><th class="num">Times</th><th>Saved</th><th>Confidence</th></tr>${rows}</table></details>`
-  return `<section><h2>Est. savings by feature</h2><p class="dim">~${fmtTokens(Math.round(v.totalTokens))} tokens / ~${usd(v.totalUsd)} saved (est.). Rows marked "not in total" are what a feature would have done.</p>${bars}${table}</section>`
+  return `<section><h2>Est. savings by feature</h2><p class="dim">${savedTokens(v) === undefined ? '' : `${savedTokens(v)} / `}~${usd(v.totalUsd)} saved (est.). Rows marked "not in total" are what a feature would have done.</p>${bars}${table}</section>`
 }
 
 function realityHtml(v: View): string {
@@ -259,7 +267,7 @@ function dayTicks(days: readonly string[], bw: number): string {
 
 /** One sentence per range: what was saved (est.), and where the proof stands. */
 function verdictHtml(label: string, v: View, p: ProofResult): string {
-  return `<p class="verdict">${label}: ccwarden saved ~${fmtTokens(Math.round(v.totalTokens))} tokens (~${usd(v.totalUsd)} est.) ${escapeHtml(proofClaim(p))}</p>`
+  return `<p class="verdict">${label}: ccwarden saved ${savedTokens(v) === undefined ? `~${usd(v.totalUsd)} (est.)` : `${savedTokens(v)} (~${usd(v.totalUsd)} est.)`} ${escapeHtml(proofClaim(p))}</p>`
 }
 
 /** F15: events per day by feature, from the metrics log. */
@@ -306,7 +314,7 @@ export function summaryMarkdown(d: EfficiencyData): string {
   const top = v.savings.filter(r => r.isInTotal && r.usd > 0).sort((a, b) => b.usd - a.usd).slice(0, 3)
   return [
     `## ccwarden report (${new Date(d.at).toISOString().slice(0, 10)})`,
-    `- Saved (est., 30 days): ~${fmtTokens(Math.round(v.totalTokens))} tokens / ~${usd(v.totalUsd)}`,
+    `- Saved (est., 30 days): ${savedTokens(v) === undefined ? '' : `${savedTokens(v)} / `}~${usd(v.totalUsd)}`,
     `- Proof: ${proofClaim(d.proof)}`,
     ...(top.length === 0 ? [] : [`- Top savings: ${top.map(r => `${r.feature} ~${usd(r.usd)}`).join(', ')}`]),
     `- Coverage: ${coverageLine(d.coverage)}; ${d.sessions.length} sessions in the metrics log`,

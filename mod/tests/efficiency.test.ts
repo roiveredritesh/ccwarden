@@ -355,7 +355,7 @@ describe('F15 the page', () => {
   const html = dashboardHtml(data)
 
   test('a verdict line per range, with the proof state', () => {
-    expect(html).toMatch(/<p class="verdict">7 days: ccwarden saved ~[^<]+ est\.\) Not proven yet: 0 of 10 holdout sessions/)
+    expect(html).toMatch(/<p class="verdict">7 days: ccwarden saved ~[^<]+est\.\) Not proven yet: 0 of 10 holdout sessions/)
   })
 
   test('activity per day by feature; sessions; the latest events', () => {
@@ -378,5 +378,14 @@ describe('F15 the page', () => {
     expect(html.split('<script').length).toBe(2)
     expect(summaryMarkdown(data)).toMatch(/^## ccwarden report \(2026-10-03\)\n- Saved \(est\., 30 days\): ~/)
     expect(summaryMarkdown(data)).toContain('- Proof: Not proven yet: 0 of 10 holdout sessions')
+  })
+
+  test('a $-only saving (a pin) says no "~0 tokens"', () => {
+    const only = efficiencyData({ now: FIXTURE.now, junkMode: 'observe', summaries: {}, coverage: { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 }, metrics: { m: SUMMARY }, events: evs })
+    expect(only.ranges['30d'].views['']!.totalUsd).toBe(1.5)
+    expect(summaryMarkdown(only)).toContain('- Saved (est., 30 days): ~$1.50\n')
+    const page = dashboardHtml(only)
+    expect(page).not.toContain('~0 tokens')
+    expect(page).toContain('ccwarden saved ~$1.50 (est.)')
   })
 })
