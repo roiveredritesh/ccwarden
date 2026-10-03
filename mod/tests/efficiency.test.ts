@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { addProjectDay, claudeDirOf, efficiencyData, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
 import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
+import { coverageLine, dashboardHtml, escapeHtml } from '../src/htmlDashboard'
 
 // Floating sums compared to 4 decimals (the kit has no toBeCloseTo).
 const r4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -194,5 +195,45 @@ describe('F14 aggregation and savings', () => {
     expect(empty.ranges['30d'].views['']!).toMatchObject({ savings: [], totalUsd: 0, totalTokens: 0 })
     expect(empty.ranges['30d'].views['']!.before).toBeUndefined()
     expect(empty.ranges['30d'].actions).toEqual([])
+  })
+})
+
+describe('F14 the page', () => {
+  const html = dashboardHtml(efficiencyData(FIXTURE))
+
+  test('self-contained: no URL, one script (ours), refreshes every minute', () => {
+    expect(html).not.toMatch(/https?:\/\//)
+    expect(html.split('<script').length).toBe(2)
+    expect(html).toContain('<meta http-equiv="refresh" content="60">')
+  })
+
+  test('a project path is escaped everywhere', () => {
+    const evil = '/x/<script>alert(1)</script>&"'
+    const page = dashboardHtml(efficiencyData({ ...FIXTURE, projectDays: { [evil]: { '2026-10-03': { usd: 1 } } } }))
+    expect(page).not.toContain('<script>alert(1)')
+    expect(page).toContain('/x/&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;')
+    expect(escapeHtml(`<a href='x'>&`)).toBe('&lt;a href=&#39;x&#39;&gt;&amp;')
+  })
+
+  test('every saving is labelled est.; observe says "would save"; the coverage line is shown', () => {
+    const cells = html.match(/<td class="saved">[^]*?<\/td>/g) ?? []
+    expect(cells.length).toBeGreaterThan(0)
+    for (const cell of cells) if (!cell.includes('–')) expect(cell).toContain('est.')
+    expect(html).toContain('would save')
+    expect(html).toContain('saved (est.)')
+    expect(html).toContain(escapeHtml(coverageLine(FIXTURE.coverage)))
+    expect(coverageLine(FIXTURE.coverage)).toBe('1 of 2 transcripts read; 1 over 4 MiB skipped')
+    expect(coverageLine({ total: 5, read: 2, skippedBig: 0, failed: 1, pending: 2 })).toBe('2 of 5 transcripts read; 1 could not be read; 2 not read yet')
+  })
+
+  test('window billing labels $ as a list-price equivalent', () => {
+    expect(dashboardHtml(efficiencyData({ ...FIXTURE, billing: 'window' }))).toContain('list-price equivalent')
+    expect(html).not.toContain('list-price equivalent')
+  })
+
+  test('an empty machine still renders, with no NaN or Infinity', () => {
+    const empty = dashboardHtml(efficiencyData({ now: FIXTURE.now, junkMode: 'observe', summaries: {}, coverage: { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 } }))
+    expect(empty).toContain('Nothing yet in this range.')
+    expect(empty).not.toMatch(/NaN|Infinity/)
   })
 })
