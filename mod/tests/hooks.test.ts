@@ -979,8 +979,8 @@ describe('F7 handoff', () => {
   })
 
   for (const surface of SURFACES) {
-    test(`a fresh start offers the newest unread handoff once; Continue prefills the prompt (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
-      const files = {
+    test(`a fresh start offers the newest handoff once, never an older one; Continue prefills the prompt (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const files: Record<string, string> = {
         '/p/.claude/handoffs/2026-10-01-0900-old-task.md': '# old',
         '/p/.claude/handoffs/2026-10-02-0746-fix-login.md': '# new',
         '/p/.claude/handoffs/notes.txt': 'not a handoff',
@@ -994,12 +994,16 @@ describe('F7 handoff', () => {
 
       await $.classic.SessionStart({ source: 'startup', transcript_path: '/t2.jsonl' })
       await w.clock.advance(0)
-      expect(w.asks).toHaveLength(2)
-      expect(w.asks[1]).toContain('2026-10-01-0900-old-task.md') // the next unread one
+      expect(w.asks).toHaveLength(1) // the older one is stale: not offered
 
+      files['/p/.claude/handoffs/2026-10-03-0800-next.md'] = '# newer'
       await $.classic.SessionStart({ source: 'resume', transcript_path: '/t3.jsonl' })
       await w.clock.advance(0)
-      expect(w.asks).toHaveLength(2) // only a fresh start offers
+      expect(w.asks).toHaveLength(1) // only a fresh start offers
+
+      await $.classic.SessionStart({ source: 'startup', transcript_path: '/t4.jsonl' })
+      await w.clock.advance(0)
+      expect(w.asks[1]).toContain('2026-10-03-0800-next.md')
     })
   }
 
@@ -1387,6 +1391,9 @@ describe('F13 unrelated-prompt hint', () => {
     expect(w.fills).toEqual([UNRELATED])
     await $.prompt.submit(typed(UNRELATED))
     expect(w.sent).toEqual([UNRELATED])
+    // Only that prompt went through: the next unrelated one is asked about.
+    await $.prompt.submit(typed('deploy kubernetes cluster on azure today'))
+    expect(w.asks).toHaveLength(2)
   })
 
   test('not asked: related, short, under 40k, or a slash command', { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {

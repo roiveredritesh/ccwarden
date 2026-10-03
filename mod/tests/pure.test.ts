@@ -538,8 +538,9 @@ describe('M2 F7 handoff', () => {
   test('the newest name not yet offered', () => {
     const names = ['2026-10-01-0900-a.md', '2026-10-02-0746-b.md', 'README.md', '2026-10-02-0746-b.md.bak']
     expect(newestUnread(names, [])).toBe('2026-10-02-0746-b.md')
-    expect(newestUnread(names, ['2026-10-02-0746-b.md'])).toBe('2026-10-01-0900-a.md')
-    expect(newestUnread(names, ['2026-10-02-0746-b.md', '2026-10-01-0900-a.md'])).toBeUndefined()
+    // Once the newest was offered, an older one is stale: not offered either.
+    expect(newestUnread(names, ['2026-10-02-0746-b.md'])).toBeUndefined()
+    expect(newestUnread(names, ['2026-10-01-0900-a.md'])).toBe('2026-10-02-0746-b.md')
   })
   test('full sections: from the first heading, or nothing', () => {
     expect(fullSections('Here:\n## Decisions and why\nx\n## Next step\ny')).toBe('## Decisions and why\nx\n## Next step\ny')
@@ -735,10 +736,14 @@ describe('F13 topic shift', () => {
     expect(isTopicCandidate({ text: `/${text}`, tokens: 90_000 })).toBe(false)
     expect(isTopicCandidate({ text, tokens: 119_000, mutedAt: 100_000 })).toBe(false)
     expect(isTopicCandidate({ text, tokens: 120_000, mutedAt: 100_000 })).toBe(true)
+    expect(isTopicCandidate({ text: ` ${text} `, tokens: 90_000, skip: text })).toBe(false)
+    expect(isTopicCandidate({ text: 'What is the capital of india?', tokens: 90_000, skip: text })).toBe(true)
   })
   test('a shift: overlap near zero, and some history to compare with', () => {
     expect(isTopicShift('write a python scraper for weather data', ['fix the snapshot compaction'])).toBe(true)
     expect(isTopicShift('make the snapshot keep todos too', ['fix the snapshot compaction'])).toBe(false)
+    // 1 of 5 keywords seen (20%) is still a shift.
+    expect(isTopicShift('snapshot python scraper weather forecast', ['fix the snapshot compaction'])).toBe(true)
     expect(isTopicShift('write a python scraper for weather data', ['', ' '])).toBe(false)
   })
   test('answers', () => {

@@ -10,7 +10,7 @@ export const TOPIC_MIN_TOKENS = 40_000
 /** Fewer keywords than this and the prompt says too little to judge ("yes", "ship it"). 2 catches "what is the capital of india?". */
 export const TOPIC_MIN_KEYWORDS = 2
 /** "Near zero": at most this share of the prompt's keywords seen before. */
-export const TOPIC_MAX_OVERLAP = 0.1
+export const TOPIC_MAX_OVERLAP = 0.2
 /** "Send" mutes the hint until the context grows this much (SPEC §3 "Keep going"). */
 export const TOPIC_MUTE_GROWTH = 1.2
 
@@ -47,11 +47,12 @@ export function topicOverlap(prompt: string, history: readonly string[]): { over
   return { overlap: words.size === 0 ? 1 : hits / words.size, count: words.size }
 }
 
-/** Worth comparing at all: checked before the history is read. */
-export function isTopicCandidate(f: { text: string; tokens: number | undefined; mutedAt?: number }): boolean {
+/** Worth comparing at all: checked before the history is read. `skip` is the prompt last put back, which goes through when sent again. */
+export function isTopicCandidate(f: { text: string; tokens: number | undefined; mutedAt?: number; skip?: string }): boolean {
   const tokens = f.tokens ?? 0
   if (tokens < TOPIC_MIN_TOKENS || f.text.trimStart().startsWith('/')) return false
   if (f.mutedAt !== undefined && tokens < f.mutedAt * TOPIC_MUTE_GROWTH) return false
+  if (f.skip !== undefined && f.text.trim() === f.skip) return false
   return keywords(f.text).size >= TOPIC_MIN_KEYWORDS
 }
 

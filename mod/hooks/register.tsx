@@ -529,18 +529,18 @@ async function startOver($: $, config: Config): Promise<void> {
 /**
  * F13: a typed prompt that shares almost no words with the goal, recent asks
  * and last answer is asked about. Clear runs /clear (queued until idle) and
- * puts the prompt back; any answer mutes the hint until the context grows
- * 20%, so sending again goes through. Returns the drop reason, or undefined
+ * puts the prompt back; that prompt goes through when sent again. Send mutes
+ * the hint until the context grows 20%. Returns the drop reason, or undefined
  * to send.
  */
 async function topicHint($: $, config: Config, text: string, tokens: number | undefined, conv: CcwardenConversation): Promise<string | undefined> {
-  if (tokens === undefined || !isTopicCandidate({ text, tokens, mutedAt: conv.topicMutedAt })) return undefined
+  if (tokens === undefined || !isTopicCandidate({ text, tokens, mutedAt: conv.topicMutedAt, skip: conv.topicSkip })) return undefined
   const facts = await sessionFacts($, (await $.state.get(transcriptPath)).value)
   const history = [goalOf({ goal: conv.goal, asks: facts.asks }) ?? '', ...facts.asks.slice(-5), lastAnswer(await $.session.messages()) ?? '']
   if (!isTopicShift(text, history)) return undefined
   const answer = await $.ui.ask(topicQuestion(tokens), { header: 'New topic?', options: [TOPIC_SEND, TOPIC_CLEAR, TOPIC_HANDOFF_CLEAR] }).catch(() => undefined)
   const choice = topicChoice(answer)
-  await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), topicMutedAt: tokens }))
+  await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), ...(choice === 'send' ? { topicMutedAt: tokens } : { topicSkip: text.trim() }) }))
   const { overlap, count } = topicOverlap(text, history)
   const log = (await $.store.get(TOPIC_LOG_KEY)) as TopicEvent[] | undefined
   await $.store.set(TOPIC_LOG_KEY, appendTopic(log, { at: await $.clock.now(), overlap, keywords: count, tokens, choice }))

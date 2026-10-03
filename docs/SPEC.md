@@ -247,7 +247,7 @@ It never blocks and adds nothing to context.
 - **`/handoff quick`** (zero tokens), built from the transcript and git: goal, verbatim asks, files touched + `git diff --stat`, open todos, last error, branch.
 - **`/handoff`** (full): the same facts, plus Claude writes the decisions and why, the current state, the exact next step and what to verify first. It is one short turn, cheap while the cache is warm. The advisor offers full while warm, quick when cold.
 - **Output:** a fixed template, written to `<handoffDir>/<date>-<topic>.md`.
-- **Pickup:** on `session.start` (`startup`), the newest unread handoff for the project is offered as **[Continue from handoff]**.
+- **Pickup:** on `session.start` (`startup`), the project's newest handoff, if not offered before, is offered as **[Continue from handoff]**.
 - **`handoffOnCompact`:** writes a quick handoff before every compaction, as a safety net.
 - **As built (M2):**
   - The full handoff's four sections come from one `$.model.fork`. It is tool-less, reads the cached prefix and adds nothing to the conversation.
@@ -256,7 +256,7 @@ It never blocks and adds nothing to context.
     - the fork's estimate passes `handoffMaxUsd`
     - the reply isn't the four sections
   - Names are `YYYY-MM-DD-HHMM-<topic>.md` in UTC, so they sort by time on every machine. The topic is the goal's first words.
-  - Pickup is offered only on a `startup` session start (from `classic.SessionStart`). Each file is offered once (`$.store`), and **[Continue from handoff]** prefills the prompt box rather than sending anything.
+  - Pickup is offered only on a `startup` session start (from `classic.SessionStart`). Each file is offered once (`$.store`), and once the newest was offered, older ones are never offered (they are stale). **[Continue from handoff]** prefills the prompt box rather than sending anything.
 
 **F8. Background spend watcher.** Turns that start without a user prompt raise a toast with their cost and the setting that stops them:
 
@@ -333,9 +333,9 @@ It never blocks and adds nothing to context.
 **As built (M4):** `topicShiftHint`, off by default.
 
 - **Asked for:** the same prompts F2 asks about (typed while idle, interactive), when F2 didn't ask: its cold question already names `/clear`. The context must be ≥ 40k tokens and the prompt must have ≥ 2 keywords and not be a slash command.
-- **Keywords:** lowercased alphanumeric words of 3+ characters, minus English and Hinglish filler, cut to 6 characters (a crude stem). The history is the goal, the last 5 asks and Claude's last answer. A shift is ≤ 10% of the prompt's keywords seen there.
+- **Keywords:** lowercased alphanumeric words of 3+ characters, minus English and Hinglish filler, cut to 6 characters (a crude stem). The history is the goal, the last 5 asks and Claude's last answer. A shift is ≤ 20% of the prompt's keywords seen there.
 - **The question:** Send, Clear or Handoff + clear. Clear drops the prompt, runs `/clear` with `$.command.run` (queued until the session is idle), resets the conversation's figures itself (a plugin's own command may skip its own `session.end` hook, as `/compact` did in Q13), and puts the prompt back with `$.prompt.fill`. Handoff + clear writes a quick handoff first. A dismissal keeps the prompt in the box.
-- **Mute:** any answer mutes the hint until the context grows 20%, so sending the same prompt again goes through.
+- **Mute:** Send mutes the hint until the context grows 20%. Any other answer puts the prompt back, and only that prompt goes through when sent again; the next unrelated one is still asked about.
 - **Learning:** each answer goes to `$.store` `topicLog` (overlap, keyword count, tokens, choice; last 200). Turn it on by default once that log shows few Sends.
 - **Unverified live:** that a mod-run `/clear` clears (Q4), and that the refill lands after it.
 
