@@ -476,7 +476,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
 | 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
 | 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | Not needed: the types state a subagent run ends in a `turn.complete` carrying its `agentId` and summed `usage`; F15 reads that, as F5 does. | answered by the types |
-| 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | open: if not, the first write fails |
+| 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | **yes** (2026-10-03, Windows terminal): the first write created `~/.claude/ccwarden/metrics/` |
 | 22 | **Session id after `/clear` (F15):** does the next conversation get a new `$.session.id()`? | Not stated. | open: one file per conversation, or `part` records |
 | 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | open: the fallback selects the text |
 
