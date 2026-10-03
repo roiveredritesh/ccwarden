@@ -30,8 +30,10 @@ export type CcwardenConversation = {
   ttlWarned?: boolean
   /** The cold spell (its lastResponseAt) the cold-cache guard already asked about (F2). */
   coldAskedFor?: number
-  /** The context size when the unrelated-prompt hint was last answered; it waits for 20% growth (F13). */
+  /** The context size when the unrelated-prompt hint was last answered Send; it waits for 20% growth (F13). */
   topicMutedAt?: number
+  /** The prompt the unrelated-prompt hint last put back; sent again, it goes through (F13). */
+  topicSkip?: string
   /** The conversation's first ask, kept across snapshot compactions (F3). */
   goal?: string
   /** Subagents (F5): what each cost so far (est.), and which were warned about. */

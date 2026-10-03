@@ -82,9 +82,13 @@ export function fullSections(reply: string): string | undefined {
   return reply.slice(start).trim()
 }
 
-/** The newest handoff not yet offered, by file name (names sort by time). */
+/**
+ * The newest handoff, if not offered yet (names sort by time). Once it was,
+ * the older ones are stale, so each later start offers nothing until a new one.
+ */
 export function newestUnread(names: readonly string[], offered: readonly string[]): string | undefined {
-  return [...names].filter(n => /^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$/.test(n) && !offered.includes(n)).sort().at(-1)
+  const newest = names.filter(n => /^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$/.test(n)).sort().at(-1)
+  return newest === undefined || offered.includes(newest) ? undefined : newest
 }
 
 export function pickupPrompt(relPath: string): string {
