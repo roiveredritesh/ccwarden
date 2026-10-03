@@ -38,6 +38,7 @@ export type Config = {
   backgroundWatch: boolean
   modelAdvisor: boolean
   topicShiftHint: boolean
+  measureHoldout: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -70,6 +71,7 @@ export const DEFAULTS: Config = {
   backgroundWatch: true,
   modelAdvisor: true,
   topicShiftHint: false, // until tuned from its log (SPEC F13)
+  measureHoldout: false, // opt-in: holdout sessions get no protection (SPEC F15)
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -122,6 +124,7 @@ export function readConfig(options: PluginOptions): Config {
     backgroundWatch: bool('backgroundWatch'),
     modelAdvisor: bool('modelAdvisor'),
     topicShiftHint: bool('topicShiftHint'),
+    measureHoldout: bool('measureHoldout'),
   }
 }
 

@@ -31,6 +31,18 @@ describe('config', () => {
     expect(readConfig({ billing: 'ask' }).billing).toBeUndefined()
   })
 
+  test('measureHoldout: off by default, a boolean', () => {
+    expect(readConfig({} as never).measureHoldout).toBe(false)
+    expect(readConfig({ measureHoldout: true } as never).measureHoldout).toBe(true)
+    expect(readConfig({ measureHoldout: 'yes' } as never).measureHoldout).toBe(false)
+  })
+
+  test('a holdout session says so in the status line', () => {
+    const base = { billing: 'metered' as const, model: 'claude-sonnet-5-5', tokens: 1_000, limit: 300_000, cache: { kind: 'none' as const }, ttl: '5m' as const, now: 0, isAlerted: false, usd: 0 }
+    expect(formatStatus({ ...base, isHoldout: true })).toContain(' · holdout')
+    expect(formatStatus(base)).not.toContain('holdout')
+  })
+
   test('bad values fall back; steps and limits must be positive', () => {
     const c = readConfig({ billing: 'window', sessionAlertUsd: 0, limitHaiku: -1, coldMinTokens: 0, junkGuard: 'loud', keepWarm: 'yes' })
     expect(c.billing).toBe('window')

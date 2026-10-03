@@ -91,6 +91,7 @@ const billingAsked = { plugin: 'ccwarden', key: 'billingAsked' } as const
 const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
 const dashboardRef = { plugin: 'ccwarden', key: 'dashboard' } as const
+const holdoutRef = { plugin: 'ccwarden', key: 'holdout' } as const
 const WEEK_MS = 7 * 24 * 60 * 60_000
 const WEEK_MAX_FILES = 20
 
@@ -147,7 +148,8 @@ export const register: Register = (on, options) => {
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
-    await syncCompactWindow($, config)
+    await metricsFile($, config, runtime)
+    await syncCompactWindow($, config, runtime)
     await refreshStatus($, config)
     return result
   })
@@ -274,10 +276,15 @@ export const register: Register = (on, options) => {
     const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor, text: e.text })
     if (!isDue || cache.kind !== 'cold' || tokens === undefined) {
       // F13 only where F2 didn't ask: its question already names /clear.
-      const reason = config.topicShiftHint ? await topicHint($, config, runtime, e.text, tokens, conv) : undefined
+      const reason = config.topicShiftHint ? await topicHint($, config, runtime, e.text, tokens, conv, await isHoldout($, config, runtime)) : undefined
       return reason === undefined ? next(e) : { drop: reason }
     }
 
+    if (await isHoldout($, config, runtime)) {
+      await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
+      await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'would-ask', would: true, measured: { tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) ?? 0 } })
+      return next(e)
+    }
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
     await recordProject($, { coldAsks: 1 })
     const rebuild = rebuildUsd(tokens, model, ttl)
@@ -303,13 +310,14 @@ export const register: Register = (on, options) => {
   // long and aren't read; files one $.fs.read can't take are left alone.
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     if (config.junkGuard === 'off' || !isWholeTextRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
+    const mode = (await isHoldout($, config, runtime)) ? 'observe' : config.junkGuard
     const stat = await $.fs.stat(e.file_path).catch(() => undefined)
     if (stat === undefined || stat.kind !== 'file' || stat.size <= eff().readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
     const text = await $.fs.read(e.file_path).catch(() => undefined)
     const lines = text === undefined ? 0 : countLines(text)
     if (lines <= eff().readMaxLines) return next(e)
-    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Read', mode: config.junkGuard, target: e.file_path, size: lines, savedChars: stat.size })
-    if (config.junkGuard === 'observe') return next(e)
+    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Read', mode, target: e.file_path, size: lines, savedChars: stat.size })
+    if (mode === 'observe') return next(e)
     const reason = readDenyText(e.file_path, lines, eff().readMaxLines)
     $.ui.log(reason)
     return { deny: reason }
@@ -322,14 +330,15 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (config.junkGuard === 'off' || ran.deny !== undefined || isAlreadyFiltered(e.command)) return ran
+    const mode = (await isHoldout($, config, runtime)) ? 'observe' : config.junkGuard
     // A test run, passed or failed, keeps only its failure lines and summary.
     // A failed one goes back as a plain result: a hook can't shorten an error.
     if (isTestCommand(e.command)) {
       const failed = ran.isError === true
       const text = failed ? (ran.text ?? '') : [ran.result.stdout, ran.result.stderr].filter(s => s !== '').join('\n')
       if ((!failed && ran.result.persistedOutputPath !== undefined) || text.length <= eff().bashMaxChars) return ran
-      await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: text.length, savedChars: text.length - eff().bashMaxChars })
-      if (config.junkGuard === 'observe') return ran
+      await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode, target: e.command.slice(0, 200), size: text.length, savedChars: text.length - eff().bashMaxChars })
+      if (mode === 'observe') return ran
       const path = await saveOutput($, e.tool_use_id, text)
       if (path === undefined) return ran
       $.ui.log(`ccwarden junk guard: test output cut from ${text.length} characters to its failures and summary; the full text is in ${path}.`)
@@ -338,8 +347,8 @@ export const register: Register = (on, options) => {
     if (ran.isError) return ran
     const { stdout } = ran.result
     if (ran.result.persistedOutputPath !== undefined || stdout.length <= eff().bashMaxChars) return ran
-    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
-    if (config.junkGuard === 'observe') return ran
+    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
+    if (mode === 'observe') return ran
     const path = await saveOutput($, e.tool_use_id, stdout)
     if (path === undefined) return ran
     $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${eff().bashMaxChars} characters; the full text is in ${path}.`)
@@ -427,6 +436,14 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     if (!config.subagentGuard) return next(e)
     const plan = planSpawn(e, config, runningCount(await $.agent.list()))
+    if (await isHoldout($, config, runtime)) {
+      const started = await next(e)
+      if ('deny' in plan) await recordEvent($, config, runtime, { feature: 'subagent', action: 'would-deny', would: true, measured: { type: e.subagentType } })
+      else if (started.deny === undefined) {
+        await recordSpawn($, config, runtime, { type: e.subagentType, agentId: started.agentId, isPinned: plan.model !== undefined, would: true, from: started.model, to: plan.model ?? started.model, confidence: 'high' })
+      }
+      return started
+    }
     if ('deny' in plan) {
       $.ui.log(plan.deny)
       await recordEvent($, config, runtime, { feature: 'subagent', action: 'denied', measured: { type: e.subagentType } })
@@ -531,14 +548,17 @@ export const register: Register = (on, options) => {
     // snapshot. Should the context still be past it (one long turn), say so
     // once: the mod can't compact itself, since `$.command.run('compact')` and
     // `$.session.compact` both skip its own session.compact hook (SPEC §9 Q13).
-    await syncCompactWindow($, config)
+    await syncCompactWindow($, config, runtime)
     const usage = await $.session.usage()
     const model = await $.session.model()
     const limit = await limitOf($, model, config, usage.context.window)
     const tokens = usage.context.tokens ?? 0
     await recordProject($, { turns: 1, peakContext: tokens })
     if (tokens <= limit) runtime.isCompactAdvised = false
-    else if (!runtime.isCompactAdvised) {
+    else if (!runtime.isCompactAdvised && (await isHoldout($, config, runtime))) {
+      runtime.isCompactAdvised = true
+      await recordEvent($, config, runtime, { feature: 'limit', action: 'would-hint', would: true, measured: { tokens, limit } })
+    } else if (!runtime.isCompactAdvised) {
       runtime.isCompactAdvised = true
       await recordEvent($, config, runtime, { feature: 'limit', action: 'compact-hint', measured: { tokens, limit } })
       const text = `ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}. Type /compact: it keeps a snapshot, no summary request.`
@@ -555,6 +575,14 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     const plan = planCompaction(e, config.compactMode)
     if (plan === 'pass') return next(e)
+    if (await isHoldout($, config, runtime)) {
+      if (plan !== 'skip') {
+        const usage = await $.session.usage()
+        const saving = snapshotSaving(usage.context.tokens ?? 0, await $.session.model())
+        await recordEvent($, config, runtime, { feature: 'snapshot', action: 'would-answer', would: true, measured: { tokens: usage.context.tokens ?? 0, trigger: e.trigger }, ...(saving === undefined ? {} : { est: { tokens: saving.tokens, usd: saving.usd, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low' as const } }) })
+      }
+      return next(e)
+    }
     if (plan === 'skip') return { skip: 'ccwarden: snapshot compaction is on, so no summary is precomputed.' }
 
     await update($, conversation, prev => ({
@@ -600,11 +628,15 @@ async function startOver($: $, config: Config, runtime: Runtime): Promise<void> 
  * the hint until the context grows 20%. Returns the drop reason, or undefined
  * to send.
  */
-async function topicHint($: $, config: Config, runtime: Runtime, text: string, tokens: number | undefined, conv: CcwardenConversation): Promise<string | undefined> {
+async function topicHint($: $, config: Config, runtime: Runtime, text: string, tokens: number | undefined, conv: CcwardenConversation, isHoldoutSession: boolean): Promise<string | undefined> {
   if (tokens === undefined || !isTopicCandidate({ text, tokens, mutedAt: conv.topicMutedAt, skip: conv.topicSkip })) return undefined
   const facts = await sessionFacts($, (await $.state.get(transcriptPath)).value)
   const history = [goalOf({ goal: conv.goal, asks: facts.asks }) ?? '', ...facts.asks.slice(-5), lastAnswer(await $.session.messages()) ?? '']
   if (!isTopicShift(text, history)) return undefined
+  if (isHoldoutSession) {
+    await recordEvent($, config, runtime, { feature: 'topic', action: 'would-ask', would: true, measured: { tokens } })
+    return undefined
+  }
   const answer = await $.ui.ask(topicQuestion(tokens), { header: 'New topic?', options: [TOPIC_SEND, TOPIC_CLEAR, TOPIC_HANDOFF_CLEAR] }).catch(() => undefined)
   const choice = topicChoice(answer)
   await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), ...(choice === 'send' ? { topicMutedAt: tokens } : { topicSkip: text.trim() }) }))
@@ -703,12 +735,19 @@ async function metricsFile($: $, config: Config, runtime: Runtime): Promise<Metr
   }
   if (held !== undefined) await flushMetrics($, runtime) // /clear gave a new id (Q22): that file is done
   runtime.isNewPart = false
-  const fresh = newRecord({ session, project: projectKey(await $.session.root()), now, measuring: false })
+  const fresh = newRecord({ session, project: projectKey(await $.session.root()), now, measuring: config.measureHoldout })
   const path = await metricsPath($, session)
   const text = path === undefined ? undefined : await $.fs.read(path).catch(() => undefined)
   runtime.metrics = text === undefined ? emptyFile(fresh) : resume(text, fresh)
+  await $.state.set(holdoutRef, runtime.metrics.record.holdout)
+  if (runtime.metrics.record.holdout && text === undefined) $.ui.log('ccwarden: proof mode: this session is a holdout, so guards are off and what they would have done is logged.')
   runtime.isMetricsDirty = true
   return runtime.metrics
+}
+
+/** F15: this session runs with the guards off (a holdout); decided once per session id. */
+async function isHoldout($: $, config: Config, runtime: Runtime): Promise<boolean> {
+  return (await metricsFile($, config, runtime)).record.holdout
 }
 
 async function metricsPath($: $, session: string): Promise<string | undefined> {
@@ -1148,6 +1187,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     keepWarm: conv.keepWarm,
     miss: conv.lastMiss,
     isBudget,
+    isHoldout: (await $.state.get(holdoutRef)).value === true,
     backgroundUsd: conv.background?.usd,
     agents: {
       running: runningCount(await $.agent.list()),
@@ -1163,7 +1203,8 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
  * the session.compact hook and is a snapshot. Overrides a value set by hand:
  * the per-model limits are limitHaiku/limitOther.
  */
-async function syncCompactWindow($: $, config: Config): Promise<void> {
+async function syncCompactWindow($: $, config: Config, runtime: Runtime): Promise<void> {
+  if (await isHoldout($, config, runtime)) return
   const usage = await $.session.usage()
   const target = String(compactWindowFor(limitFor(await $.session.model(), config), usage.context.window))
   if ((await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')) === target) return
@@ -1198,6 +1239,7 @@ function lastCacheUse(conv: CcwardenConversation): number | undefined {
  */
 async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<void> {
   if (runtime.isPinging) return
+  if (await isHoldout($, config, runtime)) return
   const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
   const now = await $.clock.now()
   const usage = await $.session.usage()

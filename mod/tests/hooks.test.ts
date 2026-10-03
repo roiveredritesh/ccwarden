@@ -1730,4 +1730,58 @@ describe('F15 metrics log', () => {
     expect(page).toContain('Subagent guard')
     expect(Object.keys(w.store.get('metricsSummaries') as object)).toEqual([METRICS])
   })
+
+  const METRICS5 = '/home/u/.claude/ccwarden/metrics/sess5.jsonl'
+  for (const surface of SURFACES) {
+    test(`a holdout session: nothing pinned, asked, denied or compacted by ccwarden; would-have events; status says holdout (${surface})`, { options: { billing: 'metered', measureHoldout: true, junkGuard: 'enforce' } }, async ($, on) => {
+      const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+      const w = world(on, { surfaces: [surface], env: HOME, sessionId: 'sess5', answer: 'Cancel', usage: { tokens: 180_000 }, files: { '/p/big.log': LONG } })
+      await $.session.start(start(surface))
+      expect(w.status.at(-1)).toContain('holdout')
+      expect(w.logs).toContain('ccwarden: proof mode: this session is a holdout, so guards are off and what they would have done is logged.')
+      expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBeUndefined()
+
+      const s = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
+      expect(w.spawned[0]!.model).toBe('opus')
+      expect(w.spawned[0]!.prompt).toBe('Find where sessions expire.')
+      await $.turn.complete(subTurn(s.agentId!, 'claude-opus-5-5'))
+
+      await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+      expect(w.reads).toContain('/p/big.log')
+
+      await $.turn.complete(turnDone())
+      await w.clock.advance(17 * MIN)
+      await $.prompt.submit(typed('continue with the refactor'))
+      expect(w.asks).toEqual([])
+      expect(w.sent).toContain('continue with the refactor')
+
+      await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+      expect(w.coreCompactions).toHaveLength(1)
+
+      await $.turn.complete(turnDone())
+      const m = metricsOf(w, METRICS5)!
+      expect(m.records[0]).toMatchObject({ measuring: true, holdout: true })
+      const pin = m.events.find(e => e.feature === 'subagent' && e.action === 'pinned')!
+      expect(pin.would).toBe(true)
+      expect(m.events.find(e => e.action === 'outcome' && e.ref === pin.ref)!.est!.usd).toBe(3) // opus 1M input − haiku
+      for (const f of ['subagent', 'junk', 'cold', 'snapshot']) expect(m.events.some(e => e.would === true && e.feature === f)).toBe(true)
+    })
+  }
+
+  test('measuring, but not a holdout id: guards on, the record says measuring', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    await $.agent.spawn(spawn('Explore'))
+    await $.turn.complete(turnDone())
+    expect(w.spawned[0]!.model).toBe('haiku')
+    expect(w.status.at(-1)).not.toContain('holdout')
+    expect(metricsOf(w)!.records[0]).toMatchObject({ measuring: true, holdout: false })
+  })
+
+  test('a holdout id with measureHoldout off is protected', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, sessionId: 'sess5' })
+    await $.session.start(start('terminal'))
+    await $.agent.spawn(spawn('Explore'))
+    expect(w.spawned[0]!.model).toBe('haiku')
+  })
 })

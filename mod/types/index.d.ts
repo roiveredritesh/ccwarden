@@ -96,6 +96,8 @@ declare module 'claude-code' {
       dashboard: CcwardenDashboard
       /** This conversation's figures (F1, F1b). */
       conversation: CcwardenConversation
+      /** F15: this session is a holdout: guards off, display on. */
+      holdout: boolean
     }
   }
 }
