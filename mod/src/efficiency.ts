@@ -1,6 +1,7 @@
 import { dayKey } from './ledger'
 import { slashed } from './paths'
 import { familyOf, PRICES } from './prices'
+import type { Family } from './prices'
 import type { JunkEvent } from './junk'
 import { analyze, requestsOf } from './report'
 import type { Request } from './report'
@@ -350,6 +351,3 @@ function actionsFor(all: View, junkMode: JunkMode, rows: readonly ProjectRow[]):
   return out.slice(0, 3)
 }
 
-function round4(n: number): number {
-  return Math.round(n * 10_000) / 10_000
-}
