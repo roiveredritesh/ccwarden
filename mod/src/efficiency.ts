@@ -327,8 +327,9 @@ function recentEvents(input: EfficiencyInput, used: ReadonlySet<string>): Sessio
 }
 
 function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isIn: (p: string | undefined) => boolean, from: string, logStart: string | undefined): SavingRow[] {
-  // ponytail: from the log's first day it replaces junkLog and projectDays outright; both stay for the days before it
-  const isBeforeLog = (day: string) => logStart === undefined || day < logStart
+  // ponytail: after the log's first day it replaces junkLog and projectDays outright. On that day both
+  // keep the features they record: they ran all day, the log only from partway (a live snapshot went missing).
+  const isBeforeLog = (day: string) => logStart === undefined || day <= logStart
   const rows: SavingRow[] = []
   for (const mode of ['enforce', 'observe'] as const) {
     const events = (input.junkLog ?? []).filter(ev => ev.mode === mode && isIn(ev.project) && dayKey(ev.at) >= from && isBeforeLog(dayKey(ev.at)))
@@ -377,13 +378,17 @@ function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isI
     for (const [day, features] of Object.entries(m.days)) {
       if (day < from) continue
       for (const [feature, t] of Object.entries(features) as [Feature, { done: FeatureTotals; would: FeatureTotals }][]) {
-        if (t.done.count > 0 || t.done.usd !== 0) addLogged(rows, feature, false, t.done)
-        if (t.would.count > 0 || t.would.usd !== 0) addLogged(rows, feature, true, t.would)
+        const isLegacy = day === logStart && LEGACY.has(feature)
+        if (!isLegacy && (t.done.count > 0 || t.done.usd !== 0)) addLogged(rows, feature, false, t.done)
+        if (!(isLegacy && feature === 'junk') && (t.would.count > 0 || t.would.usd !== 0)) addLogged(rows, feature, true, t.would)
       }
     }
   }
   return rows
 }
+
+/** Features junkLog (junk, observe included) and projectDays (the rest, done only) also record. */
+const LEGACY: ReadonlySet<Feature> = new Set(['junk', 'snapshot', 'keepwarm', 'cold', 'topic', 'handoff'])
 
 /** The first UTC day the metrics log has anything for; undefined with no log. */
 function metricsStart(metrics: Record<string, MetricsSummary> | undefined): string | undefined {

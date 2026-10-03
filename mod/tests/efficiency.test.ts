@@ -302,7 +302,7 @@ describe('F15 rows from the metrics log', () => {
   const none = total(0, 0, 0)
   const SUMMARY: MetricsSummary = {
     session: 's2', project: '/p', records: [], estUsd: 0, wouldUsd: 0, skipped: 0,
-    days: { '2026-10-03': {
+    days: { '2026-10-02': {}, '2026-10-03': {
       subagent: { done: total(2, 0, 1.5), would: none },
       cold: { done: total(1, 180_000, 0.45), would: none },
       junk: { done: total(1, 5_000, 0.02), would: total(1, 8_000, 0.03) },
@@ -313,13 +313,25 @@ describe('F15 rows from the metrics log', () => {
   const all = data.ranges['7d'].views['']!
   const row = (feature: string) => all.savings.find(r => r.feature === feature)
 
-  test('from the first logged day the log replaces junkLog and projectDays for every feature', () => {
+  test('after the first logged day the log replaces junkLog and projectDays for every feature', () => {
     expect(row('Subagent guard')).toMatchObject({ count: 2, usd: 1.5, isInTotal: true, confidence: 'high' })
     expect(row('Cold-cache guard')).toMatchObject({ count: 1, usd: 0.45, isInTotal: true, confidence: 'medium' })
     expect(row('Junk guard')).toMatchObject({ count: 1, tokens: 5_000 }) // 10-03 junkLog events are left to the log
     expect(row('Junk guard (observe)')).toMatchObject({ count: 1, tokens: 8_000, isInTotal: false })
     expect(row('Limit hints')).toMatchObject({ count: 1, confidence: 'count only', isInTotal: false })
     expect(row('Keep-warm')).toBeUndefined() // projectDays' 10-03 keep-warm is left to the log too
+  })
+
+  test('on the first logged day junkLog and projectDays keep the features they record, so what ran before the log is not lost', () => {
+    const first = efficiencyData({ ...FIXTURE, metrics: { x: { ...SUMMARY, days: { '2026-10-03': SUMMARY.days['2026-10-03']! } } } })
+    const r = (feature: string) => first.ranges['7d'].views['']!.savings.find(x => x.feature === feature)
+    expect(r('Snapshot compaction')).toMatchObject({ count: 1, usd: 0.04 })
+    expect(r('Keep-warm')).toMatchObject({ count: 3 })
+    expect(r('Cold-cache guard')).toMatchObject({ count: 2, isInTotal: false }) // projectDays' 2, not the log's 1 on top
+    expect(r('Junk guard')).toMatchObject({ count: 2 }) // junkLog's enforce events, not the log's 1 on top
+    expect(r('Junk guard (observe)')).toMatchObject({ count: 1 })
+    expect(r('Subagent guard')).toMatchObject({ count: 2, usd: 1.5 }) // only the log has these
+    expect(r('Limit hints')).toMatchObject({ count: 1 })
   })
 
   test('no log: exactly the F14 rows', () => {
