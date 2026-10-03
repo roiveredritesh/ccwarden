@@ -370,6 +370,8 @@ It never blocks and adds nothing to context.
 
 **Out of scope (v1):** $ estimates for F2, F13 and handoff; reading transcripts over 4 MiB; a live server, or publishing anywhere off the machine; a config option for the refresh interval.
 
+**F15. Metrics log and holdout proof.** *Designed 2026-10-03, not built.* Every intervention writes a raw event to `<claude dir>/ccwarden/metrics/<session id>.jsonl` (one file per session, so nothing races without an append), F5 and F2 get the measured savings they lack today, and an opt-in `measureHoldout` runs about 1 in 10 sessions with the guards off so the page can show a measured "$ per prompt, protected vs holdout" with a 90% range. The design, rules check and build order are in `docs/superpowers/specs/2026-10-03-metrics-proof-design.md`.
+
 ## 5. Configuration (`userConfig`)
 
 | Key | Default | Feature |
@@ -420,6 +422,7 @@ docs/            this spec
 | **M2** | F7, F8, F9, F12 | Handoff round trip loses nothing needed |
 | **M3** | F10, F11 | Dashboard within 10% of `/usage` |
 | **M4** | F13, F14, marketplace packaging | One-command install |
+| **M5** | F15 metrics log and holdout proof | The page shows a holdout figure, or how many sessions it still needs |
 
 ## 9. Open questions (verify in M1 week one)
 
@@ -446,6 +449,10 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | open |
 | 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
 | 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
+| 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | F1's hook already filters on `agentId`, which suggests it does. | open: F5's measured saving depends on it |
+| 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | open: if not, the first write fails |
+| 22 | **Session id after `/clear` (F15):** does the next conversation get a new `$.session.id()`? | Not stated. | open: one file per conversation, or `part` records |
+| 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | open: the fallback selects the text |
 
 ## 10. Gaps found in design review, and resolutions
 
