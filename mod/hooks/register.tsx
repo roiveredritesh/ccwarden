@@ -174,9 +174,8 @@ export const register: Register = (on, options) => {
   // dropped, and the window share is measured from here.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') await startOver($, config)
-    const result = await next(e)
-    if (result.budget && result.budget.remainingMs >= END_MIN_MS) await refreshEfficiency($, config, false)
-    return result
+    if (next.budget.remainingMs >= END_MIN_MS) await refreshEfficiency($, config, false)
+    return next(e)
   })
 
   on('session.measure', async ($, e, next) => {

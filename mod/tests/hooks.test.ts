@@ -150,7 +150,7 @@ function world(on: On, opts: {
   on('command.run', { command: 'compact' }, () => { shown.commandsRun.push('compact'); return {} })
   on('command.run', { command: 'clear' }, () => { shown.commandsRun.push('clear'); return {} })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
-  on('session.end', (_$, e) => ({ sessionId: e.sessionId, budget: { remainingMs: 10_000 } }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('classic.SessionStart', () => ({}))
