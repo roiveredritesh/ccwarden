@@ -29,6 +29,8 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
+import { addProjectDay, projectKey, snapshotSaving } from '../src/efficiency'
+import type { DayFigures, ProjectDays } from '../src/efficiency'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -88,6 +90,7 @@ const HOG_DAYS_KEY = 'hogDays' // $.store: the day's biggest tool results (F10)
 const MONTH_ALERTS_KEY = 'monthAlerts' // $.store: the month steps already alerted (F11)
 const BUDGET_SWITCH_KEY = 'budgetSwitch' // $.store: /cw budget on|off|auto
 const TOPIC_LOG_KEY = 'topicLog' // $.store: each unrelated-prompt hint and its answer, for tuning (F13)
+const PROJECT_DAYS_KEY = 'projectDays' // $.store: per project and day, spend and what each guard did (F14)
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -190,7 +193,10 @@ export const register: Register = (on, options) => {
       return c
     })
     if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
-    if (spent > 0) await trackMonth($, config, await recordSpend($, spent))
+    if (spent > 0) {
+      await trackMonth($, config, await recordSpend($, spent))
+      await recordProject($, { usd: spent })
+    }
     if (spent > 0 || reading !== undefined) await updateBudgetMode($, config, runtime)
     await refreshStatus($, config, conv)
     return result
@@ -233,7 +239,10 @@ export const register: Register = (on, options) => {
       if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
       return c
     })
-    if (saved > 0) await refreshStatus($, config, conv)
+    if (saved > 0) {
+      await recordProject($, { keepWarmSavedUsd: saved, keepWarmSavedTokens: tokens ?? 0 })
+      await refreshStatus($, config, conv)
+    }
 
     if ((await $.session.surfaces()).length === 0) return next(e)
     const cache = cacheView(lastCacheUse(conv), ttl, now)
@@ -245,6 +254,7 @@ export const register: Register = (on, options) => {
     }
 
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
+    await recordProject($, { coldAsks: 1 })
     const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
     const choice = coldChoice(await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_HANDOFF, COLD_CANCEL] }).catch(() => undefined))
     if (choice === 'send') return next(e)
@@ -480,6 +490,7 @@ export const register: Register = (on, options) => {
     const model = await $.session.model()
     const limit = await limitOf($, model, config, usage.context.window)
     const tokens = usage.context.tokens ?? 0
+    await recordProject($, { turns: 1, peakContext: tokens })
     if (tokens <= limit) runtime.isCompactAdvised = false
     else if (!runtime.isCompactAdvised) {
       runtime.isCompactAdvised = true
@@ -514,6 +525,8 @@ export const register: Register = (on, options) => {
     const limit = await limitOf($, await $.session.model(), config, usage.context.window)
     const { tail, turns } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
     const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: turns })
+    const saving = snapshotSaving(usage.context.tokens ?? 0, await $.session.model())
+    await recordProject($, { snapshots: 1, ...(saving === undefined ? {} : { snapshotSavedUsd: saving.usd, snapshotSavedTokens: saving.tokens }) })
     $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
     return { messages: [{ role: 'user', text, toolUses: [] }, ...tail] }
   })
@@ -548,6 +561,7 @@ async function topicHint($: $, config: Config, text: string, tokens: number | un
   // Quick: no model call, so the old context isn't re-read just to write it.
   const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
   const isCleared = choice !== 'keep'
+  if (isCleared) await recordProject($, { topicClears: 1 })
   // After the drop has settled; /clear itself waits until the session is idle.
   $.clock.after(0, async () => {
     if (isCleared) {
@@ -603,6 +617,12 @@ async function recordSpend($: $, usd: number): Promise<Ledger> {
   return ledger
 }
 
+/** F14: adds `add` to today's line for this session's project in `projectDays`. */
+async function recordProject($: $, add: DayFigures): Promise<void> {
+  const day = dayKey(await $.clock.now())
+  const pd = (await $.store.get(PROJECT_DAYS_KEY)) as ProjectDays | undefined
+  await $.store.set(PROJECT_DAYS_KEY, addProjectDay(pd, await $.session.root(), day, add))
+}
 /** F11 (metered): a toast at 50%, 80% and 100% of the month budget, each once a month on this machine. */
 async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
   if (config.billing === 'window' || config.monthlyBudgetUsd <= 0) return
@@ -759,6 +779,7 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
   $.ui.log(!written
     ? `ccwarden: couldn't write the handoff to ${path}.`
     : `ccwarden: ${full === undefined ? 'quick' : 'full'} handoff written to ${path}${why === '' ? '' : ` (quick: ${why})`}.`)
+  if (written) await recordProject($, { handoffs: 1 })
   return written ? path : undefined
 }
 
@@ -783,8 +804,8 @@ async function offerHandoff($: $, config: Config): Promise<void> {
 
 /** Adds one junk-guard event to the log in $.store (machine-wide, kept for review before `enforce`). */
 async function recordJunk($: $, event: JunkEvent): Promise<void> {
-  await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, event))
-  $.ui.log(`ccwarden junk guard (${event.mode}): ${event.tool} ${event.target}`, { to: 'debug' })
+  const tagged: JunkEvent = { ...event, project: projectKey(await $.session.root()), session: await $.session.id() }
+  await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, tagged))
 }
 
 /** Saves a tool's full output under the home folder for Claude to grep; undefined when it couldn't. */
@@ -903,6 +924,7 @@ async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<voi
     else c.keepWarmMissedFor = lastUse
     return c
   })
+  await recordProject($, { keepWarmPings: 1, keepWarmSpentUsd: spent })
   $.ui.log(`ccwarden keep-warm: ping read ${reply.usage.cache_read_input_tokens} cached tokens for ~$${spent.toFixed(3)}${didRead ? '' : ' (the cache had lapsed)'}.`, { to: 'debug' })
   await refreshStatus($, config, after)
 }

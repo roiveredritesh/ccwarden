@@ -1417,3 +1417,50 @@ describe('F13 unrelated-prompt hint', () => {
     expect(w.sent).toEqual([UNRELATED])
   })
 })
+
+describe('F14 efficiency dashboard: live figures', () => {
+  const DAY = Date.parse('2026-10-03T10:00:00Z')
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+  const today = (w: World) => (w.store.get('projectDays') as Record<string, Record<string, Record<string, number>>> | undefined)?.['/p']?.['2026-10-03']
+
+  for (const surface of SURFACES) {
+    test(`spend goes to projectDays under the project, and to the ledger as before (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { tokens: 30_000 } })
+      await w.clock.advance(DAY)
+      await $.session.start(start(surface))
+      w.usage.usd = 1.5
+      await $.session.measure(measure(w))
+      await $.turn.complete(turnDone())
+      expect((w.store.get('ledger') as { days: Record<string, number> }).days).toEqual({ '2026-10-03': 1.5 })
+      expect(today(w)).toEqual({ usd: 1.5, turns: 1, peakContext: 30_000 })
+    })
+
+    test(`a cold-cache ask and a handoff are counted (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+      await w.clock.advance(DAY)
+      await $.session.start(start(surface))
+      await $.turn.complete(turnDone())
+      await w.clock.advance(17 * MIN)
+      await $.prompt.submit(typed('continue with the refactor'))
+      await $.command.run({ command: 'handoff', args: 'quick', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+      expect(today(w)).toMatchObject({ coldAsks: 1, handoffs: 1 })
+    })
+  }
+
+  test('a snapshot compaction records what a summary would have cost', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000 } })
+    await w.clock.advance(DAY)
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+    expect(today(w)).toMatchObject({ snapshots: 1, snapshotSavedTokens: 102_000 })
+    expect(Math.round(today(w)!.snapshotSavedUsd! * 1e4) / 1e4).toBe(0.04)
+  })
+
+  test('junk events carry the project and the session', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+    const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], files: { '/p/big.log': LONG } })
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+    expect((w.store.get('junkLog') as Record<string, unknown>[])[0]).toMatchObject({ tool: 'Read', project: '/p', session: 'sess1' })
+  })
+})
