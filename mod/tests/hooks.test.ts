@@ -69,6 +69,9 @@ function world(on: On, opts: {
     // Keep-warm forks, and how much of the cache each read.
     forks: [] as string[],
     forkCacheRead: 180_000,
+    // Commands $.process.run was asked to run, and the exit code a browser opener gets.
+    runs: [] as string[][],
+    openerExit: 0,
     messages: [] as SessionMessage[],
     forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
   }
@@ -103,8 +106,13 @@ function world(on: On, opts: {
   on('session.root', () => ({ value: '/p' }))
   on('fs.list', (_$, e) => {
     const dir = `${posix(e.path)}/`
-    const names = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
-    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })) }
+    const paths = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir))
+    const files = paths.filter(p => !p.slice(dir.length).includes('/'))
+    const dirs = [...new Set(paths.map(p => p.slice(dir.length)).filter(rest => rest.includes('/')).map(rest => rest.split('/')[0]!))]
+    return { value: [
+      ...files.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })),
+      ...dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })),
+    ] }
   })
   on('model.fork', (_$, e) => {
     shown.forks.push(e.prompt)
@@ -126,8 +134,12 @@ function world(on: On, opts: {
   })
   on('session.messages', () => ({ value: shown.messages }))
   on('process.run', (_$, e) => {
+    shown.runs.push([...e.argv])
+    const done = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'uname') return done(0, `${opts.uname ?? 'Linux'}\n`)
+    if (['cmd', 'open', 'xdg-open'].includes(e.argv[0]!)) return done(shown.openerExit)
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
-    return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return done(out === undefined ? 128 : 0, out ?? '')
   })
   on('session.compact', (_$, e) => {
     shown.coreCompactions.push({ trigger: e.trigger, instructions: e.instructions, agentId: e.agentId })
@@ -1462,5 +1474,83 @@ describe('F14 efficiency dashboard: live figures', () => {
     await $.session.start(start('terminal'))
     await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
     expect((w.store.get('junkLog') as Record<string, unknown>[])[0]).toMatchObject({ tool: 'Read', project: '/p', session: 'sess1' })
+  })
+})
+
+describe('F14 efficiency dashboard: /cw open', () => {
+  const NOW = Date.parse('2026-10-03T12:00:00Z')
+  const TRANSCRIPT = '/home/u/.claude/projects/-p/sess1.jsonl'
+  const PAGE = '/home/u/.claude/ccwarden/dashboard.html'
+  const cw = (args = '') => ({ command: 'cw', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } })
+  const line = JSON.stringify({ type: 'assistant', cwd: '/p', timestamp: new Date(NOW - 60 * MIN).toISOString(), message: { id: 'a', model: 'claude-sonnet-5-5', usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 9_000, cache_creation_input_tokens: 1_000 } } })
+  const files = { [TRANSCRIPT]: line, '/home/u/.claude/projects/-q/big.jsonl': 'x' }
+  const pages = (w: World) => w.writes.filter(f => f.path === PAGE)
+  async function begin($: Engine, w: World, surface: RenderSurface) {
+    await w.clock.advance(NOW)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: TRANSCRIPT })
+    await $.session.start(start(surface))
+  }
+
+  for (const surface of SURFACES) {
+    test(`writes the page next to the transcripts and opens it, Windows (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, env: { OS: 'Windows_NT' } })
+      await begin($, w, surface)
+      await $.command.run(cw('open'))
+      expect(pages(w)).toHaveLength(1)
+      expect(pages(w)[0]!.text).toContain('<td>/p</td>')
+      expect(pages(w)[0]!.text).toContain('1 of 2 transcripts read')
+      expect(w.runs.at(-1)).toEqual(['cmd', '/c', 'start', '', PAGE])
+      expect(w.logs).toContain(`ccwarden: dashboard opened in your browser (${PAGE}).`)
+      expect(w.opened).toEqual([]) // /cw open doesn't open the pane
+      expect(Object.keys(w.store.get('transcriptSummaries') as object)).toEqual([TRANSCRIPT, '/home/u/.claude/projects/-q/big.jsonl'])
+    })
+
+    test(`macOS opens with open; a failing opener logs the path (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, uname: 'Darwin' })
+      await begin($, w, surface)
+      w.openerExit = 1
+      await $.command.run(cw('open'))
+      expect(w.runs.at(-1)).toEqual(['open', PAGE])
+      expect(w.logs).toContain(`ccwarden: dashboard written to ${PAGE}; open it in a browser.`)
+    })
+
+    test(`the timer and session end rewrite it only after /cw open has run once (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files })
+      await begin($, w, surface)
+      await w.clock.advance(11 * MIN)
+      await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+      expect(pages(w)).toHaveLength(0)
+
+      await $.command.run(cw('open'))
+      await w.clock.advance(5 * MIN)
+      expect(pages(w)).toHaveLength(2)
+      await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+      expect(pages(w)).toHaveLength(3)
+    })
+
+    test(`plain /cw, /cw spent and /cw budget are unchanged after /cw open (${surface})`, { options: { billing: 'metered', monthlyBudgetUsd: 100 } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, store: { ledger: { days: { '2026-10-02': 20 } } } })
+      await begin($, w, surface)
+      await $.command.run(cw('open'))
+      await $.command.run(cw())
+      expect(w.logs).toContain('ccwarden: this month $20.00 of your $100 budget on this machine (est.), ~$207 at this pace; budget mode off.')
+      expect(w.opened).toEqual(['ccwarden-cw'])
+      await $.command.run(cw('spent 30'))
+      expect(w.logs).toContain('ccwarden: month to date calibrated to $30.00; the estimate counts on from there.')
+      await $.command.run(cw('nonsense'))
+      expect(w.logs.at(-1)).toBe('ccwarden: /cw, /cw open, /cw spent <amount>, /cw budget on|off|auto')
+    })
+  }
+
+  test('no transcripts folder: the page still writes and the summary cache is kept', { options: { billing: 'metered' } }, async ($, on) => {
+    const cached = { '/old/a.jsonl': { mtimeMs: 1, size: 1, junk: 0, summary: { days: {}, junk: [] } } }
+    const w = world(on, { surfaces: ['terminal'], env: { HOME: '/home/u' }, store: { transcriptSummaries: cached } })
+    w.messages = []
+    await w.clock.advance(NOW)
+    await $.session.start(start('terminal'))
+    await $.command.run(cw('open'))
+    expect(pages(w)).toHaveLength(1)
+    expect(pages(w)[0]!.text).toContain('0 of 0 transcripts read')
+    expect(w.store.get('transcriptSummaries')).toEqual(cached)
   })
 })

@@ -29,8 +29,9 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
-import { addProjectDay, projectKey, snapshotSaving } from '../src/efficiency'
-import type { DayFigures, ProjectDays } from '../src/efficiency'
+import { addProjectDay, claudeDirOf, efficiencyData, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
+import type { Coverage, DayFigures, HostOs, ProjectDays, SummaryCache, TranscriptSummary } from '../src/efficiency'
+import { dashboardHtml } from '../src/htmlDashboard'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -91,6 +92,11 @@ const MONTH_ALERTS_KEY = 'monthAlerts' // $.store: the month steps already alert
 const BUDGET_SWITCH_KEY = 'budgetSwitch' // $.store: /cw budget on|off|auto
 const TOPIC_LOG_KEY = 'topicLog' // $.store: each unrelated-prompt hint and its answer, for tuning (F13)
 const PROJECT_DAYS_KEY = 'projectDays' // $.store: per project and day, spend and what each guard did (F14)
+const SUMMARIES_KEY = 'transcriptSummaries' // $.store: each transcript's summary, parsed once (F14)
+const DASHBOARD_OPENED_KEY = 'dashboardOpened' // $.store: /cw open has run on this machine, so the page is kept fresh
+const DASHBOARD_TICK_MS = 5 * 60_000
+const DASHBOARD_FILE = 'ccwarden/dashboard.html'
+const END_MIN_MS = 1_500 // of session end's short bound, needed to rewrite the page
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
@@ -117,11 +123,12 @@ export const register: Register = (on, options) => {
       })
     }
     await $.command.register({ name: 'handoff', description: 'ccwarden: write a handoff note for a fresh session (full while the cache is warm)', argumentHint: '[quick]' })
-    await $.command.register({ name: 'cw', description: 'ccwarden: month to date, budget mode, calibration', argumentHint: '[spent <amount> | budget on|off|auto]' })
+    await $.command.register({ name: 'cw', description: 'ccwarden: month to date, budget mode, calibration; open: the efficiency dashboard', argumentHint: '[open | spent <amount> | budget on|off|auto]' })
     runtime.isBudget = (await $.state.get(budgetModeRef)).value === true // a reload keeps it, unannounced
     await updateBudgetMode($, config, runtime)
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
+    $.clock.every(DASHBOARD_TICK_MS, () => void refreshEfficiency($, config, true))
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
@@ -320,6 +327,12 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'cw' }, async ($, e) => {
     const [verb, arg] = e.args.trim().split(/\s+/)
     const now = await $.clock.now()
+    if (verb === 'open') {
+      await $.store.set(DASHBOARD_OPENED_KEY, true)
+      const path = await writeEfficiency($, config, true)
+      if (path !== undefined) await openInBrowser($, path)
+      return {}
+    }
     if (verb === 'spent') {
       const real = Number((arg ?? '').replace(/^\$/, ''))
       if (!Number.isFinite(real) || real < 0) {
@@ -333,7 +346,7 @@ export const register: Register = (on, options) => {
       await updateBudgetMode($, config, runtime)
       $.ui.log(budgetModeText(runtime.isBudget, arg === 'auto' ? 'automatic' : 'set by hand'))
     } else if (verb !== undefined && verb !== '') {
-      $.ui.log('ccwarden: /cw, /cw spent <amount>, /cw budget on|off|auto')
+      $.ui.log('ccwarden: /cw, /cw open, /cw spent <amount>, /cw budget on|off|auto')
       return {}
     }
     const ledger = (await $.store.get(LEDGER_KEY)) as Ledger | undefined
@@ -703,6 +716,103 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
     hogs: { session: conv.hogs ?? [], month: hogsOver((await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined, month) },
     week,
   }
+}
+
+/** F14: rewrites the page if /cw open has run on this machine; never throws. `canParse` false reads no transcript anew. */
+async function refreshEfficiency($: $, config: Config, canParse: boolean): Promise<void> {
+  if ((await $.store.get(DASHBOARD_OPENED_KEY)) !== true) return
+  await writeEfficiency($, config, canParse).catch((err: unknown) => $.ui.log(`ccwarden: dashboard refresh failed: ${String(err)}`, { to: 'debug' }))
+}
+
+/** F14: gathers the figures and writes the page; resolves its path, or undefined (logged) when it couldn't. */
+async function writeEfficiency($: $, config: Config, canParse: boolean): Promise<string | undefined> {
+  const claude = await claudeDir($)
+  if (claude === undefined) {
+    $.ui.log('ccwarden: no home folder found, so the dashboard has nowhere to go.')
+    return undefined
+  }
+  const junkLog = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
+  const { summaries, coverage } = await readSummaries($, joinPath(claude, 'projects'), junkLog, canParse)
+  const data = efficiencyData({
+    now: await $.clock.now(),
+    ...(config.billing === undefined ? {} : { billing: config.billing }),
+    junkMode: config.junkGuard,
+    ledger: (await $.store.get(LEDGER_KEY)) as Ledger | undefined,
+    projectDays: (await $.store.get(PROJECT_DAYS_KEY)) as ProjectDays | undefined,
+    junkLog,
+    hogDays: (await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined,
+    summaries,
+    coverage,
+  })
+  const path = joinPath(claude, DASHBOARD_FILE)
+  const written = await $.fs.write(path, dashboardHtml(data)).then(() => true, () => false)
+  if (!written) $.ui.log(`ccwarden: couldn't write the dashboard to ${path}.`)
+  return written ? path : undefined
+}
+
+/** The Claude folder: the one the transcript is in, else ~/.claude. */
+async function claudeDir($: $): Promise<string | undefined> {
+  const fromTranscript = claudeDirOf((await $.state.get(transcriptPath)).value)
+  if (fromTranscript !== undefined) return fromTranscript
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+  return home === undefined ? undefined : joinPath(home, '.claude')
+}
+
+/**
+ * F14: every transcript's summary, parsed once and cached in $.store while
+ * the file (and the junk events priced in it) is unchanged. Files one
+ * $.fs.read can't take are skipped and counted. With `canParse` false a
+ * changed file keeps its last summary and a new one waits. A projects
+ * folder that lists empty leaves the cache as it was.
+ */
+async function readSummaries($: $, projectsDir: string, junkLog: readonly JunkEvent[], canParse: boolean): Promise<{ summaries: Record<string, TranscriptSummary>; coverage: Coverage }> {
+  const coverage: Coverage = { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 }
+  const folders = (await $.fs.list(projectsDir).catch(() => [])).filter(f => f.kind === 'dir')
+  if (folders.length === 0) return { summaries: {}, coverage }
+  const cache = ((await $.store.get(SUMMARIES_KEY)) as SummaryCache | undefined) ?? {}
+  const junkAt = junkTimesBySession(junkLog)
+  const next: SummaryCache = {}
+  for (const folder of folders) {
+    const dir = joinPath(projectsDir, folder.name)
+    for (const f of await $.fs.list(dir).catch(() => [])) {
+      if (f.kind !== 'file' || !f.name.endsWith('.jsonl')) continue
+      coverage.total++
+      if (f.size > MAX_TRANSCRIPT_BYTES) {
+        coverage.skippedBig++
+        continue
+      }
+      const path = joinPath(dir, f.name)
+      const times = junkAt[f.name.replace(/\.jsonl$/, '')] ?? []
+      const cached = cache[path]
+      if (cached !== undefined && (!canParse || isFresh(cached, f, times.length))) {
+        next[path] = cached
+        coverage.read++
+        continue
+      }
+      if (!canParse) {
+        coverage.pending++
+        continue
+      }
+      const text = await $.fs.read(path).catch(() => undefined)
+      if (text === undefined) {
+        coverage.failed++
+        continue
+      }
+      next[path] = { mtimeMs: f.mtimeMs, size: f.size, junk: times.length, summary: summarize(parseJsonl(text), times) }
+      coverage.read++
+    }
+  }
+  await $.store.set(SUMMARIES_KEY, next) // files gone since are dropped
+  return { summaries: Object.fromEntries(Object.entries(next).map(([p, e]) => [p, e.summary])), coverage }
+}
+
+/** F14: opens the page in the default browser; when that fails, says where it is. */
+async function openInBrowser($: $, path: string): Promise<void> {
+  let os: HostOs = 'linux'
+  if ((await $.env.get('OS')) === 'Windows_NT') os = 'windows'
+  else if ((await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin') os = 'mac'
+  const ran = await $.process.run(openerArgv(os, path), { timeoutMs: 10_000 }).catch(() => undefined)
+  $.ui.log(ran?.exitCode === 0 ? `ccwarden: dashboard opened in your browser (${path}).` : `ccwarden: dashboard written to ${path}; open it in a browser.`)
 }
 
 /** Budget mode (SPEC §3): by hand, or past budgetModeAt% of the month budget or 5h window; says when it switches on by itself. */
