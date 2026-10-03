@@ -1497,7 +1497,7 @@ describe('F14 efficiency dashboard: /cw open', () => {
       await begin($, w, surface)
       await $.command.run(cw('open'))
       expect(pages(w)).toHaveLength(1)
-      expect(pages(w)[0]!.text).toContain('<td>/p</td>')
+      expect(pages(w)[0]!.text).toContain('<b>p</b><span class="path">/p</span>')
       expect(pages(w)[0]!.text).toContain('2 of 2 transcripts read')
       expect(w.runs.at(-1)).toEqual(['cmd', '/c', 'start', '', PAGE])
       expect(w.logs).toContain(`ccwarden: dashboard opened in your browser (${PAGE}).`)

@@ -136,9 +136,9 @@ describe('F14 aggregation and savings', () => {
     expect(week.from).toBe('2026-09-27')
   })
 
-  test('junk guard enforce: tokens × (write5m + read × requests after); events from before F14 counted, not priced', () => {
+  test('junk guard enforce: tokens × (write5m + read × requests after); events from before F14 count their tokens once, no $', () => {
     const r = row('Junk guard')
-    expect([r.count, r.unpriced, r.tokens, r.isInTotal, r.confidence]).toEqual([2, 1, 30_000, true, 'medium'])
+    expect([r.count, r.unpriced, r.tokens, r.isInTotal, r.confidence]).toEqual([2, 1, 31_000, true, 'medium'])
     expect(r4(r.usd)).toBe(0.029) // 10k × ($2.50 + $0.20 × 2) / 1M
   })
 
@@ -155,7 +155,7 @@ describe('F14 aggregation and savings', () => {
     expect([row('Cold-cache guard').count, row('Cold-cache guard').isInTotal]).toEqual([2, false])
     expect(row('Handoffs').count).toBe(1)
     expect(r4(all.totalUsd)).toBe(-0.081) // 0.029 − 0.15 + 0.04: observe left out
-    expect(all.totalTokens).toBe(172_000)
+    expect(all.totalTokens).toBe(173_000)
   })
 
   test('before and after install, measured from the transcripts', () => {
@@ -163,9 +163,10 @@ describe('F14 aggregation and savings', () => {
     expect(all.after).toEqual({ requests: 10, usdPerRequest: 0.05, hitPct: 90, rebuildsPer100: 0, avgContext: 100_000 })
   })
 
-  test('projects: spend from projectDays, the ledger rest as unattributed, transcript figures, the top file hog', () => {
+  test('projects: spend is the larger of transcripts and projectDays per day, the ledger rest unattributed; the top file hog', () => {
     expect(data.projects).toEqual(['/p', 'unattributed'])
-    expect(week.projects.map(p => [p.project, p.usd, p.sessions, p.requests, p.rebuilds])).toEqual([['unattributed', 5, 0, 0, 0], ['/p', 2, 1, 20, 2]])
+    // /p: 10-01 from the transcript ($1, before projectDays), 10-03 max($0.50 transcript, $2 live).
+    expect(week.projects.map(p => [p.project, p.usd, p.sessions, p.requests, p.rebuilds])).toEqual([['unattributed', 5, 0, 0, 0], ['/p', 3, 1, 20, 2]])
     const p = week.projects[1]!
     expect(Math.round(p.hitPct!)).toBe(70)
     expect(p.topHog).toEqual({ tool: 'Read', target: '/p/src/big.ts', tokens: 9_000 })
@@ -176,6 +177,7 @@ describe('F14 aggregation and savings', () => {
     expect(week.views['/p']!.savings.find(r => r.feature === 'Junk guard')!.count).toBe(1)
     expect(week.views.unattributed!.savings.map(r => [r.feature, r.count, r.unpriced])).toEqual([['Junk guard', 1, 1]])
     expect(all.spend.map(d => d.day)).toEqual(['2026-09-27', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03'])
+    expect(all.spend.at(-3)!.usd).toEqual({ '/p': 1 })
     expect(all.spend.at(-2)!.usd).toEqual({ unattributed: 5 })
     expect(all.spend.at(-1)!.usd).toEqual({ '/p': 2 })
     expect(week.views['/p']!.spend.at(-2)!.usd).toEqual({})
@@ -231,9 +233,59 @@ describe('F14 the page', () => {
     expect(html).not.toContain('list-price equivalent')
   })
 
+  test('the headline: what was saved, prompt size and cost per request before → after, with better/worse in words', () => {
+    expect(html).toContain('Saved by ccwarden (est.)')
+    expect(html).toContain('$0.100 → $0.050')
+    expect(html).toContain('▼ 50% better')
+    expect(html).toContain('▲ 40 pts better') // cache hit 50% → 90%
+    expect(html).toContain('▼ 20.0 better') // rebuilds per 100
+  })
+
+  test('nothing counted: the card says why, and what observe would have kept out', () => {
+    const observeOnly = { ...FIXTURE, projectDays: {}, junkLog: [FIXTURE.junkLog![1]!] }
+    const page = dashboardHtml(efficiencyData(observeOnly))
+    expect(page).toContain('Nothing counted yet')
+    expect(page).toContain('the junk guard would have kept out ~20k tokens (1 times)')
+  })
+
+  test('folders with no activity are left out of the project table, and say so', () => {
+    const page = dashboardHtml(efficiencyData({ ...FIXTURE, projectDays: { ...FIXTURE.projectDays, '/idle': { '2026-10-03': { turns: 1 } } } }))
+    expect(page).not.toContain('<span class="path">/idle</span>')
+    expect(page).toContain('1 folder with no activity in this range not shown.')
+  })
+
   test('an empty machine still renders, with no NaN or Infinity', () => {
     const empty = dashboardHtml(efficiencyData({ now: FIXTURE.now, junkMode: 'observe', summaries: {}, coverage: { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 } }))
     expect(empty).toContain('Nothing yet in this range.')
     expect(empty).not.toMatch(/NaN|Infinity/)
+  })
+})
+
+describe('F14 only projects used with ccwarden', () => {
+  // /old has sessions only before install: big contexts that would skew "before".
+  const OLD = { project: '/old', days: { '2026-09-30': use({ requests: 10, read: 10_000, usd: 5, context: 5_000_000 }) }, junk: [] }
+  const withOld: EfficiencyInput = { ...FIXTURE, summaries: { ...FIXTURE.summaries, '/h/.claude/projects/-old/s9.jsonl': OLD } }
+  const data = efficiencyData(withOld)
+  const week = data.ranges['7d']
+
+  test('a project with no session since install is left out of the table and the views, and counted', () => {
+    expect(data.projects).toEqual(['/p', 'unattributed'])
+    expect(week.projects.map(p => p.project)).toEqual(['unattributed', '/p'])
+    expect(data.hiddenProjects).toBe(1)
+  })
+
+  test('before and after compare the same projects: /old stays out of "before"', () => {
+    expect(week.views['']!.before).toEqual({ requests: 10, usdPerRequest: 0.1, hitPct: 50, rebuildsPer100: 20, avgContext: 100_000 })
+    expect(week.views['']!.spend.find(d => d.day === '2026-09-30')!.usd).toEqual({})
+  })
+
+  test('the page says how many were left out', () => {
+    expect(dashboardHtml(data)).toContain('1 project with no session since install not shown.')
+  })
+
+  test('with no install day there is nothing to compare, so nothing is left out', () => {
+    const noInstall = efficiencyData({ ...withOld, ledger: undefined, projectDays: undefined })
+    expect(noInstall.projects).toContain('/old')
+    expect(noInstall.hiddenProjects).toBe(0)
   })
 })

@@ -174,7 +174,8 @@ export type ProjectRow = { project: string; usd: number; sessions: number; reque
 export type View = { savings: SavingRow[]; totalTokens: number; totalUsd: number; before?: Measured; after?: Measured; spend: { day: string; usd: Record<string, number> }[] }
 /** One range: its first day, the project table, a view per project (`''`: all of them), and what to do. */
 export type RangeData = { from: string; projects: ProjectRow[]; views: Record<string, View>; actions: string[] }
-export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; ranges: Record<Range, RangeData> }
+/** `projects`: those used with ccwarden (any activity since install); `hiddenProjects` counts the rest. */
+export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; hiddenProjects: number; ranges: Record<Range, RangeData> }
 export type EfficiencyInput = {
   now: number
   billing?: Billing
@@ -194,21 +195,33 @@ export function efficiencyData(input: EfficiencyInput): EfficiencyData {
   const byDay = spendByDay(input)
   const prices = new Map<string, JunkPrice>()
   for (const [path, s] of Object.entries(input.summaries)) for (const j of s.junk) prices.set(`${sessionOf(path)}@${j.at}`, j)
-  const projects = [...new Set([
+  const all = [...new Set([
     ...Object.keys(input.projectDays ?? {}),
     ...Object.values(input.summaries).map(s => s.project ?? UNATTRIBUTED),
     ...(input.junkLog ?? []).map(ev => ev.project ?? UNATTRIBUTED),
     ...Object.values(byDay).flatMap(by => Object.keys(by)),
   ])].sort()
+  // ponytail: a project only worked on before install would skew "before"; with no install day there is nothing to compare
+  const projects = install === undefined ? all : all.filter(p => isUsedSince(input, byDay, p, install))
+  const used = new Set(projects)
   const ranges = {} as Record<Range, RangeData>
   for (const range of RANGES) {
     const from = range === 'install' ? (install ?? dayKey(input.now)) : dayKey(input.now - (range === '7d' ? 6 : 29) * DAY_MS)
     const views: Record<string, View> = {}
-    for (const p of ['', ...projects]) views[p] = viewOf(input, prices, byDay, p, from, install)
+    for (const p of ['', ...projects]) views[p] = viewOf(input, prices, byDay, used, p, from, install)
     const rows = projects.map(p => projectRow(input, byDay, p, from, views[p]!.totalUsd)).sort((a, b) => b.usd - a.usd || b.requests - a.requests)
     ranges[range] = { from, projects: rows, views, actions: actionsFor(views['']!, input.junkMode, rows) }
   }
-  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, ranges }
+  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, hiddenProjects: all.length - projects.length, ranges }
+}
+
+/** Any spend, request, live figure or junk event for `project` on or after `install`. */
+function isUsedSince(input: EfficiencyInput, byDay: Record<string, Record<string, number>>, project: string, install: string): boolean {
+  const after = (day: string) => day >= install
+  return Object.entries(byDay).some(([d, by]) => after(d) && (by[project] ?? 0) > 0)
+    || Object.values(input.summaries).some(s => (s.project ?? UNATTRIBUTED) === project && Object.entries(s.days).some(([d, u]) => after(d) && u.requests > 0))
+    || Object.keys(input.projectDays?.[project] ?? {}).some(after)
+    || (input.junkLog ?? []).some(ev => (ev.project ?? UNATTRIBUTED) === project && after(dayKey(ev.at)))
 }
 
 /** The first day ccwarden recorded anything: the earliest in the ledger or `projectDays`. */
@@ -217,11 +230,19 @@ export function installDay(ledger: Ledger | undefined, pd: ProjectDays | undefin
   return days[0]
 }
 
-/** Est. $ per day and project: `projectDays`, plus what the ledger counted that no project did (spend from before F14). */
+/**
+ * Est. $ per day and project: the larger of the transcripts' sum and `projectDays`,
+ * plus what the ledger counted that neither did (spend from before F14).
+ */
 function spendByDay(input: EfficiencyInput): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = {}
+  for (const s of Object.values(input.summaries)) {
+    const p = s.project ?? UNATTRIBUTED
+    for (const [day, u] of Object.entries(s.days)) if (u.usd > 0) (out[day] ??= {})[p] = round4((out[day]?.[p] ?? 0) + u.usd)
+  }
+  // ponytail: max, not sum: both count the same sessions; transcripts miss files over 4 MiB, projectDays starts at F14
   for (const [project, days] of Object.entries(input.projectDays ?? {})) {
-    for (const [day, f] of Object.entries(days)) if ((f.usd ?? 0) > 0) (out[day] ??= {})[project] = f.usd!
+    for (const [day, f] of Object.entries(days)) if ((f.usd ?? 0) > 0) (out[day] ??= {})[project] = Math.max(out[day]?.[project] ?? 0, f.usd!)
   }
   for (const [day, usd] of Object.entries(input.ledger?.days ?? {})) {
     const rest = usd - Object.values(out[day] ?? {}).reduce((s, v) => s + v, 0)
@@ -230,8 +251,8 @@ function spendByDay(input: EfficiencyInput): Record<string, Record<string, numbe
   return out
 }
 
-function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: Record<string, Record<string, number>>, project: string, from: string, install: string | undefined): View {
-  const isIn = (p: string | undefined) => project === '' || (p ?? UNATTRIBUTED) === project
+function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: Record<string, Record<string, number>>, used: ReadonlySet<string>, project: string, from: string, install: string | undefined): View {
+  const isIn = (p: string | undefined) => (project === '' ? used.has(p ?? UNATTRIBUTED) : (p ?? UNATTRIBUTED) === project)
   const savings = savingsRows(input, prices, isIn, from)
   const counted = savings.filter(r => r.isInTotal)
   const days = Object.values(input.summaries).filter(s => isIn(s.project)).flatMap(s => Object.entries(s.days))
@@ -266,11 +287,12 @@ function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isI
     }
     for (const ev of events) {
       const price = ev.session === undefined ? undefined : prices.get(`${ev.session}@${ev.at}`)
+      const tokens = ev.savedChars / 4
       if (price?.family === undefined) {
         row.unpriced++
+        row.tokens += tokens // kept out of at least the next request; its re-reads are unknown
         continue
       }
-      const tokens = ev.savedChars / 4
       const p = PRICES[price.family]
       row.tokens += tokens * (1 + price.requestsAfter)
       row.usd += (tokens * (p.write5m + p.read * price.requestsAfter)) / 1e6
