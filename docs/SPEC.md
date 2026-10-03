@@ -339,6 +339,36 @@ It never blocks and adds nothing to context.
 - **Learning:** each answer goes to `$.store` `topicLog` (overlap, keyword count, tokens, choice; last 200). Turn it on by default once that log shows few Sends.
 - **Unverified live:** that a mod-run `/clear` clears (Q4), and that the refill lands after it.
 
+**F14. Efficiency dashboard (browser).** A page that answers two questions about ccwarden itself: what did it save (an estimate per feature, with the method next to each number), and is that real (a measured before/after from the transcripts). It covers every project on the machine, with a per-project filter. Measured figures never share a total with estimates. `/cw` stays as it is.
+
+**As built (M4):**
+
+- **Opening:** `/cw open` writes `<claude dir>/ccwarden/dashboard.html` and opens it. The Claude folder comes from the transcript path, else `~/.claude`. The opener is `cmd /c start "" <path>` on Windows (`OS=Windows_NT`), `open` when `uname -s` is Darwin, `xdg-open` otherwise, all as argv with no shell. If the opener fails, the path is logged. Any other `/cw` argument behaves as before, and the usage line gains `open`.
+- **Keeping it fresh:** once `/cw open` has run on the machine (`dashboardOpened`), the file is rewritten every 5 minutes and at session end; users who never open it pay nothing. The page has `<meta http-equiv="refresh" content="60">`. Concurrent sessions may each rewrite it; the last write wins and every write holds the full picture. Session end parses no transcript (it rebuilds from cached summaries) and skips the rewrite when less than 1.5 s of its bound is left.
+- **The page** is one self-contained file: inline CSS, SVG charts, and a few lines of JS for the range (7 days, 30 days, since install) and project filters. No URL is loaded, and every path and text is escaped. Five sections and a coverage line:
+  1. **Est. savings:** the total and one row per feature: what it did, how many times, what it saved, the formula, a confidence label.
+  2. **Reality check (measured):** before vs after the install day: cost per request, cache hit %, rebuilds per 100 requests, average context. A trend, not a saving.
+  3. **Projects:** spend, sessions, requests, cache hit %, rebuilds, top context hog and est. saved. A click filters sections 1, 2 and 4. The top hog is the biggest *file* hog under the project's path (`hogDays` has no project; Bash and Grep hogs aren't attributed).
+  4. **Spend over time:** daily spend stacked by project, with the install day marked.
+  5. **What to do:** up to three lines, each naming its figure.
+  - **Coverage line:** for example "92 of 102 transcripts read; 10 over 4 MiB skipped". Transcripts over 4 MiB (the `$.fs.read` limit) are left out before and after alike, so the longest sessions are not in the measured figures.
+  - In window billing, $ is labelled a list-price equivalent. Install day is the first day in `ledger.days` or `projectDays`.
+- **Data:** live figures go to `projectDays`; each transcript's summary is parsed once and cached in `transcriptSummaries` (keyed by path, invalidated by mtime, size and junk-event count, pruned when the file is gone). Spend from before F14, with no project, shows as "unattributed". A projects folder that cannot be listed leaves the cache as it was.
+- **Savings formulas (est.):** prices from `src/prices.ts` for the model family at the time.
+
+  | Feature | Formula | Confidence |
+  |---|---|---|
+  | Junk guard, `enforce` | `tokens × (write5m + read × requestsAfter)`, where `requestsAfter` runs to the session's end or its next compaction | medium |
+  | Junk guard, `observe` | same, shown as "would save", **not in the total** | medium |
+  | Keep-warm | `keepWarmSavedUsd − keepWarmSpentUsd`; may be negative and is shown so | high |
+  | Snapshot compaction | `context × read + SUMMARY_OUTPUT_TOKENS × output`, with `SUMMARY_OUTPUT_TOKENS = 2000`, priced when the snapshot happens | low |
+  | F2 cold guard, F13 Clear, handoff | count only, no $ (the saving depends on what the user did next) | none |
+
+  `requestsAfter` is counted from the transcript, not from turns: a junk event's `session` (`$.session.id()`, the transcript's file name) finds its transcript, and the summary counts the main-loop API requests after the event up to the next compaction. An event with no session (from before F14), or none of whose requests follow, is counted but not priced.
+- **Unverified live:** see §9 Q15–Q19.
+
+**Out of scope (v1):** $ estimates for F2, F13 and handoff; reading transcripts over 4 MiB; a live server, or publishing anywhere off the machine; a config option for the refresh interval.
+
 ## 5. Configuration (`userConfig`)
 
 | Key | Default | Feature |
@@ -365,7 +395,11 @@ M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handof
 
 - **`$.state`** (session): cache expiry, alert steps, guard counters.
 - **`$.store`** (machine): daily totals, hog history (30 days).
-- **Files:** trimmed outputs and handoffs only.
+  - `projectDays` (F14): per project (`projectKey`: `/`-separated, drive letter lower-cased) and UTC day: `usd`, `turns`, `peakContext`, `keepWarmPings`, `keepWarmSavedUsd`, `keepWarmSavedTokens`, `keepWarmSpentUsd`, `snapshots`, `snapshotSavedUsd`, `snapshotSavedTokens`, `coldAsks`, `topicClears`, `handoffs`. Days older than 400 are dropped.
+  - `transcriptSummaries` (F14): transcript path → `{ mtimeMs, size, junk, summary }`; entries for gone files are dropped on each build.
+  - `dashboardOpened` (F14): `true` once `/cw open` has run.
+  - `junkLog` events (F14): optional `project` and `session`. Older events lack them.
+- **Files:** trimmed outputs and handoffs, and the F14 page (`<claude dir>/ccwarden/dashboard.html`).
 
 ## 7. Layout
 
@@ -384,7 +418,7 @@ docs/            this spec
 | **M1** | F1, F1b, F2, F3, F4 (observe → enforce), F5, F6 (after Q2) | `claude plugin validate` clean; tests on terminal + desktop × both billing modes; a week of real use on a metered and a window machine |
 | **M2** | F7, F8, F9, F12 | Handoff round trip loses nothing needed |
 | **M3** | F10, F11 | Dashboard within 10% of `/usage` |
-| **M4** | F13, marketplace packaging | One-command install |
+| **M4** | F13, F14, marketplace packaging | One-command install |
 
 ## 9. Open questions (verify in M1 week one)
 
@@ -406,6 +440,11 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 12 | **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate. | **No $ figure.** `usage().cost.usd` is this session's total only. The one account-level reading is a gateway's `spend_limit` rate-limit kind, which gives `percentUsed` and no dollars. F11 stays an estimate. | confirm: `/cw-probe info` on `metered` |
 | 13 | **Mod-run `/compact`:** does `$.command.run({ command: 'compact' })` reach the mod's own `session.compact` hook? | **No** (live test: the `/cw` Compact button ran the engine's own summary compaction, no snapshot log). A plugin's own `$.session.compact` skips its hook too. A `/compact` the person types does reach it. | closed: F3 only advises `/compact`; the pane's Compact button is removed |
 | 14 | **Setting names not in the docs read for this spec:** `CLAUDE_CODE_SUBAGENT_MODEL`, `promptSuggestionEnabled`, `crossSessionInbound`, `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`. | All four are strings in the 2.1.287 binary. The setup offers the first two only as opt-in flags, and F8's texts name the last two. | open: check code.claude.com/docs (settings, model-config) |
+| 15 | **`/cw open` opener (F14):** does it open the page on Windows (`cmd /c start "" <path>` via argv), macOS (`open`) and Linux (`xdg-open`)? | Argv with no shell; the tests cover the argv per OS and the logged-path fallback. | open: live check per OS (the interactive `claude --plugin-dir ./mod` run of the build plan was not done) |
+| 16 | **Page refresh (F14):** does a `file://` page with `<meta http-equiv="refresh" content="60">` reload and keep its `#hash` in Chrome, Edge and Safari? | Browser behaviour, not in the plugin API. | open |
+| 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | open |
+| 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
+| 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
 
 ## 10. Gaps found in design review, and resolutions
 
