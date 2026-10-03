@@ -34,6 +34,8 @@ export type StatusFacts = {
   miss?: CacheMiss
   /** Budget mode is on (SPEC §3). */
   isBudget?: boolean
+  /** F15: guards are off in this session (a holdout). */
+  isHoldout?: boolean
   /** Turns the user didn't type (F8): what they cost (est.). */
   backgroundUsd?: number
   /** This conversation's subagents: how many run now and what they cost (est.). */
@@ -57,6 +59,7 @@ export function formatStatus(f: StatusFacts): string {
     parts.push(`this chat $${f.usd.toFixed(2)}${flag}`)
   }
   if (f.isBudget === true) parts.push('budget mode')
+  if (f.isHoldout === true) parts.push('holdout')
   if (f.backgroundUsd !== undefined && f.backgroundUsd > 0) parts.push(`background $${f.backgroundUsd.toFixed(2)}`)
   if (f.keepWarm !== undefined && f.keepWarm.pings > 0) {
     parts.push(`keep-warm $${f.keepWarm.spentUsd.toFixed(2)} · saved $${f.keepWarm.savedUsd.toFixed(2)}`)

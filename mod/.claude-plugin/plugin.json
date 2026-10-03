@@ -198,6 +198,12 @@
       "title": "Unrelated-prompt hint",
       "description": "Before a typed prompt that shares almost no words with this session's goal and recent asks, with 40k+ tokens of context, ask whether to /clear first. Zero model tokens. Off until tuned.",
       "default": false
+    },
+    "measureHoldout": {
+      "type": "boolean",
+      "title": "Proof mode (holdout)",
+      "description": "About 1 in 10 new sessions run with ccwarden's guards off, to measure what it saves: /cw open shows protected vs holdout cost per prompt. Those sessions get no protection; the status line says holdout.",
+      "default": false
     }
   }
 }
