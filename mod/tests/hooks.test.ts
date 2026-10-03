@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
+import { parseFile } from '../src/metrics'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const BILLINGS = ['metered', 'window'] as const
@@ -27,6 +28,7 @@ function world(on: On, opts: {
   isWriteRefused?: boolean
   store?: Record<string, unknown>
   mtimes?: Record<string, number>
+  sessionId?: string
 } = {}) {
   const clock = mock.clock(on)
   // $.store in memory, readable by the test (mock.store's isn't).
@@ -72,6 +74,8 @@ function world(on: On, opts: {
     // Commands $.process.run was asked to run, and the exit code a browser opener gets.
     runs: [] as string[][],
     openerExit: 0,
+    // F15: refuse $.fs.write from now on (a test flips it).
+    refuseWrites: false,
     messages: [] as SessionMessage[],
     forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
   }
@@ -96,11 +100,11 @@ function world(on: On, opts: {
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: text }
   })
   on('fs.write', (_$, e) => {
-    if (opts.isWriteRefused) return Promise.reject(new Error('EACCES'))
+    if (opts.isWriteRefused || shown.refuseWrites) return Promise.reject(new Error('EACCES'))
     shown.writes.push({ path: posix(e.path), text: e.text })
     return { value: undefined }
   })
-  on('session.id', () => ({ value: 'sess1' }))
+  on('session.id', () => ({ value: opts.sessionId ?? 'sess1' }))
   on('ui.open', (_$, e) => { shown.opened.push(e.id); return { value: { requestId: e.id } as never } })
   on('ui.copy', (_$, e) => { shown.copied.push({ text: e.text, surface: e.surface }); return { value: { isCopied: true } } })
   on('session.root', () => ({ value: '/p' }))
@@ -1552,5 +1556,118 @@ describe('F14 efficiency dashboard: /cw open', () => {
     expect(pages(w)).toHaveLength(1)
     expect(pages(w)[0]!.text).toContain('0 of 0 transcripts read')
     expect(w.store.get('transcriptSummaries')).toEqual(cached)
+  })
+})
+
+describe('F15 metrics log', () => {
+  const METRICS = '/home/u/.claude/ccwarden/metrics/sess1.jsonl'
+  const HOME = { HOME: '/home/u' }
+  const metricsOf = (w: World, path = METRICS) => {
+    const f = w.writes.filter(x => x.path === path).at(-1)
+    return f === undefined ? undefined : parseFile(f.text)
+  }
+  const spawn = (subagentType: string, extra: Record<string, unknown> = {}) => ({
+    tool_use_id: `t-${subagentType}`, prompt: 'Find where sessions expire.', description: 'find expiry', subagentType,
+    provider: { plugin: 'engine', tier: 'core' } as const, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra,
+  })
+  const subTurn = (agentId: string, model = 'claude-haiku-4-5-20251001', input = 1_000_000) => ({
+    ...turnDone(model), agentId, usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model },
+  })
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`a pinned subagent: the pin, then its measured saving; the session record (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], env: HOME })
+        await $.session.start(start(surface))
+        const s = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
+        await $.turn.complete(subTurn(s.agentId!))
+        await $.turn.complete(turnDone())
+        const m = metricsOf(w)!
+        const pinned = m.events.find(e => e.action === 'pinned')!
+        expect(pinned).toMatchObject({ feature: 'subagent', measured: { type: 'Explore', asked: 'opus', ran: 'haiku' } })
+        expect(pinned.est).toBeUndefined()
+        const out = m.events.find(e => e.action === 'outcome' && e.ref === pinned.ref)!
+        expect(out.est).toMatchObject({ usd: 3, confidence: 'high', formula: 'subagent tokens × (price opus − price haiku)' })
+        expect(m.records[0]).toMatchObject({ session: 'sess1', project: '/p', part: 1, measuring: false, holdout: false, family: 'sonnet' })
+        expect(m.records[0]!.subagentUsd).toBe(1)
+      })
+    }
+  }
+
+  test('no model named: the parent model is assumed, at medium confidence; a denied spawn is counted', { options: { billing: 'metered', maxParallelAgents: 1 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    const s = await $.agent.spawn(spawn('Explore'))
+    await $.agent.spawn(spawn('Explore', { tool_use_id: 't2' }))
+    await $.turn.complete(subTurn(s.agentId!))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    expect(m.events.find(e => e.action === 'pinned')!.measured.asked).toBe('claude-opus-5-5')
+    expect(m.events.find(e => e.action === 'outcome')!.est!.confidence).toBe('medium')
+    expect(m.events.filter(e => e.action === 'denied')).toHaveLength(1)
+  })
+
+  test('a cold-cache ask: the ask, and the rebuild saved when the prompt was kept back', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 }, env: HOME })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await $.prompt.submit(typed('continue with the refactor'))
+    const m = metricsOf(w)!
+    const asked = m.events.find(e => e.feature === 'cold' && e.action === 'asked')!
+    expect(asked.measured).toMatchObject({ tokens: 180_000, minutesCold: 12 })
+    const est = m.events.find(e => e.action === 'outcome' && e.ref === asked.ref)!.est!
+    expect([est.tokens, Math.round(est.usd * 1e4) / 1e4]).toEqual([180_000, 0.45])
+  })
+
+  test('prompts and requests are counted; session end writes the file', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    on('turn.step', async function* (_$, e) {
+      return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } }
+    })
+    await $.session.start(start('terminal'))
+    await $.turn.start({ text: 'hi', turnId: 't' })
+    for (const index of [0, 1]) { const s = $.turn.step({ turnId: 't', index, model: 'claude-sonnet-5-5', messageCount: 2 }); for await (const _ of s); }
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    expect(metricsOf(w)!.records[0]).toMatchObject({ prompts: 1, requests: 2 })
+  })
+
+  test('a reload reads the file back and goes on from it', { options: { billing: 'metered' } }, async ($, on) => {
+    const before = `${JSON.stringify({ v: 1, at: 1, feature: 'handoff', action: 'written', measured: {} })}\n${JSON.stringify({ v: 1, record: 'session', session: 'sess1', part: 1, project: '/p', startedAt: 1, lastAt: 1, measuring: false, holdout: false, familyTurns: {}, prompts: 3, requests: 4, tokens: { input: 0, read: 0, write: 0, output: 0 }, usd: 0, subagentUsd: 0, events: 1, truncated: false })}\n`
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [METRICS]: before } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    expect(m.events[0]!.feature).toBe('handoff')
+    expect(m.records[0]).toMatchObject({ prompts: 3, requests: 4, startedAt: 1, family: 'sonnet' })
+  })
+
+  test('/clear with the same id starts part 2', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.session.end({ reason: 'clear', sessionId: 'sess1', resume: { id: 'sess1' } })
+    await $.turn.complete(turnDone())
+    expect(metricsOf(w)!.records.map(r => r.part)).toEqual([1, 2])
+  })
+
+  test('a refused write is logged once and retried at the next flush', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    w.refuseWrites = true
+    await $.turn.complete(turnDone())
+    await $.turn.complete(turnDone())
+    expect(w.logs.filter(l => l.startsWith("ccwarden: couldn't write the metrics log"))).toHaveLength(1)
+    w.refuseWrites = false
+    await $.turn.complete(turnDone())
+    expect(metricsOf(w)!.records[0]!.familyTurns).toEqual({ sonnet: 3 })
+  })
+
+  test('with no Claude folder nothing is written', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    expect(w.writes).toEqual([])
   })
 })

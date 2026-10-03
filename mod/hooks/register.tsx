@@ -32,6 +32,8 @@ import type { SnapshotFacts } from '../src/snapshot'
 import { addProjectDay, claudeDirOf, efficiencyData, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
 import type { Coverage, DayFigures, HostOs, ProjectDays, SummaryCache, TranscriptSummary } from '../src/efficiency'
 import { dashboardHtml } from '../src/htmlDashboard'
+import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, pinEstimate, putOutcome, resume, serialize, usageUsd } from '../src/metrics'
+import type { MetricEvent, MetricsFile, Pin, Usage } from '../src/metrics'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -68,6 +70,14 @@ type Runtime = {
   turnSource?: BackgroundSource
   /** Budget mode (SPEC §3), as last worked out. */
   isBudget: boolean
+  /** F15: this session's metrics file as held in memory (loaded on first use), and whether it changed since the last write. */
+  metrics?: MetricsFile
+  isMetricsDirty: boolean
+  isMetricsWarned: boolean
+  /** F15: /clear ended the part; the next event starts a new one, or a new file if the id changed. */
+  isNewPart: boolean
+  /** F15: pinned subagents whose saving adds up with each turn (F5), by agentId. */
+  pins: Record<string, Pin>
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -100,11 +110,12 @@ const END_MIN_MS = 1_500 // of session end's short bound, needed to rewrite the 
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
+const MIN_MS = 60_000
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isNewPart: false, pins: {} }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -173,6 +184,7 @@ export const register: Register = (on, options) => {
   // /clear ends the conversation: its figures start over, a held alert is
   // dropped, and the window share is measured from here.
   on('session.end', async ($, e, next) => {
+    await endMetrics($, runtime, e.reason === 'clear')
     if (e.reason === 'clear') await startOver($, config)
     if (next.budget.remainingMs >= END_MIN_MS) await refreshEfficiency($, config, false)
     return next(e)
@@ -263,9 +275,14 @@ export const register: Register = (on, options) => {
 
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
     await recordProject($, { coldAsks: 1 })
-    const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
+    const rebuild = rebuildUsd(tokens, model, ttl)
+    const ref = `cold-${now}`
+    await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'asked', ref, measured: { tokens, minutesCold: Math.round(cache.msCold / MIN_MS), rebuildUsd: rebuild ?? 0 } })
+    const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuild })
     const choice = coldChoice(await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_HANDOFF, COLD_CANCEL] }).catch(() => undefined))
+    await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'outcome', ref, measured: { choice }, est: coldEstimate(choice, tokens, rebuild) })
     if (choice === 'send') return next(e)
+    await flushMetrics($, runtime) // no turn follows to write it
     // Quick on a cold cache: no model call, so nothing is re-cached.
     const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
     // After the drop has settled, so the box isn't cleared over the refill.
@@ -407,10 +424,17 @@ export const register: Register = (on, options) => {
     const plan = planSpawn(e, config, runningCount(await $.agent.list()))
     if ('deny' in plan) {
       $.ui.log(plan.deny)
+      await recordEvent($, config, runtime, { feature: 'subagent', action: 'denied', measured: { type: e.subagentType } })
       return { deny: plan.deny }
     }
     const started = await next({ ...e, prompt: plan.prompt, ...(plan.model === undefined ? {} : { model: plan.model }) })
-    if (started.deny === undefined) $.ui.log(`ccwarden: ${e.subagentType} subagent: ${plan.notes.join(', ')}.`)
+    if (started.deny === undefined) {
+      $.ui.log(`ccwarden: ${e.subagentType} subagent: ${plan.notes.join(', ')}.`)
+      await recordSpawn($, config, runtime, {
+        type: e.subagentType, agentId: started.agentId, isPinned: plan.model !== undefined, would: false,
+        from: e.model ?? e.parentModel, to: started.model, confidence: e.model === undefined ? 'medium' : 'high',
+      })
+    }
     await refreshStatus($, config)
     return started
   })
@@ -421,6 +445,7 @@ export const register: Register = (on, options) => {
     const i = runtime.queued.findIndex(q => q.text === e.text)
     runtime.turnSource = i === -1 ? undefined : runtime.queued[i]!.source
     if (i !== -1) runtime.queued = runtime.queued.filter((_, j) => j !== i)
+    if (runtime.turnSource === undefined) await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, prompts: f.record.prompts + 1 } }))
     return next(e)
   })
 
@@ -429,6 +454,7 @@ export const register: Register = (on, options) => {
   // request and the response pass through unchanged.
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)
+    if (e.agentId === undefined && r.usage !== null) await countRequest($, config, runtime)
     if (e.agentId !== undefined || e.index !== 0 || r.usage === null) return r
     const usage = r.usage
     const now = await $.clock.now()
@@ -454,6 +480,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.usage !== undefined) await addTurnMetrics($, config, runtime, e.usage, e.agentId)
     if (e.agentId === undefined) runtime.isTurnRunning = false
     if (e.agentId !== undefined) {
       // A subagent's turn: its cost, and one toast if it passes AGENT_WARN_USD.
@@ -512,6 +539,7 @@ export const register: Register = (on, options) => {
       $.ui.log(text)
       await notify($, 'advisor', text)
     }
+    await flushMetrics($, runtime)
     return result
   })
 
@@ -636,6 +664,99 @@ async function recordProject($: $, add: DayFigures): Promise<void> {
   const day = dayKey(await $.clock.now())
   const pd = (await $.store.get(PROJECT_DAYS_KEY)) as ProjectDays | undefined
   await $.store.set(PROJECT_DAYS_KEY, addProjectDay(pd, await $.session.root(), day, add))
+}
+
+/** F15: this session's metrics file: held, else read back from disk (a reload), else new. A changed id writes the old file first. */
+async function metricsFile($: $, config: Config, runtime: Runtime): Promise<MetricsFile> {
+  const session = await $.session.id()
+  const now = await $.clock.now()
+  const held = runtime.metrics
+  if (held !== undefined && held.record.session === session) {
+    if (runtime.isNewPart) {
+      runtime.isNewPart = false
+      runtime.metrics = nextPart(held, now)
+      runtime.isMetricsDirty = true
+    }
+    return runtime.metrics!
+  }
+  if (held !== undefined) await flushMetrics($, runtime) // /clear gave a new id (Q22): that file is done
+  runtime.isNewPart = false
+  const fresh = newRecord({ session, project: projectKey(await $.session.root()), now, measuring: false })
+  const path = await metricsPath($, session)
+  const text = path === undefined ? undefined : await $.fs.read(path).catch(() => undefined)
+  runtime.metrics = text === undefined ? emptyFile(fresh) : resume(text, fresh)
+  runtime.isMetricsDirty = true
+  return runtime.metrics
+}
+
+async function metricsPath($: $, session: string): Promise<string | undefined> {
+  const claude = await claudeDir($)
+  return claude === undefined ? undefined : joinPath(claude, `${METRICS_DIR}/${session}.jsonl`)
+}
+
+/** F15: changes this session's file in memory; the next flush writes it. */
+async function editMetrics($: $, config: Config, runtime: Runtime, change: (f: MetricsFile) => MetricsFile): Promise<void> {
+  runtime.metrics = change(await metricsFile($, config, runtime))
+  runtime.isMetricsDirty = true
+}
+
+/** F15: one event, stamped with the time (unless given) and the main model. */
+async function recordEvent($: $, config: Config, runtime: Runtime, ev: Omit<MetricEvent, 'v' | 'at' | 'model'> & { at?: number }): Promise<void> {
+  const at = ev.at ?? (await $.clock.now())
+  const model = await $.session.model()
+  await editMetrics($, config, runtime, f => addEvent(f, { ...ev, v: 1, at, model }))
+}
+
+/** F15: writes the file if anything changed; a refusal is logged once per session and retried at the next flush. */
+async function flushMetrics($: $, runtime: Runtime): Promise<void> {
+  const f = runtime.metrics
+  if (f === undefined || !runtime.isMetricsDirty) return
+  const path = await metricsPath($, f.record.session)
+  if (path === undefined) return
+  const isWritten = await $.fs.write(path, serialize(f)).then(() => true, () => false)
+  if (isWritten) runtime.isMetricsDirty = false
+  else if (!runtime.isMetricsWarned) {
+    runtime.isMetricsWarned = true
+    $.ui.log(`ccwarden: couldn't write the metrics log to ${path}; it will retry.`)
+  }
+}
+
+/** F15: a conversation ended: the file is written; after /clear the next event starts a new part. */
+async function endMetrics($: $, runtime: Runtime, isClear: boolean): Promise<void> {
+  await flushMetrics($, runtime)
+  if (isClear && runtime.metrics !== undefined) runtime.isNewPart = true
+}
+
+/** F15: a main-loop request, counted in the record. */
+async function countRequest($: $, config: Config, runtime: Runtime): Promise<void> {
+  await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, requests: f.record.requests + 1 } }))
+}
+
+/** F15: a finished turn into the record; a pinned subagent's turn also rewrites its saving. */
+async function addTurnMetrics($: $, config: Config, runtime: Runtime, usage: Usage, agentId: string | undefined): Promise<void> {
+  const now = await $.clock.now()
+  await editMetrics($, config, runtime, f => ({ ...f, record: addTurn(f.record, usage, agentId !== undefined, now) }))
+  const pin = agentId === undefined ? undefined : runtime.pins[agentId]
+  if (pin === undefined) return
+  pin.usage = addUsage(pin.usage, usage)
+  const total = pin.usage
+  const est = pinEstimate(total, pin.from, pin.to, pin.confidence)
+  const tokens = total.input_tokens + total.output_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens
+  await editMetrics($, config, runtime, f => putOutcome(f, {
+    v: 1, at: now, feature: 'subagent', action: 'outcome', ref: pin.ref, ...(pin.would ? { would: true as const } : {}),
+    measured: { agentId: agentId!, tokens, usd: usageUsd(total) ?? 0 }, ...(est === undefined ? {} : { est }),
+  }))
+}
+
+/** F15: a started subagent (F5): pinned or only capped; a pin's saving is settled by its turns. */
+async function recordSpawn($: $, config: Config, runtime: Runtime, s: { type: string; agentId?: string; isPinned: boolean; would: boolean; from: string; to: string; confidence: 'high' | 'medium' }): Promise<void> {
+  const at = await $.clock.now()
+  const ref = `subagent-${at}-${s.agentId ?? ''}`
+  await recordEvent($, config, runtime, {
+    at, feature: 'subagent', action: s.isPinned ? 'pinned' : 'capped', ref, ...(s.would ? { would: true as const } : {}),
+    measured: { type: s.type, asked: s.from, ran: s.to },
+  })
+  if (s.isPinned && s.agentId !== undefined) runtime.pins[s.agentId] = { ref, from: s.from, to: s.to, confidence: s.confidence, would: s.would }
 }
 /** F11 (metered): a toast at 50%, 80% and 100% of the month budget, each once a month on this machine. */
 async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
