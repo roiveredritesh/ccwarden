@@ -23,6 +23,9 @@ export type JunkEvent = {
   size: number
   /** Characters kept out of the context (est. for a denied Read: the file's). */
   savedChars: number
+  /** The project (its `projectKey`) and session (the transcript's name) it happened in (F14); absent on events from before. */
+  project?: string
+  session?: string
 }
 
 export const JUNK_LOG_MAX = 500
