@@ -12,6 +12,8 @@ Written 2026-10-02 at the end of the design session that produced this repo, and
 
 **F14 page pass (2026-10-03),** after the first `/cw open`: the page read as raw tables, the total said ~0 with no reason, and every project but one showed $0 spend. Now: headline cards (saved, average prompt before → after with the tokens sent less, cost per request, spend), a change column in the reality check, spend per project from the transcripts (the larger of that and `projectDays`), idle folders hidden, short project names, and a fixed chart palette. When nothing is counted, the card says why. Only projects used with ccwarden (any activity since install) are counted, so before and after compare the same projects: across all 22 projects the average prompt read 170k → 118k (31% better), but that was a mix effect (17 projects worked on only before install); on the 5 used ones it is 114k → 120k and $0.047 → $0.062 per request, on 2 days of mostly ccwarden-building work. Features counted ~0 (junk guard still in observe, no snapshot or keep-warm yet). Proof needs the F15 holdout.
 
+**M5 / F15 done (2026-10-03), branch `m5-metrics`:** every intervention now writes a raw event to `<claude dir>/ccwarden/metrics/<session id>.jsonl` (one file per session; no append in `$.fs`), with what the engine measured, the formula and a confidence. F5 (subagent pin: tokens × price difference, from the subagent `turn.complete`) and F2 (cold ask not sent: the rebuild) now have $ savings, and F13 clears are priced from the next conversation's requests. `measureHoldout` (off, opt-in) makes about 1 in 10 new sessions a holdout: guards off, `would-…` events logged, `holdout` in the status line. `/cw open` adds a proof section (protected vs holdout $ per prompt per family, seeded 90% range, a self-check of the estimates; nothing below 10 holdout / 30 protected sessions), events per day, a sessions table and a filterable event log, plus copy summary and download raw JSON. SPEC F15 "As built" has the formulas and rules; plan and design are in `docs/superpowers/`.
+
 **First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
 
 - the billing format, `/ccwarden-junk` wording, Windows paths (#17–#19)
@@ -29,6 +31,7 @@ Written 2026-10-02 at the end of the design session that produced this repo, and
 5. Use the mod for a week, then `junkGuard` → `enforce` if `/ccwarden-junk` shows no false positives, and `keepWarm` on if Q2 passed.
 6. F13 live: turn `topicShiftHint` on, start unrelated work in a long session, pick Clear, and check the conversation clears and the prompt comes back (Q4).
 7. F14 live: run `/cw open` on each OS and check the page opens (Q15); check the page refreshes and keeps its filter (Q16); after a week of use, check the per-project figures look right.
+8. F15 live: check the first write creates `metrics/` (Q21) and that `/clear` gives a new session id or a new part (Q22); try Copy summary on `file://` in Chrome, Edge and Safari (Q23). Then turn on `measureHoldout`, use it for 2–3 weeks and read the proof.
 
 Not built: the full §3 advisor (break-even rule, task-done detection, its buttons), and cleanup of F4's output files (the plugin API has no file delete).
 
@@ -37,7 +40,7 @@ Not built: the full §3 advisor (break-even rule, task-done detection, its butto
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
 | `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). T7 done: keep-warm (ships off until Q2). It validates, type-checks, and passes 245 tests on terminal and desktop × metered and window; CI runs them. **It has not run in a live session yet.** |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. **Not yet run on the maintainer's machines.** |
-| `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F14, milestones, open questions. §9 now records what the types answer. |
+| `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F15, milestones, open questions. §9 now records what the types answer. |
 
 ## 2. Who it's for (maintainer setup)
 

@@ -1,6 +1,6 @@
 # F15: metrics log and holdout proof (design)
 
-Status: draft for review, 2026-10-03. Builds on F14 (`/cw open`, SPEC §4 F14 "As built").
+Status: built, 2026-10-03 (M5). What changed while building is in SPEC §4 F15 "As built". Builds on F14 (`/cw open`, SPEC §4 F14 "As built").
 
 ## 1. Why
 

@@ -368,9 +368,32 @@ It never blocks and adds nothing to context.
   `requestsAfter` is counted from the transcript, not from turns: a junk event's `session` (`$.session.id()`, the transcript's file name) finds its transcript, and the summary counts the main-loop API requests after the event up to the next compaction. An event with no session (from before F14), or none of whose requests follow, is counted but not priced; its tokens count once (it kept them out of at least the next request).
 - **Unverified live:** see §9 Q15–Q19.
 
-**Out of scope (v1):** $ estimates for F2, F13 and handoff; reading transcripts over 4 MiB; a live server, or publishing anywhere off the machine; a config option for the refresh interval.
+**Out of scope (v1):** $ estimates for F2, F13 and handoff (F15 adds F2 and F13 from its log); reading transcripts over 4 MiB; a live server, or publishing anywhere off the machine; a config option for the refresh interval.
 
-**F15. Metrics log and holdout proof.** *Designed 2026-10-03, not built.* Every intervention writes a raw event to `<claude dir>/ccwarden/metrics/<session id>.jsonl` (one file per session, so nothing races without an append), F5 and F2 get the measured savings they lack today, and an opt-in `measureHoldout` runs about 1 in 10 sessions with the guards off so the page can show a measured "$ per prompt, protected vs holdout" with a 90% range. The design, rules check and build order are in `docs/superpowers/specs/2026-10-03-metrics-proof-design.md`.
+**F15. Metrics log and holdout proof.** Every intervention writes a raw event to the session's own file, F5 and F2 get the measured savings they lacked, and an opt-in `measureHoldout` runs about 1 in 10 sessions with the guards off so the page can show a measured "$ per prompt, protected vs holdout" with a 90% range. Design: `docs/superpowers/specs/2026-10-03-metrics-proof-design.md`.
+
+- **As built (M5):**
+  - **The file:** `<claude dir>/ccwarden/metrics/<session id>.jsonl`, one per session, because `$.fs` has no append and a shared file would lose events between sessions. Event lines first, then one `record: "session"` line per part (a `/clear` that keeps the session id starts part 2, 3…). The module holds the file in memory and rewrites it at `turn.complete` and `session.end`; a reload reads it back. Past `MAX_FILE_CHARS` (3.5M) a session adds no events and its record says `truncated`, so a write never passes 4 MiB. A refused write is logged once and retried at the next flush; it never throws into the turn.
+  - **An event:** `{ v, at, feature, action, model?, ref?, would?, measured, est? }`. `measured` holds what the engine reported, never an estimate; `est` is `{ tokens, usd, formula, confidence }`. An event whose saving is settled later carries no `est`; its `outcome` event (same `ref`) does, so a file totals without a join: every event but an outcome counts once, and estimates add wherever they are. `would: true` marks what a guard would have done (a holdout session, or the junk guard in `observe`); would-have rows are shown but never in the total.
+  - **The record:** project, start and last time, `measuring`, `holdout`, the main loop's family with the most turns, prompts, requests (main-loop `turn.step` results), tokens and $ from `turn.complete` usage (main and subagent turns, cache writes at the 5m rate as F5's `turnUsd` does), subagent $, event count.
+  - **Per feature:**
+
+  | Feature | Actions | Saving | Confidence |
+  |---|---|---|---|
+  | F5 subagent guard | `pinned`, `capped`, `denied`, then `outcome` per subagent turn | subagent tokens × (price asked − price ran); a subagent's usage comes from its `turn.complete` (`agentId`) | high when the Agent call named a model, medium when not (the parent's model is assumed) |
+  | F2 cold-cache guard | `asked`, then `outcome` with the choice | context × cache write price, when the prompt was not sent | medium |
+  | F13 unrelated-prompt hint | `cleared`, then `outcome` | dropped context × read × requests in the next conversation | medium |
+  | F4 junk guard | `kept-out` / `would-keep-out`, then `outcome` | tokens × (write5m + read × requests after, to the session end or next compaction) | medium |
+  | F3 snapshot compaction | `answered` | context × read + 2000 × output | low |
+  | F6 keep-warm | `avoided`, `ping` (negative $) | rebuilds avoided − pings spent | high |
+  | F3 limit hint | `compact-hint` | count only | — |
+  | F7 handoff | `written` (quick or full) | count only | — |
+
+  From the first logged day, the page takes F4, F3 and F6 from the log instead of `junkLog` and `projectDays`, so nothing counts twice.
+  - **Holdout:** a part is a holdout when `measureHoldout` was on when it started and `fnv1a(session id) % 10 === 0` (FNV-1a 32-bit over UTF-16 code units; session ids are ASCII). Decided once per session id and kept in `$.state` `holdout`. A holdout session never blocks or rewrites: the junk guard runs in `observe`, the subagent guard pins and denies nothing, F2 and F13 don't ask, F3 neither hints, syncs the compact window nor answers compactions, and keep-warm doesn't ping; each logs a `would-…` event instead. The status line says `holdout`, and the session logs one line saying so when it starts.
+  - **Proof:** eligible parts are `measuring`, ≥ 5 prompts, a known family, in a project used with ccwarden. Within each family with ≥ 3 holdout parts: protected median $ per prompt ÷ holdout median, weighted by the protected family mix; claim = (1 − ratio) × 100. The 90% range is 2000 bootstrap resamples seeded from the part ids (mulberry32), so the figure only moves when a session is added. No figure below 10 holdout and 30 protected parts; the page shows the counts instead. Claim texts: "Not proven yet: turn on measureHoldout…", "Not proven yet: n of 10 holdout sessions and m of 30 protected ones.", "Protected sessions cost X% less per prompt (90% range …)", "… X% more …", or "No clear difference yet". A self-check compares the estimates' share (est ÷ (spent + est) on protected parts) with the range: agree, optimistic or pessimistic.
+  - **The page:** the proof section, est. savings bars by feature, "What ccwarden did" (events per day by feature), sessions of the last 30 days (click one to filter the event log), and the event log (latest 5000 events of the last 30 days, filterable by feature). Copy summary (Markdown) and download raw JSON use data embedded in the page; the page stays one file with one `<script>`. Each file's summary is cached in `$.store` `metricsSummaries` by mtime and size.
+- **Unverified live:** §9 Q21–Q23; F15 live: turn on `measureHoldout`, use it for 2–3 weeks, read the proof.
 
 ## 5. Configuration (`userConfig`)
 
@@ -391,6 +414,7 @@ It never blocks and adds nothing to context.
 | `alertTiming` | `immediate` | F1b |
 | `handoffDir` / `handoffOnCompact` / `handoffMaxUsd` | `.claude/handoffs` / off / 0.50 | F7 |
 | `topicShiftHint` | off (until tuned from `topicLog`) | F13 |
+| `measureHoldout` | off (opt-in: holdout sessions get no protection) | F15 |
 
 M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.
 
@@ -402,7 +426,9 @@ M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handof
   - `transcriptSummaries` (F14): transcript path → `{ mtimeMs, size, junk, summary }`; entries for gone files are dropped on each build.
   - `dashboardOpened` (F14): `true` once `/cw open` has run.
   - `junkLog` events (F14): optional `project` and `session`. Older events lack them.
-- **Files:** trimmed outputs and handoffs, and the F14 page (`<claude dir>/ccwarden/dashboard.html`).
+  - `metricsSummaries` (F15): metrics file path → `{ mtimeMs, size, summary }`; entries for gone files are dropped on each build.
+  - `holdout` (F15, `$.state`): this session is a holdout; read by the status line.
+- **Files:** trimmed outputs and handoffs, the F14 page (`<claude dir>/ccwarden/dashboard.html`) and the F15 metrics log (`<claude dir>/ccwarden/metrics/<session id>.jsonl`).
 
 ## 7. Layout
 
@@ -449,7 +475,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | open |
 | 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
 | 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
-| 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | F1's hook already filters on `agentId`, which suggests it does. | open: F5's measured saving depends on it |
+| 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | Not needed: the types state a subagent run ends in a `turn.complete` carrying its `agentId` and summed `usage`; F15 reads that, as F5 does. | answered by the types |
 | 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | open: if not, the first write fails |
 | 22 | **Session id after `/clear` (F15):** does the next conversation get a new `$.session.id()`? | Not stated. | open: one file per conversation, or `part` records |
 | 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | open: the fallback selects the text |
