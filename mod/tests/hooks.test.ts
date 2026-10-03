@@ -1728,6 +1728,9 @@ describe('F15 metrics log', () => {
     await $.command.run({ command: 'cw', args: 'open', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
     const page = w.writes.filter(f => f.path === '/home/u/.claude/ccwarden/dashboard.html').at(-1)!.text
     expect(page).toContain('Subagent guard')
+    expect(page).toContain('data-session="sess1"') // the sessions table and the event log
+    expect(page).toContain('<tr data-feature="subagent" data-session="sess1">')
+    expect(page).toContain('Raw files: <code>/home/u/.claude/ccwarden/metrics</code>')
     expect(Object.keys(w.store.get('metricsSummaries') as object)).toEqual([METRICS])
   })
 

@@ -29,10 +29,10 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
-import { addProjectDay, claudeDirOf, efficiencyData, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
-import type { Coverage, DayFigures, HostOs, ProjectDays, SummaryCache, TranscriptSummary } from '../src/efficiency'
+import { addProjectDay, claudeDirOf, efficiencyData, RECENT_EVENTS, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
+import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCache, TranscriptSummary } from '../src/efficiency'
 import { dashboardHtml } from '../src/htmlDashboard'
-import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, usageUsd } from '../src/metrics'
+import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, parseFile, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, usageUsd } from '../src/metrics'
 import type { MetricEvent, MetricsFile, MetricsSummary, Pending, Pin, Usage } from '../src/metrics'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
@@ -93,6 +93,7 @@ const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
 const dashboardRef = { plugin: 'ccwarden', key: 'dashboard' } as const
 const holdoutRef = { plugin: 'ccwarden', key: 'holdout' } as const
 const WEEK_MS = 7 * 24 * 60 * 60_000
+const DAY_MS = 24 * 60 * 60_000
 const WEEK_MAX_FILES = 20
 
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
@@ -943,6 +944,9 @@ async function writeEfficiency($: $, config: Config, runtime: Runtime, canParse:
     summaries,
     coverage,
     metrics: await readMetrics($, joinPath(claude, METRICS_DIR), canParse),
+    // ponytail: read at session end too: metrics files are small and capped; skip it there if the end bound proves too short (Q18)
+    events: await readRecentEvents($, joinPath(claude, METRICS_DIR), await $.clock.now()),
+    metricsDir: joinPath(claude, METRICS_DIR),
   })
   const path = joinPath(claude, DASHBOARD_FILE)
   const written = await $.fs.write(path, dashboardHtml(data)).then(() => true, () => false)
@@ -1028,6 +1032,19 @@ async function readMetrics($: $, dir: string, canParse: boolean): Promise<Record
   }
   await $.store.set(METRICS_SUMMARIES_KEY, next)
   return Object.fromEntries(Object.entries(next).map(([p, e]) => [p, e.summary]))
+}
+
+/** F15: the last 30 days' events from the metrics files, newest first, at most RECENT_EVENTS. */
+async function readRecentEvents($: $, dir: string, now: number): Promise<SessionEvent[]> {
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.kind === 'file' && f.name.endsWith('.jsonl') && now - f.mtimeMs <= 30 * DAY_MS && f.size <= MAX_TRANSCRIPT_BYTES)
+  const out: SessionEvent[] = []
+  for (const f of files) {
+    const text = await $.fs.read(joinPath(dir, f.name)).catch(() => undefined)
+    if (text === undefined) continue
+    const session = f.name.replace(/\.jsonl$/, '')
+    for (const e of parseFile(text).events) if (now - e.at <= 30 * DAY_MS) out.push({ ...e, session })
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, RECENT_EVENTS)
 }
 
 /** F14: opens the page in the default browser; when that fails, says where it is. */

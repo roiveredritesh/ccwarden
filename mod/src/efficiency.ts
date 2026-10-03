@@ -11,7 +11,7 @@ import { hogsOver } from './hogs'
 import type { Hog, HogDays } from './hogs'
 import type { JunkMode } from './junk'
 import type { Ledger } from './ledger'
-import type { Feature, FeatureTotals, MetricsSummary } from './metrics'
+import type { Feature, FeatureTotals, MetricEvent, MetricsSummary } from './metrics'
 import { proof } from './proof'
 import type { ProofResult } from './proof'
 
@@ -174,11 +174,16 @@ export type Confidence = 'high' | 'medium' | 'low' | 'count only'
 export type SavingRow = { feature: string; did: string; count: number; tokens: number; usd: number; unpriced: number; formula: string; confidence: Confidence; isInTotal: boolean }
 export type Measured = { requests: number; usdPerRequest: number; hitPct: number; rebuildsPer100: number; avgContext: number }
 export type ProjectRow = { project: string; usd: number; sessions: number; requests: number; hitPct?: number; rebuilds: number; topHog?: Hog; savedUsd: number }
-export type View = { savings: SavingRow[]; totalTokens: number; totalUsd: number; before?: Measured; after?: Measured; spend: { day: string; usd: Record<string, number> }[] }
+export type View = { savings: SavingRow[]; totalTokens: number; totalUsd: number; before?: Measured; after?: Measured; spend: { day: string; usd: Record<string, number> }[]; activity: { day: string; counts: Partial<Record<Feature, number>> }[] }
 /** One range: its first day, the project table, a view per project (`''`: all of them), and what to do. */
 export type RangeData = { from: string; projects: ProjectRow[]; views: Record<string, View>; actions: string[] }
 /** `projects`: those used with ccwarden (any activity since install); `hiddenProjects` counts the rest. */
-export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; hiddenProjects: number; ranges: Record<Range, RangeData>; proof: ProofResult }
+export type EfficiencyData = { at: number; billing?: Billing; installDay?: string; coverage: Coverage; projects: string[]; hiddenProjects: number; ranges: Record<Range, RangeData>; proof: ProofResult; sessions: SessionRow[]; events: SessionEvent[]; metricsDir?: string }
+/** The page's event log keeps the newest of the last 30 days, at most this many (F15). */
+export const RECENT_EVENTS = 5_000
+export type SessionEvent = MetricEvent & { session: string }
+/** One session in the metrics log, its /clear parts summed (F15). */
+export type SessionRow = { session: string; project: string; startedAt: number; family?: Family; holdout: boolean; prompts: number; usd: number; usdPerPrompt?: number; estUsd: number }
 export type EfficiencyInput = {
   now: number
   billing?: Billing
@@ -192,6 +197,10 @@ export type EfficiencyInput = {
   coverage: Coverage
   /** Metrics file path → its summary (F15). */
   metrics?: Record<string, MetricsSummary>
+  /** The last 30 days' metrics events, any order (F15). */
+  events?: readonly SessionEvent[]
+  /** Where the metrics files are, for the page to name (F15). */
+  metricsDir?: string
 }
 
 /** Everything the page shows, for every range and project. */
@@ -223,7 +232,7 @@ export function efficiencyData(input: EfficiencyInput): EfficiencyData {
   const proofSessions = Object.values(input.metrics ?? {})
     .filter(m => used.has(m.project ?? UNATTRIBUTED))
     .flatMap(m => m.records.map(record => ({ record, estUsd: m.estUsd / Math.max(1, m.records.length) })))
-  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, hiddenProjects: all.length - projects.length, ranges, proof: proof(proofSessions) }
+  return { at: input.now, ...(input.billing === undefined ? {} : { billing: input.billing }), ...(install === undefined ? {} : { installDay: install }), coverage: input.coverage, projects, hiddenProjects: all.length - projects.length, ranges, proof: proof(proofSessions), sessions: sessionRows(input, used), events: recentEvents(input, used), ...(input.metricsDir === undefined ? {} : { metricsDir: input.metricsDir }) }
 }
 
 /** Any spend, request, live figure or junk event for `project` on or after `install`. */
@@ -269,9 +278,19 @@ function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: R
   const counted = savings.filter(r => r.isInTotal)
   const days = Object.values(input.summaries).filter(s => isIn(s.project)).flatMap(s => Object.entries(s.days))
   const spend: View['spend'] = []
+  const activity: View['activity'] = []
+  const logged = Object.values(input.metrics ?? {}).filter(m => isIn(m.project))
   for (let t = Date.parse(from); dayKey(t) <= dayKey(input.now); t += DAY_MS) {
     const day = dayKey(t)
     spend.push({ day, usd: Object.fromEntries(Object.entries(byDay[day] ?? {}).filter(([p]) => isIn(p))) })
+    const counts: Partial<Record<Feature, number>> = {}
+    for (const m of logged) {
+      for (const [feature, x] of Object.entries(m.days[day] ?? {}) as [Feature, { done: FeatureTotals; would: FeatureTotals }][]) {
+        const n = x.done.count + x.would.count
+        if (n > 0) counts[feature] = (counts[feature] ?? 0) + n
+      }
+    }
+    activity.push({ day, counts })
   }
   return {
     savings,
@@ -282,7 +301,29 @@ function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: R
       after: measured(days.filter(([d]) => d >= install).map(([, u]) => u)),
     }),
     spend,
+    activity,
   }
+}
+
+/** Sessions active in the last 30 days, in used projects, newest first. */
+function sessionRows(input: EfficiencyInput, used: ReadonlySet<string>): SessionRow[] {
+  const since = input.now - 30 * DAY_MS
+  return Object.values(input.metrics ?? {})
+    .filter(m => m.records.length > 0 && used.has(m.project ?? UNATTRIBUTED) && m.records.at(-1)!.lastAt >= since)
+    .map(m => {
+      const last = m.records.at(-1)!
+      const prompts = m.records.reduce((n, r) => n + r.prompts, 0)
+      const usd = m.records.reduce((n, r) => n + r.usd, 0)
+      return { session: m.session, project: m.project ?? UNATTRIBUTED, startedAt: m.records[0]!.startedAt, ...(last.family === undefined ? {} : { family: last.family }), holdout: last.holdout, prompts, usd, ...(prompts > 0 ? { usdPerPrompt: usd / prompts } : {}), estUsd: m.estUsd }
+    })
+    .sort((a, b) => b.startedAt - a.startedAt)
+}
+
+/** The newest events of used projects (or of sessions the log has no record of), at most RECENT_EVENTS. */
+function recentEvents(input: EfficiencyInput, used: ReadonlySet<string>): SessionEvent[] {
+  const projectOf = new Map(Object.values(input.metrics ?? {}).map(m => [m.session, m.project ?? UNATTRIBUTED]))
+  return (input.events ?? []).filter(e => { const p = projectOf.get(e.session); return p === undefined || used.has(p) })
+    .sort((a, b) => b.at - a.at).slice(0, RECENT_EVENTS)
 }
 
 function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isIn: (p: string | undefined) => boolean, from: string, logStart: string | undefined): SavingRow[] {

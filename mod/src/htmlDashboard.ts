@@ -1,6 +1,7 @@
 import type { Coverage, EfficiencyData, Measured, Range, RangeData, SavingRow, View } from './efficiency'
 import { RANGES, UNATTRIBUTED } from './efficiency'
 import { fmtTokens } from './status'
+import type { Feature } from './metrics'
 import { MIN_HOLDOUT, MIN_PROTECTED, proofClaim, selfCheck } from './proof'
 import type { ProofResult } from './proof'
 
@@ -40,22 +41,27 @@ export function dashboardHtml(d: EfficiencyData): string {
 <title>ccwarden efficiency</title><style>${CSS}</style></head><body>
 <header><h1>ccwarden efficiency</h1>
 <p class="dim">Updated ${updated} UTC · billing ${escapeHtml(d.billing ?? 'not set')} · tokens first, ${money}${d.installDay === undefined ? '' : ` · installed ${escapeHtml(d.installDay)}`}</p>
-<nav><span class="seg">${RANGES.map(r => `<button data-set-range="${r}">${RANGE_LABEL[r]}</button>`).join('')}</span><button data-set-project="">All projects</button></nav></header>
+<nav><span class="seg">${RANGES.map(r => `<button data-set-range="${r}">${RANGE_LABEL[r]}</button>`).join('')}</span><button data-set-project="">All projects</button><button data-copy>Copy summary</button><button data-download>Download raw JSON</button></nav></header>
 ${proofHtml(d.proof)}
-${RANGES.map(r => rangeHtml(r, d.ranges[r], index, colors, d.hiddenProjects)).join('\n')}
+${RANGES.map(r => rangeHtml(r, d.ranges[r], index, colors, d.hiddenProjects, d.proof)).join('\n')}
+${sessionsHtml(d)}
+${eventsHtml(d)}
+<pre id="cw-summary" hidden>${escapeHtml(summaryMarkdown(d))}</pre>
+<pre id="cw-raw" hidden>${escapeHtml(JSON.stringify({ sessions: d.sessions, events: d.events }))}</pre>
+<div id="tip" role="tooltip" hidden></div>
 <footer class="dim">${escapeHtml(coverageLine(d.coverage))}. Transcripts over 4 MiB are left out before and after alike, so the longest sessions are not in the measured figures.</footer>
 <script>${SCRIPT}</script></body></html>
 `
 }
 
-function rangeHtml(range: Range, r: RangeData, index: Map<string, string>, colors: Map<string, number>, unused: number): string {
+function rangeHtml(range: Range, r: RangeData, index: Map<string, string>, colors: Map<string, number>, unused: number, proof: ProofResult): string {
   const views = (part: (v: View) => string) => Object.entries(r.views)
     .map(([p, v]) => `<div class="view" data-project="${p === '' ? '' : index.get(p)}">${p === '' ? '' : `<p class="filter">Project: ${escapeHtml(p)}</p>`}${part(v)}</div>`)
     .join('')
   return `<main class="range" data-range="${range}">
-${views(v => cardsHtml(v))}
+${views(v => verdictHtml(RANGE_LABEL[range], v, proof) + cardsHtml(v))}
 ${actionsHtml(r.actions)}
-${views(v => savingsHtml(v) + realityHtml(v))}
+${views(v => savingsHtml(v) + realityHtml(v) + activityHtml(v))}
 ${projectsHtml(r, index, unused)}
 ${views(v => spendHtml(v, colors))}
 </main>`
@@ -124,14 +130,17 @@ function savedCell(s: SavingRow): string {
 }
 
 function savingsHtml(v: View): string {
+  const priced = v.savings.filter(s => s.usd !== 0)
+  const max = Math.max(0, ...priced.map(s => Math.abs(s.usd)))
+  const bars = priced.map(s => `<div class="hbar" tabindex="0" data-tip="${escapeHtml(`${s.feature}: ${s.did}, ${s.count} times`)}"><span>${escapeHtml(s.feature)}${s.isInTotal ? '' : ' <span class="tag">not in total</span>'}</span><i class="${s.usd < 0 ? 'neg' : 'pos'}" style="width:${((Math.abs(s.usd) / max) * 100).toFixed(0)}%"></i><b>${usd(s.usd)} est.</b></div>`).join('')
   const rows = v.savings.map(s => {
     const unpriced = s.unpriced > 0 ? ` <span class="tag">${s.unpriced} not priced</span>` : ''
     return `<tr><td>${escapeHtml(s.feature)}${s.isInTotal ? '' : ' <span class="tag">not in total</span>'}<br><code>${escapeHtml(s.formula)}</code></td><td>${escapeHtml(s.did)}</td><td class="num">${s.count}</td><td class="saved">${savedCell(s)}${unpriced}</td><td>${s.confidence}</td></tr>`
   }).join('')
   const table = rows === ''
     ? '<p class="dim">Nothing yet in this range.</p>'
-    : `<table><tr><th>Feature and formula</th><th>What it did</th><th class="num">Times</th><th>Saved</th><th>Confidence</th></tr>${rows}</table>`
-  return `<section><h2>Est. savings by feature</h2><p class="dim">~${fmtTokens(Math.round(v.totalTokens))} tokens / ~${usd(v.totalUsd)} saved (est.). Rows marked "not in total" are what a feature would have done.</p>${table}</section>`
+    : `<details><summary>How it's computed</summary><table><tr><th>Feature and formula</th><th>What it did</th><th class="num">Times</th><th>Saved</th><th>Confidence</th></tr>${rows}</table></details>`
+  return `<section><h2>Est. savings by feature</h2><p class="dim">~${fmtTokens(Math.round(v.totalTokens))} tokens / ~${usd(v.totalUsd)} saved (est.). Rows marked "not in total" are what a feature would have done.</p>${bars}${table}</section>`
 }
 
 function realityHtml(v: View): string {
@@ -202,7 +211,7 @@ function spendHtml(v: View, colors: Map<string, number>): string {
     return order(d.by).map(([p, x]) => {
       const h = (x / max) * H
       y -= h
-      return `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="${fill(p)}" stroke="var(--bg)" stroke-width="1"><title>${escapeHtml(`${d.day} · ${p}: ${usd(x)} est. (day total ${usd(total(d.by))})`)}</title></rect>`
+      return `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="${fill(p)}" stroke="var(--bg)" stroke-width="1" tabindex="0" data-tip="${escapeHtml(`${d.day} · ${p}: ${usd(x)} est. (day total ${usd(total(d.by))})`)}"/>`
     }).join('')
   }).join('')
   const ticks = [0, days.length - 1].filter((i, n, a) => a.indexOf(i) === n)
@@ -225,6 +234,83 @@ function proofHtml(p: ProofResult): string {
   const svg = `<svg viewBox="0 0 720 60" role="img" aria-label="${claim}"><line class="axis" x1="60" x2="660" y1="30" y2="30"/><line class="zero" x1="${x(0)}" x2="${x(0)}" y1="12" y2="48"/><text class="axis" x="${x(0)}" y="58" text-anchor="middle">0%</text><line class="range" x1="${x(p.lowPct)}" x2="${x(p.highPct)}" y1="30" y2="30" data-tip="${escapeHtml(`90% range ${Math.round(p.lowPct)}% to ${Math.round(p.highPct)}%`)}"/><circle class="point" cx="${x(p.lessPct)}" cy="30" r="6" data-tip="${escapeHtml(`${Math.round(p.lessPct)}% less per prompt`)}"/><text class="axis" x="60" y="12">more per prompt</text><text class="axis" x="660" y="12" text-anchor="end">less per prompt</text></svg>`
   const check = selfCheck(p)
   return `<section class="proof"><h2>Proof (holdout)</h2><p class="total">${claim}</p>${svg}<p class="dim">Median per prompt: holdout $${p.holdoutMedian.toFixed(3)}, protected $${p.protectedMedian.toFixed(3)}.${check === undefined ? '' : ` ${escapeHtml(check)}`}</p></section>`
+}
+
+/** F15: the logged features in a fixed order, which is also their chart colour slot; Handoffs fold to "Other". */
+const FEATURES: readonly Feature[] = ['subagent', 'cold', 'topic', 'junk', 'snapshot', 'keepwarm', 'limit', 'handoff']
+const FEATURE_LABEL: Record<Feature, string> = {
+  subagent: 'Subagent guard', cold: 'Cold-cache guard', topic: 'Unrelated-prompt hint', junk: 'Junk guard',
+  snapshot: 'Snapshot compaction', keepwarm: 'Keep-warm', limit: 'Limit hints', handoff: 'Handoffs',
+}
+/** Events the page lists; the raw JSON holds up to RECENT_EVENTS. */
+const EVENTS_SHOWN = 100
+const SESSIONS_SHOWN = 200
+
+function featureFill(f: Feature): string {
+  const i = FEATURES.indexOf(f)
+  return i >= 0 && i < SLOTS ? `var(--s${i + 1})` : 'var(--other)'
+}
+
+/** The first and last day under a day chart. */
+function dayTicks(days: readonly string[], bw: number): string {
+  return [0, days.length - 1].filter((i, n, a) => a.indexOf(i) === n)
+    .map(i => `<text class="axis" x="${(i * bw + (i === 0 ? 0 : bw)).toFixed(1)}" y="${H + 14}" text-anchor="${i === 0 ? 'start' : 'end'}">${days[i]!.slice(5)}</text>`).join('')
+}
+
+/** One sentence per range: what was saved (est.), and where the proof stands. */
+function verdictHtml(label: string, v: View, p: ProofResult): string {
+  return `<p class="verdict">${label}: ccwarden saved ~${fmtTokens(Math.round(v.totalTokens))} tokens (~${usd(v.totalUsd)} est.) ${escapeHtml(proofClaim(p))}</p>`
+}
+
+/** F15: events per day by feature, from the metrics log. */
+function activityHtml(v: View): string {
+  const total = (c: Partial<Record<Feature, number>>) => Object.values(c).reduce((s: number, n) => s + (n ?? 0), 0)
+  const max = Math.max(0, ...v.activity.map(d => total(d.counts)))
+  if (max === 0) return '<section><h2>What ccwarden did</h2><p class="dim">No ccwarden activity logged in this range.</p></section>'
+  const bw = W / v.activity.length
+  const bars = v.activity.map((d, i) => {
+    let y = H
+    return FEATURES.filter(f => (d.counts[f] ?? 0) > 0).map(f => {
+      const n = d.counts[f]!
+      const h = (n / max) * H
+      y -= h
+      return `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="${featureFill(f)}" stroke="var(--bg)" stroke-width="1" tabindex="0" data-tip="${escapeHtml(`${d.day} · ${FEATURE_LABEL[f]}: ${n}`)}"/>`
+    }).join('')
+  }).join('')
+  const shown = FEATURES.filter(f => v.activity.some(d => (d.counts[f] ?? 0) > 0))
+  const legend = shown.map(f => `<span><i style="background:${featureFill(f)}"></i>${FEATURE_LABEL[f]}</span>`).join('')
+  return `<section><h2>What ccwarden did</h2><p class="dim">Events per day by feature, from the metrics log; the busiest day had ${max}.</p><svg viewBox="0 0 ${W} ${H + 18}" role="img" aria-label="ccwarden events per day">${bars}${dayTicks(v.activity.map(d => d.day), bw)}</svg>${shown.length > 1 ? `<p class="legend">${legend}</p>` : ''}</section>`
+}
+
+/** F15: the last 30 days' sessions; a click shows only that session's events. */
+function sessionsHtml(d: EfficiencyData): string {
+  if (d.sessions.length === 0) return '<section><h2>Sessions</h2><p class="dim">No sessions in the metrics log yet.</p></section>'
+  const rows = d.sessions.slice(0, SESSIONS_SHOWN).map(s => `<tr data-session="${escapeHtml(s.session)}"><td>${new Date(s.startedAt).toISOString().slice(0, 16).replace('T', ' ')}</td><td title="${escapeHtml(s.project)}">${escapeHtml(shortName(s.project))}</td><td>${s.family ?? '–'}</td><td>${s.holdout ? '<span class="tag">holdout</span>' : '–'}</td><td class="num">${s.prompts}</td><td class="num">${s.usdPerPrompt === undefined ? '–' : `$${s.usdPerPrompt.toFixed(3)}`}</td><td class="num">${Math.abs(s.estUsd) < 0.005 ? '–' : `${usd(s.estUsd)} est.`}</td></tr>`).join('')
+  return `<section><h2>Sessions (last 30 days)</h2><p class="dim">Click a session to show only its events below; click it again for all.</p><table><tr><th>Started (UTC)</th><th>Project</th><th>Model</th><th>Holdout</th><th class="num">Prompts</th><th class="num">$ per prompt</th><th class="num">Saved</th></tr>${rows}</table></section>`
+}
+
+/** F15: the newest events, filterable by feature and by session; the files' folder named. */
+function eventsHtml(d: EfficiencyData): string {
+  const shown = d.events.slice(0, EVENTS_SHOWN)
+  const where = d.metricsDir === undefined ? '' : ` Raw files: <code>${escapeHtml(d.metricsDir)}</code>.`
+  if (shown.length === 0) return `<section><h2>Event log</h2><p class="dim">No events logged yet.${where}</p></section>`
+  const label = (f: string) => escapeHtml(FEATURE_LABEL[f as Feature] ?? f)
+  const options = [...new Set(shown.map(e => e.feature))].map(f => `<option value="${escapeHtml(f)}">${label(f)}</option>`).join('')
+  const rows = shown.map(e => `<tr data-feature="${escapeHtml(e.feature)}" data-session="${escapeHtml(e.session)}"><td>${new Date(e.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${escapeHtml(e.session.slice(0, 8))}</td><td>${label(e.feature)}</td><td>${escapeHtml(e.action)}${e.would ? ' <span class="tag">would</span>' : ''}</td><td class="num">${e.est === undefined ? '–' : `${usd(e.est.usd)} est.`}</td><td><code>${escapeHtml(Object.entries(e.measured).map(([k, x]) => `${k}=${String(x)}`).join(' '))}</code></td></tr>`).join('')
+  return `<section><h2>Event log</h2><p class="dim">The latest ${shown.length} of ${d.events.length} events in the last 30 days.${where}</p><select data-filter-feature><option value="">All features</option>${options}</select><table><tr><th>Time (UTC)</th><th>Session</th><th>Feature</th><th>Action</th><th class="num">Saved</th><th>Measured</th></tr>${rows}</table></section>`
+}
+
+/** A short Markdown report to paste into an issue or a chat; built from the page's own figures. */
+export function summaryMarkdown(d: EfficiencyData): string {
+  const v = d.ranges['30d'].views['']!
+  const top = v.savings.filter(r => r.isInTotal && r.usd > 0).sort((a, b) => b.usd - a.usd).slice(0, 3)
+  return [
+    `## ccwarden report (${new Date(d.at).toISOString().slice(0, 10)})`,
+    `- Saved (est., 30 days): ~${fmtTokens(Math.round(v.totalTokens))} tokens / ~${usd(v.totalUsd)}`,
+    `- Proof: ${proofClaim(d.proof)}`,
+    ...(top.length === 0 ? [] : [`- Top savings: ${top.map(r => `${r.feature} ~${usd(r.usd)}`).join(', ')}`]),
+    `- Coverage: ${coverageLine(d.coverage)}; ${d.sessions.length} sessions in the metrics log`,
+  ].join('\n')
 }
 
 function actionsHtml(actions: readonly string[]): string {
@@ -261,6 +347,10 @@ button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:
 svg{width:100%;height:auto}text.axis{fill:var(--dim);font-size:11px}
 .legend span{margin-right:14px;white-space:nowrap}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
 footer{margin-top:24px;font-size:12px}
+.verdict{font-size:16px;font-weight:600;margin:16px 0 0}
+.hbar{display:grid;grid-template-columns:minmax(90px,30%) 1fr auto;gap:8px;align-items:center;margin:4px 0}.hbar i{display:block;height:10px;border-radius:2px}.hbar i.pos{background:var(--good)}.hbar i.neg{background:var(--bad)}.hbar b{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+#tip{position:absolute;background:var(--fg);color:var(--bg);font-size:12px;padding:2px 6px;border-radius:4px;pointer-events:none;z-index:2}
+tr[data-session]{cursor:pointer}tr[data-session].on{outline:2px solid var(--on)}details summary{cursor:pointer;color:var(--dim);margin:8px 0}select{font:inherit;margin:4px 0 8px;padding:2px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px}
 .proof{border-left:3px solid var(--on);padding-left:12px}.proof .total{font-size:16px;font-weight:600}
 line.axis{stroke:var(--line)}line.zero{stroke:var(--dim);stroke-dasharray:3 3}line.range{stroke:var(--on);stroke-width:4;stroke-linecap:round}circle.point{fill:var(--on);stroke:var(--bg);stroke-width:2}
 `
@@ -288,4 +378,18 @@ document.addEventListener('click',e=>{
   show();
 });
 show();
+const tip=document.getElementById('tip');
+function showTip(t){const r=t.getBoundingClientRect();tip.textContent=t.dataset.tip;tip.hidden=false;tip.style.left=(r.left+window.scrollX)+'px';tip.style.top=(r.top+window.scrollY-28)+'px';}
+document.addEventListener('mouseover',e=>{const t=e.target.closest('[data-tip]');if(t)showTip(t);else tip.hidden=true;});
+document.addEventListener('focusin',e=>{const t=e.target.closest('[data-tip]');if(t)showTip(t);});
+let evFeature='',evSession='';
+function filterEvents(){for(const r of document.querySelectorAll('tr[data-feature]'))r.hidden=(evFeature!==''&&r.dataset.feature!==evFeature)||(evSession!==''&&r.dataset.session!==evSession);for(const r of document.querySelectorAll('tr[data-session]:not([data-feature])'))r.classList.toggle('on',r.dataset.session===evSession);}
+document.addEventListener('change',e=>{if(e.target.matches('[data-filter-feature]')){evFeature=e.target.value;filterEvents();}});
+document.addEventListener('click',e=>{
+  const s=e.target.closest('tr[data-session]:not([data-feature])');
+  if(s){evSession=evSession===s.dataset.session?'':s.dataset.session;filterEvents();}
+  const c=e.target.closest('[data-copy]');
+  if(c){const p=document.getElementById('cw-summary');navigator.clipboard.writeText(p.textContent).then(()=>{c.textContent='Copied';},()=>{p.hidden=false;getSelection().selectAllChildren(p);});}
+  if(e.target.closest('[data-download]')){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([document.getElementById('cw-raw').textContent],{type:'application/json'}));a.download='ccwarden-metrics.json';a.click();}
+});
 `

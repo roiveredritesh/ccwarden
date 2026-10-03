@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { addProjectDay, claudeDirOf, efficiencyData, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
 import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
-import { coverageLine, dashboardHtml, escapeHtml } from '../src/htmlDashboard'
+import { coverageLine, dashboardHtml, escapeHtml, summaryMarkdown } from '../src/htmlDashboard'
 import type { MetricsSummary } from '../src/metrics'
 import { newRecord } from '../src/metrics'
 
@@ -340,5 +340,43 @@ describe('F15 rows from the metrics log', () => {
     const p = efficiencyData({ ...FIXTURE, metrics: files }).proof
     expect(p.kind).toBe('measured')
     expect(efficiencyData(FIXTURE).proof).toEqual({ kind: 'off' })
+  })
+})
+
+describe('F15 the page', () => {
+  const DAY = Date.parse('2026-10-03T10:00:00Z')
+  const r = { ...newRecord({ session: 's2', project: '/p', now: DAY, measuring: true }), family: 'sonnet' as const, prompts: 8, usd: 4 }
+  const SUMMARY = { session: 's2', project: '/p', records: [r], estUsd: 1.5, wouldUsd: 0, skipped: 0, days: { '2026-10-03': { subagent: { done: { count: 2, tokens: 0, usd: 1.5 }, would: { count: 0, tokens: 0, usd: 0 } } } } }
+  const evs = [
+    { v: 1 as const, at: DAY, feature: 'subagent' as const, action: 'pinned', measured: { type: 'Explore' }, session: 's2' },
+    { v: 1 as const, at: DAY + 1, feature: 'subagent' as const, action: 'outcome', measured: {}, est: { tokens: 0, usd: 1.5, formula: 'x', confidence: 'high' as const }, session: 's2' },
+  ]
+  const data = efficiencyData({ ...FIXTURE, metrics: { m: SUMMARY }, events: evs })
+  const html = dashboardHtml(data)
+
+  test('a verdict line per range, with the proof state', () => {
+    expect(html).toMatch(/<p class="verdict">7 days: ccwarden saved ~[^<]+ est\.\) Not proven yet: 0 of 10 holdout sessions/)
+  })
+
+  test('activity per day by feature; sessions; the latest events', () => {
+    expect(data.ranges['7d'].views['']!.activity.at(-1)!.counts).toEqual({ subagent: 2 })
+    expect(data.sessions[0]).toMatchObject({ session: 's2', project: '/p', prompts: 8, usdPerPrompt: 0.5, estUsd: 1.5, holdout: false })
+    expect(data.events.map(e => e.action)).toEqual(['outcome', 'pinned'])
+    expect(html).toContain('data-session="s2"')
+  })
+
+  test('savings as bars, the table under How it is computed; tooltips instead of <title>', () => {
+    expect(html).toContain('<details><summary>How it\'s computed</summary>')
+    expect(html).toContain('class="hbar"')
+    expect(html).toContain('data-tip=')
+    expect(html.split('<title>').length).toBe(2) // only the page's own
+  })
+
+  test('copy summary and raw data are embedded, escaped, with one script still', () => {
+    expect(html).toContain('<pre id="cw-summary" hidden>')
+    expect(html).toContain('<pre id="cw-raw" hidden>')
+    expect(html.split('<script').length).toBe(2)
+    expect(summaryMarkdown(data)).toMatch(/^## ccwarden report \(2026-10-03\)\n- Saved \(est\., 30 days\): ~/)
+    expect(summaryMarkdown(data)).toContain('- Proof: Not proven yet: 0 of 10 holdout sessions')
   })
 })
