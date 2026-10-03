@@ -3,6 +3,7 @@ import { addProjectDay, claudeDirOf, efficiencyData, installDay, isFresh, junkTi
 import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
 import { coverageLine, dashboardHtml, escapeHtml } from '../src/htmlDashboard'
+import type { MetricsSummary } from '../src/metrics'
 
 // Floating sums compared to 4 decimals (the kit has no toBeCloseTo).
 const r4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -287,5 +288,40 @@ describe('F14 only projects used with ccwarden', () => {
     const noInstall = efficiencyData({ ...withOld, ledger: undefined, projectDays: undefined })
     expect(noInstall.projects).toContain('/old')
     expect(noInstall.hiddenProjects).toBe(0)
+  })
+})
+
+describe('F15 rows from the metrics log', () => {
+  const total = (count: number, tokens: number, usd: number) => ({ count, tokens, usd })
+  const none = total(0, 0, 0)
+  const SUMMARY: MetricsSummary = {
+    session: 's2', project: '/p', records: [], estUsd: 0, wouldUsd: 0, skipped: 0,
+    days: { '2026-10-03': {
+      subagent: { done: total(2, 0, 1.5), would: none },
+      cold: { done: total(1, 180_000, 0.45), would: none },
+      junk: { done: total(1, 5_000, 0.02), would: total(1, 8_000, 0.03) },
+      limit: { done: total(1, 0, 0), would: none },
+    } },
+  }
+  const data = efficiencyData({ ...FIXTURE, metrics: { '/h/.claude/ccwarden/metrics/s2.jsonl': SUMMARY } })
+  const all = data.ranges['7d'].views['']!
+  const row = (feature: string) => all.savings.find(r => r.feature === feature)
+
+  test('from the first logged day the log replaces junkLog and projectDays for every feature', () => {
+    expect(row('Subagent guard')).toMatchObject({ count: 2, usd: 1.5, isInTotal: true, confidence: 'high' })
+    expect(row('Cold-cache guard')).toMatchObject({ count: 1, usd: 0.45, isInTotal: true, confidence: 'medium' })
+    expect(row('Junk guard')).toMatchObject({ count: 1, tokens: 5_000 }) // 10-03 junkLog events are left to the log
+    expect(row('Junk guard (observe)')).toMatchObject({ count: 1, tokens: 8_000, isInTotal: false })
+    expect(row('Limit hints')).toMatchObject({ count: 1, confidence: 'count only', isInTotal: false })
+    expect(row('Keep-warm')).toBeUndefined() // projectDays' 10-03 keep-warm is left to the log too
+  })
+
+  test('no log: exactly the F14 rows', () => {
+    expect(efficiencyData(FIXTURE).ranges['7d'].views['']!.savings.map(r => r.feature)).toEqual(['Junk guard', 'Junk guard (observe)', 'Keep-warm', 'Snapshot compaction', 'Cold-cache guard', 'Handoffs'])
+  })
+
+  test('a project with only metrics since install is a used project', () => {
+    const only = { ...SUMMARY, project: '/m' }
+    expect(efficiencyData({ ...FIXTURE, metrics: { x: only } }).projects).toContain('/m')
   })
 })

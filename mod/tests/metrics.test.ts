@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, fnv1a, isHoldoutId, MAX_FILE_CHARS, newRecord, nextPart, parseFile, pinEstimate, putOutcome, resume, serialize, usageUsd } from '../src/metrics'
+import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, fnv1a, isHoldoutId, junkEstimate, MAX_FILE_CHARS, newRecord, nextPart, parseFile, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, topicEstimate, usageUsd } from '../src/metrics'
 import type { MetricEvent, Usage } from '../src/metrics'
 
 const r4 = (n: number) => Math.round(n * 1e4) / 1e4
@@ -91,5 +91,36 @@ describe('F15 estimates', () => {
     expect(coldEstimate('keep', 180_000, 0.45)).toMatchObject({ tokens: 180_000, usd: 0.45, confidence: 'medium' })
     expect(coldEstimate('handoff', 180_000, 0.45).usd).toBe(0.45)
     expect(coldEstimate('send', 180_000, 0.45)).toMatchObject({ tokens: 0, usd: 0 })
+  })
+})
+
+describe('F15 pending savings', () => {
+  test('kept-out output: written once, re-read by each later request; a dropped context: not re-read', () => {
+    expect(junkEstimate(10_000, 'sonnet', 2)).toMatchObject({ tokens: 30_000, confidence: 'medium' })
+    expect(r4(junkEstimate(10_000, 'sonnet', 2).usd)).toBe(0.029)
+    expect(topicEstimate(100_000, 'opus', 3)).toMatchObject({ tokens: 300_000 })
+    expect(r4(topicEstimate(100_000, 'opus', 3).usd)).toBe(0.06)
+  })
+
+  test('the outcome: junk counts the requests after the first, topic all of them; would carried over', () => {
+    const junk = pendingOutcome({ ref: 'j', feature: 'junk', at: 7, tokens: 10_000, family: 'sonnet', requests: 3, would: true })
+    expect(junk).toMatchObject({ at: 7, feature: 'junk', action: 'outcome', ref: 'j', would: true, measured: { requestsAfter: 2 } })
+    expect(junk.est!.tokens).toBe(30_000)
+    const topic = pendingOutcome({ ref: 't', feature: 'topic', at: 8, tokens: 100_000, family: 'opus', requests: 3, would: false })
+    expect([topic.would, topic.measured.requestsAfter, topic.est!.tokens]).toEqual([undefined, 3, 300_000])
+  })
+})
+
+describe('F15 file summary', () => {
+  const DAY = Date.parse('2026-10-03T10:00:00Z')
+  test('per day and feature: originals count, estimates add, would apart; the records and project', () => {
+    const f0 = emptyFile(newRecord({ session: 's', project: '/p', now: DAY, measuring: true }))
+    let f = addEvent(f0, ev({ at: DAY, feature: 'cold', action: 'asked', ref: 'c' }))
+    f = addEvent(f, ev({ at: DAY, feature: 'cold', action: 'outcome', ref: 'c', est: { tokens: 9, usd: 0.5, formula: 'x', confidence: 'medium' } }))
+    f = addEvent(f, ev({ at: DAY, feature: 'junk', action: 'would-keep-out', would: true, est: { tokens: 4, usd: 0.1, formula: 'x', confidence: 'medium' } }))
+    const s = summarizeMetrics(serialize(f), 's')
+    expect(s.days['2026-10-03']!.cold).toEqual({ done: { count: 1, tokens: 9, usd: 0.5 }, would: { count: 0, tokens: 0, usd: 0 } })
+    expect(s.days['2026-10-03']!.junk!.would).toEqual({ count: 1, tokens: 4, usd: 0.1 })
+    expect([s.project, s.records.length, s.estUsd, s.wouldUsd, s.skipped]).toEqual(['/p', 1, 0.5, 0.1, 0])
   })
 })

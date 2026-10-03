@@ -210,3 +210,49 @@ export function coldEstimate(choice: 'send' | 'handoff' | 'keep', tokens: number
 export function dayOf(at: number): string {
   return dayKey(at)
 }
+
+/** F4 kept-out output, F13 a dropped context: savings that grow with each later main-loop request. */
+export type Pending = { ref: string; feature: 'junk' | 'topic'; at: number; tokens: number; family: Family; requests: number; would: boolean }
+
+/** F4: the output is written once, then re-read by each later request, up to the next compaction (F14's formula). */
+export function junkEstimate(tokens: number, family: Family, requestsAfter: number): Estimate {
+  const p = PRICES[family]
+  return { tokens: tokens * (1 + requestsAfter), usd: (tokens * (p.write5m + p.read * requestsAfter)) / 1e6, formula: 'tokens × (write5m + read × requests after, to the next compaction)', confidence: 'medium' }
+}
+
+/** F13: a context dropped by /clear is not re-read by the next conversation's requests. */
+export function topicEstimate(dropped: number, family: Family, requests: number): Estimate {
+  return { tokens: dropped * requests, usd: (dropped * PRICES[family].read * requests) / 1e6, formula: 'dropped context × read × requests in the next conversation', confidence: 'medium' }
+}
+
+/** A pending saving as its outcome event; junk's first request only writes the output, so it isn't a re-read. */
+export function pendingOutcome(p: Pending): MetricEvent {
+  const after = p.feature === 'junk' ? Math.max(0, p.requests - 1) : p.requests
+  const est = p.feature === 'junk' ? junkEstimate(p.tokens, p.family, after) : topicEstimate(p.tokens, p.family, after)
+  return { v: 1, at: p.at, feature: p.feature, action: 'outcome', ref: p.ref, ...(p.would ? { would: true as const } : {}), measured: { requestsAfter: after }, est }
+}
+
+export type FeatureTotals = { count: number; tokens: number; usd: number }
+export type DayFeatures = Partial<Record<Feature, { done: FeatureTotals; would: FeatureTotals }>>
+/** One file, summarised for the page and cached in $.store (`metricsSummaries`). */
+export type MetricsSummary = { session: string; project?: string; records: SessionRecord[]; days: Record<string, DayFeatures>; estUsd: number; wouldUsd: number; skipped: number }
+
+/** Per UTC day and feature: each event but an outcome counts once; an estimate adds wherever it is; would-have events apart. */
+export function summarizeMetrics(text: string, session: string): MetricsSummary {
+  const { events, records, skipped } = parseFile(text)
+  const days: Record<string, DayFeatures> = {}
+  const zero = (): FeatureTotals => ({ count: 0, tokens: 0, usd: 0 })
+  let estUsd = 0
+  let wouldUsd = 0
+  for (const e of events) {
+    const slot = ((days[dayOf(e.at)] ??= {})[e.feature] ??= { done: zero(), would: zero() })
+    const t = e.would ? slot.would : slot.done
+    if (e.action !== 'outcome') t.count++
+    if (e.est === undefined) continue
+    t.tokens += e.est.tokens
+    t.usd += e.est.usd
+    if (e.would) wouldUsd += e.est.usd
+    else estUsd += e.est.usd
+  }
+  return { session, ...(records[0] === undefined ? {} : { project: records[0].project }), records, days, estUsd, wouldUsd, skipped }
+}

@@ -11,6 +11,7 @@ import { hogsOver } from './hogs'
 import type { Hog, HogDays } from './hogs'
 import type { JunkMode } from './junk'
 import type { Ledger } from './ledger'
+import type { Feature, FeatureTotals, MetricsSummary } from './metrics'
 
 
 // F14 efficiency dashboard: what ccwarden saved (est.), and a measured
@@ -187,6 +188,8 @@ export type EfficiencyInput = {
   /** Transcript path → summary. */
   summaries: Record<string, TranscriptSummary>
   coverage: Coverage
+  /** Metrics file path → its summary (F15). */
+  metrics?: Record<string, MetricsSummary>
 }
 
 /** Everything the page shows, for every range and project. */
@@ -199,16 +202,18 @@ export function efficiencyData(input: EfficiencyInput): EfficiencyData {
     ...Object.keys(input.projectDays ?? {}),
     ...Object.values(input.summaries).map(s => s.project ?? UNATTRIBUTED),
     ...(input.junkLog ?? []).map(ev => ev.project ?? UNATTRIBUTED),
+    ...Object.values(input.metrics ?? {}).map(m => m.project ?? UNATTRIBUTED),
     ...Object.values(byDay).flatMap(by => Object.keys(by)),
   ])].sort()
   // ponytail: a project only worked on before install would skew "before"; with no install day there is nothing to compare
   const projects = install === undefined ? all : all.filter(p => isUsedSince(input, byDay, p, install))
   const used = new Set(projects)
+  const logStart = metricsStart(input.metrics)
   const ranges = {} as Record<Range, RangeData>
   for (const range of RANGES) {
     const from = range === 'install' ? (install ?? dayKey(input.now)) : dayKey(input.now - (range === '7d' ? 6 : 29) * DAY_MS)
     const views: Record<string, View> = {}
-    for (const p of ['', ...projects]) views[p] = viewOf(input, prices, byDay, used, p, from, install)
+    for (const p of ['', ...projects]) views[p] = viewOf(input, prices, byDay, used, p, from, install, logStart)
     const rows = projects.map(p => projectRow(input, byDay, p, from, views[p]!.totalUsd)).sort((a, b) => b.usd - a.usd || b.requests - a.requests)
     ranges[range] = { from, projects: rows, views, actions: actionsFor(views['']!, input.junkMode, rows) }
   }
@@ -222,6 +227,7 @@ function isUsedSince(input: EfficiencyInput, byDay: Record<string, Record<string
     || Object.values(input.summaries).some(s => (s.project ?? UNATTRIBUTED) === project && Object.entries(s.days).some(([d, u]) => after(d) && u.requests > 0))
     || Object.keys(input.projectDays?.[project] ?? {}).some(after)
     || (input.junkLog ?? []).some(ev => (ev.project ?? UNATTRIBUTED) === project && after(dayKey(ev.at)))
+    || Object.values(input.metrics ?? {}).some(m => (m.project ?? UNATTRIBUTED) === project && Object.keys(m.days).some(after))
 }
 
 /** The first day ccwarden recorded anything: the earliest in the ledger or `projectDays`. */
@@ -251,9 +257,9 @@ function spendByDay(input: EfficiencyInput): Record<string, Record<string, numbe
   return out
 }
 
-function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: Record<string, Record<string, number>>, used: ReadonlySet<string>, project: string, from: string, install: string | undefined): View {
+function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: Record<string, Record<string, number>>, used: ReadonlySet<string>, project: string, from: string, install: string | undefined, logStart: string | undefined): View {
   const isIn = (p: string | undefined) => (project === '' ? used.has(p ?? UNATTRIBUTED) : (p ?? UNATTRIBUTED) === project)
-  const savings = savingsRows(input, prices, isIn, from)
+  const savings = savingsRows(input, prices, isIn, from, logStart)
   const counted = savings.filter(r => r.isInTotal)
   const days = Object.values(input.summaries).filter(s => isIn(s.project)).flatMap(s => Object.entries(s.days))
   const spend: View['spend'] = []
@@ -273,10 +279,12 @@ function viewOf(input: EfficiencyInput, prices: Map<string, JunkPrice>, byDay: R
   }
 }
 
-function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isIn: (p: string | undefined) => boolean, from: string): SavingRow[] {
+function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isIn: (p: string | undefined) => boolean, from: string, logStart: string | undefined): SavingRow[] {
+  // ponytail: from the log's first day it replaces junkLog and projectDays outright; both stay for the days before it
+  const isBeforeLog = (day: string) => logStart === undefined || day < logStart
   const rows: SavingRow[] = []
   for (const mode of ['enforce', 'observe'] as const) {
-    const events = (input.junkLog ?? []).filter(ev => ev.mode === mode && isIn(ev.project) && dayKey(ev.at) >= from)
+    const events = (input.junkLog ?? []).filter(ev => ev.mode === mode && isIn(ev.project) && dayKey(ev.at) >= from && isBeforeLog(dayKey(ev.at)))
     if (events.length === 0) continue
     const row: SavingRow = {
       feature: mode === 'enforce' ? 'Junk guard' : 'Junk guard (observe)',
@@ -303,7 +311,7 @@ function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isI
   for (const [p, days] of Object.entries(input.projectDays ?? {})) {
     if (!isIn(p)) continue
     for (const [day, x] of Object.entries(days)) {
-      if (day < from) continue
+      if (day < from || !isBeforeLog(day)) continue
       for (const [k, v] of Object.entries(x) as [keyof DayFigures, number][]) f[k] = (f[k] ?? 0) + v
     }
   }
@@ -317,7 +325,50 @@ function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isI
   for (const [key, feature, did] of counts) {
     if ((f[key] ?? 0) > 0) rows.push({ feature, did, count: f[key]!, tokens: 0, usd: 0, unpriced: 0, formula: 'count only', confidence: 'count only', isInTotal: false })
   }
+  for (const m of Object.values(input.metrics ?? {})) {
+    if (!isIn(m.project)) continue
+    for (const [day, features] of Object.entries(m.days)) {
+      if (day < from) continue
+      for (const [feature, t] of Object.entries(features) as [Feature, { done: FeatureTotals; would: FeatureTotals }][]) {
+        if (t.done.count > 0 || t.done.usd !== 0) addLogged(rows, feature, false, t.done)
+        if (t.would.count > 0 || t.would.usd !== 0) addLogged(rows, feature, true, t.would)
+      }
+    }
+  }
   return rows
+}
+
+/** The first UTC day the metrics log has anything for; undefined with no log. */
+function metricsStart(metrics: Record<string, MetricsSummary> | undefined): string | undefined {
+  return Object.values(metrics ?? {}).flatMap(m => Object.keys(m.days)).sort()[0]
+}
+
+/** Each logged feature's row: its name, what it did, formula and confidence; would-have totals go to `would` (not in the total). */
+const LOGGED: Record<Feature, { feature: string; did: string; formula: string; confidence: Confidence; would: string; wouldDid: string }> = {
+  subagent: { feature: 'Subagent guard', did: 'subagents pinned to a cheaper model', formula: 'subagent tokens × (price asked − price ran)', confidence: 'high', would: 'Subagent guard (holdout)', wouldDid: 'subagents it would have pinned' },
+  cold: { feature: 'Cold-cache guard', did: 'asked before a send over a cold cache', formula: 'context × cache write price, when the prompt was not sent', confidence: 'medium', would: 'Cold-cache guard (holdout)', wouldDid: 'sends over a cold cache it would have asked about' },
+  topic: { feature: 'Unrelated-prompt hint', did: 'cleared for a new topic', formula: 'dropped context × read × requests in the next conversation', confidence: 'medium', would: 'Unrelated-prompt hint (holdout)', wouldDid: 'new topics it would have asked about' },
+  junk: { feature: 'Junk guard', did: 'oversized output kept out of the context', formula: 'tokens × (write5m + read × requests after, to the session end or next compaction)', confidence: 'medium', would: 'Junk guard (observe)', wouldDid: 'oversized output it would have kept out' },
+  snapshot: { feature: 'Snapshot compaction', did: 'compactions with no summary request', formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low', would: 'Snapshot compaction (holdout)', wouldDid: 'compactions it would have answered' },
+  keepwarm: { feature: 'Keep-warm', did: 'pings that kept the cache warm', formula: 'rebuilds avoided − pings spent', confidence: 'high', would: 'Keep-warm (holdout)', wouldDid: 'pings it would have sent' },
+  limit: { feature: 'Limit hints', did: '/compact hints past the model limit', formula: 'count only', confidence: 'count only', would: 'Limit hints (holdout)', wouldDid: 'hints it would have shown' },
+  handoff: { feature: 'Handoffs', did: 'notes written', formula: 'count only', confidence: 'count only', would: 'Handoffs (holdout)', wouldDid: 'notes' },
+}
+
+/** Adds a logged feature's totals to its row, making the row if the range has none yet. */
+function addLogged(rows: SavingRow[], feature: Feature, isWould: boolean, t: { count: number; tokens: number; usd: number }): void {
+  const d = LOGGED[feature]
+  const name = isWould ? d.would : d.feature
+  const isCounted = !isWould && d.confidence !== 'count only'
+  let row = rows.find(r => r.feature === name)
+  if (row === undefined) {
+    row = { feature: name, did: isWould ? d.wouldDid : d.did, count: 0, tokens: 0, usd: 0, unpriced: 0, formula: d.formula, confidence: d.confidence, isInTotal: isCounted }
+    rows.push(row)
+  }
+  row.count += t.count
+  row.tokens += t.tokens
+  row.usd += t.usd
+  if (isCounted) [row.isInTotal, row.confidence, row.formula] = [true, d.confidence, d.formula]
 }
 
 function measured(days: readonly DayUsage[]): Measured | undefined {
