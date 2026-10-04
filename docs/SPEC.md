@@ -200,7 +200,7 @@ It never blocks and adds nothing to context.
 **F4. Junk guard.**
 
 - **Reads:** a `Read` with no limit on a file over `readMaxLines` is denied with "use `Grep` for what you need, or `Read` with offset/limit".
-- **Bash output:** output over `bashMaxChars` is cut to head + tail, the full text is saved to a file, and Claude is told "`Grep` this file" (no re-run needed).
+- **Bash output:** output over `bashMaxChars` is cut to head + tail, the full text is saved to a file, and Claude is told "`Grep` this file" (no re-run needed). The engine itself saves output over ~30000 characters to a file and ccwarden leaves that alone, so at the default (30000) plain Bash output is not cut; set `bashMaxChars` lower, or use budget mode (12k), for the cut to apply (§9 Q6).
 - **Test runners:** filtered to failures only.
 - **Allowlist:** path globs to exempt; commands Claude already pipes through `head`/`tail`/`grep` are left alone.
 - **Rollout:** it ships with `observe` mode, which only logs what it would have done (to `$.store`; `/ccwarden-junk` lists the latest events and the tokens saved, est.). Switch `junkGuard` to `enforce` in `/config` once a week of the log shows no false positives.
@@ -408,7 +408,7 @@ It never blocks and adds nothing to context.
 | `compactMode` | `snapshot` (`summary` for manual `/compact <focus>`) | F3 |
 | `compactAt` | 55 (% of the model limit) | §3 |
 | `junkGuard` | `observe` → `enforce` | F4 |
-| `readMaxLines` / `bashMaxChars` / `junkAllowlist` | 2000 / 30000 / `""` (comma-separated globs) | F4 |
+| `readMaxLines` / `bashMaxChars` / `junkAllowlist` | 2000 / 30000 (the engine saves bigger output to a file itself, so the cut applies only below it) / `""` (comma-separated globs) | F4 |
 | `subagentGuard` / `subagentModel` / `subagentAllowlist` / `maxParallelAgents` | on / haiku / `""` (comma-separated types) / 3 | F5 |
 | `keepWarm` / `keepWarmMaxMin` / `keepWarmCapUsd` | **off** until Q2 is confirmed, then on for metered / 30 / 0.50 | F6 |
 | `monthlyBudgetUsd` | unset | F11 |
