@@ -74,6 +74,10 @@ type Runtime = {
   metrics?: MetricsFile
   isMetricsDirty: boolean
   isMetricsWarned: boolean
+  /** F15: the session's file exists but couldn't be read, so it is never written over. */
+  isMetricsUnread: boolean
+  /** F15: makes event refs unique when two events share a millisecond (parallel tool calls). */
+  refs: number
   /** F15: /clear ended the part; the next event starts a new one, or a new file if the id changed. */
   isNewPart: boolean
   /** F15: pinned subagents whose saving adds up with each turn (F5), by agentId. */
@@ -121,7 +125,7 @@ const MIN_MS = 60_000
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isNewPart: false, pins: {}, pending: [] }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, isNewPart: false, pins: {}, pending: [] }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -289,7 +293,7 @@ export const register: Register = (on, options) => {
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
     await recordProject($, { coldAsks: 1 })
     const rebuild = rebuildUsd(tokens, model, ttl)
-    const ref = `cold-${now}`
+    const ref = `cold-${now}-${++runtime.refs}`
     await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'asked', ref, measured: { tokens, minutesCold: Math.round(cache.msCold / MIN_MS), rebuildUsd: rebuild ?? 0 } })
     const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuild })
     const choice = coldChoice(await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_HANDOFF, COLD_CANCEL] }).catch(() => undefined))
@@ -653,7 +657,7 @@ async function topicHint($: $, config: Config, runtime: Runtime, text: string, t
     await recordProject($, { topicClears: 1 })
     const family = familyOf(await $.session.model())
     const at = await $.clock.now()
-    const ref = `topic-${at}`
+    const ref = `topic-${at}-${++runtime.refs}`
     await recordEvent($, config, runtime, { at, feature: 'topic', action: 'cleared', ref, measured: { tokens } })
     if (family !== undefined) runtime.topicCleared = { ref, feature: 'topic', at, tokens, family, requests: 0, would: false }
   }
@@ -740,6 +744,10 @@ async function metricsFile($: $, config: Config, runtime: Runtime): Promise<Metr
   const fresh = newRecord({ session, project: projectKey(await $.session.root()), now, measuring: config.measureHoldout })
   const path = await metricsPath($, session)
   const text = path === undefined ? undefined : await $.fs.read(path).catch(() => undefined)
+  const isUnread = text === undefined && path !== undefined && (await $.fs.stat(path).then(() => true, () => false))
+  // Another hook loaded the file while this one waited: go on from that one, changes and all.
+  if (runtime.metrics?.record.session === session) return runtime.metrics
+  runtime.isMetricsUnread = isUnread
   runtime.metrics = text === undefined ? emptyFile(fresh) : resume(text, fresh)
   await $.state.set(holdoutRef, runtime.metrics.record.holdout)
   if (runtime.metrics.record.holdout && text === undefined) $.ui.log('ccwarden: proof mode: this session is a holdout, so guards are off and what they would have done is logged.')
@@ -759,7 +767,8 @@ async function metricsPath($: $, session: string): Promise<string | undefined> {
 
 /** F15: changes this session's file in memory; the next flush writes it. */
 async function editMetrics($: $, config: Config, runtime: Runtime, change: (f: MetricsFile) => MetricsFile): Promise<void> {
-  runtime.metrics = change(await metricsFile($, config, runtime))
+  await metricsFile($, config, runtime)
+  runtime.metrics = change(runtime.metrics!) // a hook that ran during the wait keeps its change
   runtime.isMetricsDirty = true
 }
 
@@ -778,8 +787,15 @@ async function flushMetrics($: $, runtime: Runtime): Promise<void> {
   runtime.metrics = f
   const path = await metricsPath($, f.record.session)
   if (path === undefined) return
+  if (runtime.isMetricsUnread) {
+    if (!runtime.isMetricsWarned) {
+      runtime.isMetricsWarned = true
+      $.ui.log(`ccwarden: couldn't read the metrics log at ${path}, so this session's events aren't written, to keep what it holds.`)
+    }
+    return
+  }
   const isWritten = await $.fs.write(path, serialize(f)).then(() => true, () => false)
-  if (isWritten) runtime.isMetricsDirty = false
+  if (isWritten && runtime.metrics === f) runtime.isMetricsDirty = false // an event added during the write stays due
   else if (!runtime.isMetricsWarned) {
     runtime.isMetricsWarned = true
     $.ui.log(`ccwarden: couldn't write the metrics log to ${path}; it will retry.`)
@@ -1166,7 +1182,7 @@ async function recordJunk($: $, config: Config, runtime: Runtime, event: JunkEve
   const tagged: JunkEvent = { ...event, project: projectKey(await $.session.root()), session: await $.session.id() }
   await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, tagged))
   const family = familyOf(await $.session.model())
-  const ref = `junk-${event.at}`
+  const ref = `junk-${event.at}-${++runtime.refs}`
   const would = event.mode === 'observe'
   await recordEvent($, config, runtime, {
     at: event.at, feature: 'junk', action: would ? 'would-keep-out' : 'kept-out', ref, ...(would ? { would: true as const } : {}),

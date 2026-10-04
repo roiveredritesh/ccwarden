@@ -26,6 +26,8 @@ function world(on: On, opts: {
   bashOut?: { stdout: string; persistedOutputPath?: string }
   bashError?: string
   isWriteRefused?: boolean
+  /** Files that exist (stat answers) but can't be read, as under a Windows lock. */
+  unreadable?: string[]
   store?: Record<string, unknown>
   mtimes?: Record<string, number>
   sessionId?: string
@@ -97,6 +99,7 @@ function world(on: On, opts: {
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
   })
   on('fs.read', (_$, e) => {
+    if (opts.unreadable?.includes(posix(e.path))) return Promise.reject(new Error('EBUSY'))
     const text = file(e.path)
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: text }
   })
@@ -1647,6 +1650,28 @@ describe('F15 metrics log', () => {
     for (const index of [0, 1]) { const s = $.turn.step({ turnId: 't', index, model: 'claude-sonnet-5-5', messageCount: 2 }); for await (const _ of s); }
     await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
     expect(metricsOf(w)!.records[0]).toMatchObject({ prompts: 1, requests: 2 })
+  })
+
+  test('a file that exists but cannot be read is never overwritten', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [METRICS]: 'earlier events\n' }, unreadable: [METRICS] })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    expect(w.writes.filter(f => f.path === METRICS)).toEqual([])
+    expect(w.logs.filter(l => l.includes("couldn't read the metrics log"))).toHaveLength(1)
+  })
+
+  test('parallel tool calls in the same millisecond each keep their event and saving', { options: { billing: 'metered' } }, async ($, on) => {
+    const long = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { '/p/a.log': long, '/p/b.log': long } })
+    await $.session.start(start('terminal'))
+    await Promise.all(['/p/a.log', '/p/b.log'].map(file_path => $.tool.call({ tool: 'Read', file_path })))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    const kept = m.events.filter(e => e.action === 'would-keep-out')
+    expect(kept.map(e => e.measured.target).sort()).toEqual(['/p/a.log', '/p/b.log'])
+    expect(new Set(kept.map(e => e.ref)).size).toBe(2)
+    expect(m.events.filter(e => e.feature === 'junk' && e.action === 'outcome')).toHaveLength(2)
   })
 
   test('a reload reads the file back and goes on from it', { options: { billing: 'metered' } }, async ($, on) => {
