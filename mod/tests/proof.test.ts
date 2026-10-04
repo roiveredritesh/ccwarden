@@ -21,8 +21,14 @@ describe('F15 proof', () => {
 
   test('too few: collecting, with the counts; short sessions are not counted', () => {
     const p = proof([...many(5, true, 1), ...many(40, false, 0.75), s('short', true, 1, 'sonnet', { prompts: 4 })])
-    expect(p).toEqual({ kind: 'collecting', holdout: 5, protected: 40 })
+    expect(p).toEqual({ kind: 'collecting', holdout: 5, protected: 40, left: [] })
     expect(proofClaim(p)).toBe('Not proven yet: 5 of 10 holdout sessions and 40 of 30 protected ones.')
+  })
+
+  test('collecting counts only the families it can compare, and names the rest', () => {
+    const p = proof([...many(9, true, 1), ...many(2, true, 1, 'opus'), ...many(2, true, 1, 'haiku'), ...many(40, false, 0.75), ...many(5, false, 1, 'opus')])
+    expect(p).toEqual({ kind: 'collecting', holdout: 9, protected: 40, left: ['haiku', 'opus'] })
+    expect(proofClaim(p)).toBe('Not proven yet: 9 of 10 holdout sessions and 40 of 30 protected ones. Haiku, Opus left out: fewer than 3 holdout sessions.')
   })
 
   test('protected cheaper: the % less per prompt, a 90% range above 0, the claim', () => {

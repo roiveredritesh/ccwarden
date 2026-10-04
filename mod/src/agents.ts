@@ -1,6 +1,4 @@
-import type { ModelUsage } from 'claude-code'
 import type { Config } from './config'
-import { familyOf, PRICES } from './prices'
 
 // F5 subagent guard: pin subagents to a cheap model unless their type is
 // allowlisted, cap the report they hand back (it lands in the parent's
@@ -44,19 +42,6 @@ export function planSpawn(e: SpawnFacts, config: Config, running: number): Spawn
   const prompt = e.prompt.includes(REPORT_CAP) ? e.prompt : `${e.prompt}${REPORT_CAP}`
   notes.push('report capped at ~300 words')
   return { model, prompt, notes }
-}
-
-/** What a subagent turn cost at list price; subagents write the cache at the 5m rate. */
-export function turnUsd(usage: ModelUsage & { model: string }): number | undefined {
-  const family = familyOf(usage.model)
-  if (family === undefined) return undefined
-  const p = PRICES[family]
-  return (
-    usage.input_tokens * p.input +
-    usage.cache_read_input_tokens * p.read +
-    usage.cache_creation_input_tokens * p.write5m +
-    usage.output_tokens * p.output
-  ) / 1e6
 }
 
 /** The running count among `$.agent.list()` statuses. */

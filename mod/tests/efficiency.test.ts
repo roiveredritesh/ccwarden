@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { addProjectDay, claudeDirOf, efficiencyData, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
+import { addProjectDay, claudeDirOf, efficiencyData, fitCache, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
 import type { DayUsage, EfficiencyInput } from '../src/efficiency'
 import { requestsOf } from '../src/report'
 import { coverageLine, dashboardHtml, escapeHtml, summaryMarkdown } from '../src/htmlDashboard'
@@ -68,6 +68,14 @@ describe('F14 transcript summaries', () => {
     expect(s.junk[0]).toEqual({ at: T0 + 30_000, requestsAfter: 2, family: 'sonnet' })
     // Nothing after it: counted, never priced.
     expect(s.junk[1]).toEqual({ at: T0 + 10 * 60_000, requestsAfter: 0 })
+  })
+
+  test('a cache over its budget drops the files changed longest ago; they are read again when needed', () => {
+    const entry = (mtimeMs: number) => ({ mtimeMs, size: 1, pad: 'x'.repeat(100) })
+    const cache = { '/a': entry(1), '/b': entry(3), '/c': entry(2) }
+    const one = JSON.stringify(['/b', entry(3)]).length
+    expect(Object.keys(fitCache(cache, 2 + 2 * one))).toEqual(['/b', '/c']) // the braces, then two entries
+    expect(fitCache(cache, 10 * one)).toEqual(cache)
   })
 
   test('the cache: fresh only while mtime, size and the junk count all match', () => {

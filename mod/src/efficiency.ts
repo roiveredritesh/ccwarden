@@ -390,6 +390,18 @@ function savingsRows(input: EfficiencyInput, prices: Map<string, JunkPrice>, isI
 /** Features junkLog (junk, observe included) and projectDays (the rest, done only) also record. */
 const LEGACY: ReadonlySet<Feature> = new Set(['junk', 'snapshot', 'keepwarm', 'cold', 'topic', 'handoff'])
 
+/** A file cache cut to `maxChars` of JSON: the files changed longest ago go first, to be read again when needed. */
+export function fitCache<T extends { mtimeMs: number }>(cache: Record<string, T>, maxChars: number): Record<string, T> {
+  const out: Record<string, T> = {}
+  let chars = 2
+  for (const [path, entry] of Object.entries(cache).sort(([, a], [, b]) => b.mtimeMs - a.mtimeMs)) {
+    chars += JSON.stringify([path, entry]).length
+    if (chars > maxChars) break
+    out[path] = entry
+  }
+  return out
+}
+
 /** The first UTC day the metrics log has anything for; undefined with no log. */
 function metricsStart(metrics: Record<string, MetricsSummary> | undefined): string | undefined {
   return Object.values(metrics ?? {}).flatMap(m => Object.keys(m.days)).sort()[0]

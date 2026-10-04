@@ -16,7 +16,7 @@ const RESAMPLES = 2_000
 export type ProofSession = { record: SessionRecord; estUsd: number }
 export type ProofResult =
   | { kind: 'off' }
-  | { kind: 'collecting'; holdout: number; protected: number }
+  | { kind: 'collecting'; holdout: number; protected: number; left: Family[] }
   | {
     kind: 'measured'
     /** (1 − protected/holdout) × 100, and its 90% range. */
@@ -50,7 +50,7 @@ export function proof(sessions: readonly ProofSession[]): ProofResult {
   const holdout = kept.reduce((n, [, g]) => n + g.h.length, 0)
   const prot = kept.reduce((n, [, g]) => n + g.p.length, 0)
   if (holdout < MIN_HOLDOUT || prot < MIN_PROTECTED) {
-    return { kind: 'collecting', holdout: eligible.filter(s => s.record.holdout).length, protected: eligible.filter(s => !s.record.holdout).length }
+    return { kind: 'collecting', holdout, protected: prot, left }
   }
   const ratio = ratioOf(kept.map(([, g]) => g))
   const random = mulberry32(fnv1a(eligible.map(s => `${s.record.session}#${s.record.part}`).join(',')))
@@ -103,10 +103,10 @@ const cap = (f: string) => f[0]!.toUpperCase() + f.slice(1)
 /** The page's sentence for a result; never a figure the data doesn't hold. */
 export function proofClaim(p: ProofResult): string {
   if (p.kind === 'off') return 'Not proven yet: turn on measureHoldout in /config to measure what ccwarden saves.'
-  if (p.kind === 'collecting') return `Not proven yet: ${p.holdout} of ${MIN_HOLDOUT} holdout sessions and ${p.protected} of ${MIN_PROTECTED} protected ones.`
+  const left = p.left.length === 0 ? '' : ` ${p.left.map(cap).join(', ')} left out: fewer than ${MIN_FAMILY_HOLDOUT} holdout sessions.`
+  if (p.kind === 'collecting') return `Not proven yet: ${p.holdout} of ${MIN_HOLDOUT} holdout sessions and ${p.protected} of ${MIN_PROTECTED} protected ones.${left}`
   const range = `${Math.round(p.lowPct)}–${Math.round(p.highPct)}%`
   const counts = `${p.holdout} holdout vs ${p.protected} protected; ${p.families.map(cap).join(', ')}`
-  const left = p.left.length === 0 ? '' : ` ${p.left.map(cap).join(', ')} left out: fewer than ${MIN_FAMILY_HOLDOUT} holdout sessions.`
   if (p.lowPct > 0) return `Protected sessions cost ${Math.round(p.lessPct)}% less per prompt (90% range ${range}; ${counts}).${left}`
   if (p.highPct < 0) return `Protected sessions cost ${Math.round(-p.lessPct)}% more per prompt (90% range ${Math.round(-p.highPct)}–${Math.round(-p.lowPct)}%; ${counts}).${left}`
   return `No clear difference yet (90% range ${Math.round(p.lowPct)}% to ${Math.round(p.highPct)}%).${left}`

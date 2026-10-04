@@ -206,11 +206,6 @@ export function coldEstimate(choice: 'send' | 'handoff' | 'keep', tokens: number
   return { tokens: isAvoided ? tokens : 0, usd: isAvoided ? (rebuildUsd ?? 0) : 0, formula: 'context × cache write price, when the prompt was not sent', confidence: 'medium' }
 }
 
-/** The UTC day an event or record counts on. */
-export function dayOf(at: number): string {
-  return dayKey(at)
-}
-
 /** F4 kept-out output, F13 a dropped context: savings that grow with each later main-loop request. */
 export type Pending = { ref: string; feature: 'junk' | 'topic'; at: number; tokens: number; family: Family; requests: number; would: boolean }
 
@@ -245,7 +240,7 @@ export function summarizeMetrics(text: string, session: string): MetricsSummary 
   let estUsd = 0
   let wouldUsd = 0
   for (const e of events) {
-    const slot = ((days[dayOf(e.at)] ??= {})[e.feature] ??= { done: zero(), would: zero() })
+    const slot = ((days[dayKey(e.at)] ??= {})[e.feature] ??= { done: zero(), would: zero() })
     const t = e.would ? slot.would : slot.done
     if (e.action !== 'outcome') t.count++
     if (e.est === undefined) continue

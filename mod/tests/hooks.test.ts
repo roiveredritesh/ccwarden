@@ -72,6 +72,8 @@ function world(on: On, opts: {
     copied: [] as { text: string; surface?: string }[],
     // Keep-warm forks, and how much of the cache each read.
     forks: [] as string[],
+    /** Every $.fs.read path, in order. */
+    fsReads: [] as string[],
     forkCacheRead: 180_000,
     // Commands $.process.run was asked to run, and the exit code a browser opener gets.
     runs: [] as string[][],
@@ -99,6 +101,7 @@ function world(on: On, opts: {
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
   })
   on('fs.read', (_$, e) => {
+    shown.fsReads.push(posix(e.path))
     if (opts.unreadable?.includes(posix(e.path))) return Promise.reject(new Error('EBUSY'))
     const text = file(e.path)
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: text }
@@ -1714,6 +1717,57 @@ describe('F15 metrics log', () => {
 
   const run = async ($: Engine) => { const s = $.turn.step({ turnId: 't', index: 0, model: 'claude-sonnet-5-5', messageCount: 2 }); for await (const _ of s); }
   const stepAnswer = () => ({ turnId: 't', index: 0, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } })
+
+  test('a holdout compaction ends the re-reads a junk would-saving counts', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], env: HOME, sessionId: 'sess5', files: { '/p/big.log': LONG } })
+    on('turn.step', async function* () { return stepAnswer() })
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+    await run($) // writes the output: not a re-read
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+    await run($)
+    await run($)
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w, '/home/u/.claude/ccwarden/metrics/sess5.jsonl')!
+    const kept = m.events.find(e => e.action === 'would-keep-out')!
+    expect(m.events.find(e => e.action === 'outcome' && e.ref === kept.ref)!.measured.requestsAfter).toBe(0)
+  })
+
+  test('a holdout after /clear gets back the compact window it had before ccwarden set one', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const opts: Parameters<typeof world>[1] = { surfaces: ['terminal'], env: { ...HOME, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, sessionId: 'sess1' }
+    const w = world(on, opts)
+    await $.session.start(start('terminal'))
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).not.toBe('900000') // a protected session: ccwarden's window
+    await $.session.end({ reason: 'clear', sessionId: 'sess1', resume: { id: 'sess1' } })
+    opts.sessionId = 'sess5' // the new conversation is a holdout
+    await $.turn.complete(turnDone())
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('900000')
+  })
+
+  test('a keep-warm ping is in the record\'s $: ccwarden\'s own spend counts against it', { options: { billing: 'metered', keepWarm: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(typed('go'))
+    await $.turn.start({ text: 'go', turnId: 't' })
+    await $.turn.complete(turnDone())
+    const before = metricsOf(w)!.records[0]!.usd
+    await w.clock.advance(4.5 * MIN)
+    expect(w.forks).toEqual(['Reply with OK.'])
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    const m = metricsOf(w)!
+    const ping = m.events.find(e => e.action === 'ping')!
+    expect(Math.round(m.records[0]!.usd * 1e9)).toBe(Math.round((before - ping.est!.usd) * 1e9))
+  })
+
+  test('the page refresh reads an unchanged metrics file once', { options: { billing: 'metered' } }, async ($, on) => {
+    const OLD = '/home/u/.claude/ccwarden/metrics/old.jsonl'
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [OLD]: `${JSON.stringify({ v: 1, at: 1, feature: 'handoff', action: 'written', measured: {} })}\n` } })
+    await $.session.start(start('terminal'))
+    await $.command.run({ command: 'cw', args: 'open', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await w.clock.advance(10 * MIN) // two refreshes
+    expect(w.fsReads.filter(p => p === OLD)).toHaveLength(2) // once for its summary, once for its events
+  })
 
   test('junk kept out: the event, then its saving from the requests after, settled at session end', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
     const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
