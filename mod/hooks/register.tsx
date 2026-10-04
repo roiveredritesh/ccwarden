@@ -19,7 +19,7 @@ import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
 import { familyOf, rebuildUsd } from '../src/prices'
-import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
+import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, junkSavedText, junkTokens, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
 import { addSpend, calibrate, costDelta, dayKey, monthKey, monthToDate, projectMonth } from '../src/ledger'
 import { budgetConfig, budgetModeText, isBudgetMode, monthAlertText, monthStepsDue } from '../src/budget'
@@ -433,8 +433,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'ccwarden-junk' }, async ($) => {
     const log = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
-    const saved = log.reduce((sum, ev) => sum + ev.savedChars, 0)
-    $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} event${log.length === 1 ? '' : 's'}, ~${Math.round(saved / 4 / 1000)}k tokens ${config.junkGuard === 'enforce' ? 'kept out' : 'would be kept out'} of context (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
+    $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} event${log.length === 1 ? '' : 's'}, ${junkSavedText(config.junkGuard, junkTokens(log))} (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
     for (const ev of log.slice(-JUNK_SHOWN)) {
       $.ui.log(`  ${new Date(ev.at).toISOString()} ${ev.mode} ${ev.tool} ${ev.tool === 'Read' ? `${ev.size} lines` : `${ev.size} chars`}: ${ev.target}`)
     }
@@ -939,7 +938,7 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
     savings: {
       junkMode: config.junkGuard,
       junkEvents: junk.length,
-      junkTokens: Math.round(junk.reduce((sum, ev) => sum + ev.savedChars, 0) / 4),
+      junkTokens: junkTokens(junk),
       keepWarmSpent: conv.keepWarm?.spentUsd ?? 0,
       keepWarmSaved: conv.keepWarm?.savedUsd ?? 0,
       snapshots: conv.snapshots ?? 0,

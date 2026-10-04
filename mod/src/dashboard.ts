@@ -1,5 +1,6 @@
 import type { CcwardenDashboard } from '../types'
 import { fmtTokens } from './status'
+import { junkSavedText } from './junk'
 
 // F10 /cw dashboard: the figures, gathered by hooks/register.tsx when /cw
 // opens or Refresh is pressed, as the lines the pane draws and Copy report
@@ -29,7 +30,7 @@ export function dashboardSections(d: CcwardenDashboard): DashboardSection[] {
   sections.push({
     title: 'Guard savings (est.)',
     lines: [
-      `junk guard (${v.junkMode}): ${v.junkEvents} event${v.junkEvents === 1 ? '' : 's'} this month, ~${fmtTokens(v.junkTokens)} tokens ${v.junkMode === 'enforce' ? 'kept out' : 'would be kept out'}`,
+      `junk guard (${v.junkMode}): ${v.junkEvents} event${v.junkEvents === 1 ? '' : 's'} this month, ${junkSavedText(v.junkMode, v.junkTokens)}`,
       `snapshot compactions ${v.snapshots} (no summary tokens) · keep-warm spent $${v.keepWarmSpent.toFixed(2)}, saved $${v.keepWarmSaved.toFixed(2)}`,
     ],
   })
