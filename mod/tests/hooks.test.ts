@@ -31,6 +31,8 @@ function world(on: On, opts: {
   store?: Record<string, unknown>
   mtimes?: Record<string, number>
   sessionId?: string
+  /** What `uname -s` prints (the browser opener's OS check); Linux when unset. */
+  uname?: string
 } = {}) {
   const clock = mock.clock(on)
   // $.store in memory, readable by the test (mock.store's isn't).
