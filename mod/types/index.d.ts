@@ -73,7 +73,7 @@ export type CcwardenDashboard = {
     agentsUsd: number
     backgroundUsd: number
   }
-  savings: { junkMode: string; junkEvents: number; junkTokens: number; keepWarmSpent: number; keepWarmSaved: number; snapshots: number }
+  savings: { junkMode: 'observe' | 'enforce' | 'off'; junkEvents: number; junkTokens: { kept: number; would: number }; keepWarmSpent: number; keepWarmSaved: number; snapshots: number }
   month: { mtd: number; budget: number; projected: number; isBudget: boolean; isMetered: boolean }
   hogs: { session: CcwardenHog[]; month: CcwardenHog[] }
   week?: { sessions: { id: string; lastTs: number; requests: number; hitRatio?: number; rebuilds: number }[]; causes: Record<string, number>; verdict: string }

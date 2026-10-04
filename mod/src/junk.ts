@@ -10,6 +10,8 @@
 // thresholds can be checked for false positives before `enforce`. Pure: the
 // tool.call hooks in hooks/register.tsx apply it.
 
+import { fmtTokens } from './status'
+
 export type JunkMode = 'observe' | 'enforce' | 'off'
 
 /** One thing the guard did, or would have done in observe mode. */
@@ -29,6 +31,24 @@ export type JunkEvent = {
 }
 
 export const JUNK_LOG_MAX = 500
+
+/** Est. tokens the guard kept out (enforce events) and would have (observe events). */
+export function junkTokens(log: readonly JunkEvent[]): { kept: number; would: number } {
+  let kept = 0
+  let would = 0
+  for (const ev of log) {
+    if (ev.mode === 'enforce') kept += ev.savedChars
+    else would += ev.savedChars
+  }
+  return { kept: Math.round(kept / 4), would: Math.round(would / 4) }
+}
+
+/** The saved total in words. Observe events stay "would" after the switch to enforce. */
+export function junkSavedText(mode: JunkMode, t: { kept: number; would: number }): string {
+  if (mode !== 'enforce' && t.kept === 0) return `~${fmtTokens(t.would)} tokens would be kept out`
+  const kept = `~${fmtTokens(t.kept)} tokens kept out`
+  return t.would === 0 ? kept : `${kept} (~${fmtTokens(t.would)} more in observe)`
+}
 
 const BINARY_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|pdf|ipynb|zip|gz|tar|wasm|woff2?|ttf|otf|mp[34]|mov|avi)$/i
 

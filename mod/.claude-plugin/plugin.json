@@ -91,7 +91,7 @@
       "type": "number",
       "title": "Junk guard: max Bash output characters",
       "default": 30000,
-      "description": "Longer Bash output is cut to head and tail; the full text is saved to a file Claude can grep."
+      "description": "Longer Bash output is cut to head and tail; the full text is saved to a file Claude can grep. The engine itself saves output over ~30000 characters to a file, and ccwarden leaves that alone, so set this lower for the cut to apply."
     },
     "junkAllowlist": {
       "type": "string",

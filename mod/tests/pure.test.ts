@@ -10,7 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { joinPath, relativeTo } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
-import { appendJunk, countLines, failuresOnly, isAllowlisted, isAlreadyFiltered, isTestCommand, isWholeTextRead, JUNK_LOG_MAX, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { appendJunk, countLines, failuresOnly, isAllowlisted, isAlreadyFiltered, isTestCommand, isWholeTextRead, JUNK_LOG_MAX, junkSavedText, junkTokens, outputPath, parseGlobs, trimOutput } from '../src/junk'
 import { analyze, requestsOf, ttlVerdict, weekReport } from '../src/report'
 import { dashboardText } from '../src/dashboard'
 import { budgetConfig, isBudgetMode, monthStepsDue } from '../src/budget'
@@ -503,6 +503,17 @@ describe('T6 junk guard', () => {
     expect(log).toHaveLength(JUNK_LOG_MAX)
     expect(log.at(-1)!.at).toBe(JUNK_LOG_MAX + 4)
   })
+  test('the saved total splits enforce from observe events', () => {
+    const ev = (mode: 'observe' | 'enforce', savedChars: number) => ({ at: 0, tool: 'Read' as const, mode, target: 'x', size: 1, savedChars })
+    const mixed = junkTokens([ev('observe', 24_000), ev('enforce', 8_000)])
+    expect(mixed).toEqual({ kept: 2_000, would: 6_000 })
+    expect(junkSavedText('enforce', mixed)).toBe('~2k tokens kept out (~6k more in observe)')
+    // Just switched to enforce: the old observe events are not "kept out".
+    expect(junkSavedText('enforce', { kept: 0, would: 6_000 })).toBe('~0 tokens kept out (~6k more in observe)')
+    expect(junkSavedText('observe', { kept: 0, would: 6_000 })).toBe('~6k tokens would be kept out')
+    expect(junkSavedText('enforce', { kept: 2_000, would: 0 })).toBe('~2k tokens kept out')
+    expect(junkSavedText('off', { kept: 0, would: 0 })).toBe('~0 tokens would be kept out')
+  })
 })
 
 describe('T7 keep-warm', () => {
@@ -719,7 +730,7 @@ describe('M3 report (ported from hooks-edition/report.js)', () => {
     const text = dashboardText({
       at: t0,
       session: { model: 'opus', limit: 300_000, rebuilds: [], compactions: 0, agentsRunning: 0, agentsUsd: 0, backgroundUsd: 0 },
-      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: 30_000, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1 },
+      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: { kept: 0, would: 30_000 }, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1 },
       month: { mtd: 10, budget: 0, projected: 31, isBudget: false, isMetered: true },
       hogs: { session: [{ tool: 'Read', target: '/a.ts', tokens: 9_000 }], month: [] },
     })
