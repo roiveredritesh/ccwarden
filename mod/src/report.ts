@@ -19,6 +19,7 @@ type UsageEntry = TranscriptEntry & {
     model?: string
     usage?: {
       input_tokens?: number
+      output_tokens?: number
       cache_read_input_tokens?: number
       cache_creation_input_tokens?: number
       cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | null
@@ -26,7 +27,7 @@ type UsageEntry = TranscriptEntry & {
   }
 }
 
-export type Request = { ts: number; model?: string; input: number; read: number; write: number; write5m: number; write1h: number; afterCompact: boolean }
+export type Request = { ts: number; model?: string; input: number; output: number; read: number; write: number; write5m: number; write1h: number; afterCompact: boolean }
 export type Rebuild = { at: number; tokens: number; cause: string }
 export type SessionReport = {
   requests: number
@@ -66,6 +67,7 @@ export function requestsOf(entries: readonly TranscriptEntry[]): Request[] {
       ts,
       model: e.message?.model,
       input: u.input_tokens ?? 0,
+      output: u.output_tokens ?? 0,
       read: u.cache_read_input_tokens ?? 0,
       write,
       write1h,

@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
+import { parseFile } from '../src/metrics'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const BILLINGS = ['metered', 'window'] as const
@@ -25,8 +26,11 @@ function world(on: On, opts: {
   bashOut?: { stdout: string; persistedOutputPath?: string }
   bashError?: string
   isWriteRefused?: boolean
+  /** Files that exist (stat answers) but can't be read, as under a Windows lock. */
+  unreadable?: string[]
   store?: Record<string, unknown>
   mtimes?: Record<string, number>
+  sessionId?: string
 } = {}) {
   const clock = mock.clock(on)
   // $.store in memory, readable by the test (mock.store's isn't).
@@ -68,7 +72,14 @@ function world(on: On, opts: {
     copied: [] as { text: string; surface?: string }[],
     // Keep-warm forks, and how much of the cache each read.
     forks: [] as string[],
+    /** Every $.fs.read path, in order. */
+    fsReads: [] as string[],
     forkCacheRead: 180_000,
+    // Commands $.process.run was asked to run, and the exit code a browser opener gets.
+    runs: [] as string[][],
+    openerExit: 0,
+    // F15: refuse $.fs.write from now on (a test flips it).
+    refuseWrites: false,
     messages: [] as SessionMessage[],
     forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
   }
@@ -83,28 +94,36 @@ function world(on: On, opts: {
   on('settings.read', () => ({ value: opts.settings ?? {} }))
   // The engine hands fs hooks a native path (`D:\p\x` on Windows); the fixtures are keyed `/p/x`.
   const posix = (path: string) => path.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
-  const file = (path: string) => opts.files?.[posix(path)] ?? opts.transcript
+  // A file the mod wrote reads back, as on a real disk (F15 reads its own metrics files).
+  const file = (path: string) => opts.files?.[posix(path)] ?? shown.writes.filter(f => f.path === posix(path)).at(-1)?.text ?? opts.transcript
   on('fs.stat', (_$, e) => {
     const text = file(e.path)
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
   })
   on('fs.read', (_$, e) => {
+    shown.fsReads.push(posix(e.path))
+    if (opts.unreadable?.includes(posix(e.path))) return Promise.reject(new Error('EBUSY'))
     const text = file(e.path)
     return text === undefined ? Promise.reject(new Error('ENOENT')) : { value: text }
   })
   on('fs.write', (_$, e) => {
-    if (opts.isWriteRefused) return Promise.reject(new Error('EACCES'))
+    if (opts.isWriteRefused || shown.refuseWrites) return Promise.reject(new Error('EACCES'))
     shown.writes.push({ path: posix(e.path), text: e.text })
     return { value: undefined }
   })
-  on('session.id', () => ({ value: 'sess1' }))
+  on('session.id', () => ({ value: opts.sessionId ?? 'sess1' }))
   on('ui.open', (_$, e) => { shown.opened.push(e.id); return { value: { requestId: e.id } as never } })
   on('ui.copy', (_$, e) => { shown.copied.push({ text: e.text, surface: e.surface }); return { value: { isCopied: true } } })
   on('session.root', () => ({ value: '/p' }))
   on('fs.list', (_$, e) => {
     const dir = `${posix(e.path)}/`
-    const names = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
-    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })) }
+    const paths = [...Object.keys(opts.files ?? {}), ...shown.writes.map(f => f.path)].filter(p => p.startsWith(dir))
+    const files = paths.filter(p => !p.slice(dir.length).includes('/'))
+    const dirs = [...new Set(paths.map(p => p.slice(dir.length)).filter(rest => rest.includes('/')).map(rest => rest.split('/')[0]!))]
+    return { value: [
+      ...files.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: file(p)?.length ?? 1, mtimeMs: opts.mtimes?.[p] ?? 0, isLink: false })),
+      ...dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })),
+    ] }
   })
   on('model.fork', (_$, e) => {
     shown.forks.push(e.prompt)
@@ -126,8 +145,12 @@ function world(on: On, opts: {
   })
   on('session.messages', () => ({ value: shown.messages }))
   on('process.run', (_$, e) => {
+    shown.runs.push([...e.argv])
+    const done = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'uname') return done(0, `${opts.uname ?? 'Linux'}\n`)
+    if (['cmd', 'open', 'xdg-open'].includes(e.argv[0]!)) return done(shown.openerExit)
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
-    return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return done(out === undefined ? 128 : 0, out ?? '')
   })
   on('session.compact', (_$, e) => {
     shown.coreCompactions.push({ trigger: e.trigger, instructions: e.instructions, agentId: e.agentId })
@@ -1415,5 +1438,447 @@ describe('F13 unrelated-prompt hint', () => {
     await $.prompt.submit(typed(UNRELATED))
     expect(w.asks).toEqual([])
     expect(w.sent).toEqual([UNRELATED])
+  })
+})
+
+describe('F14 efficiency dashboard: live figures', () => {
+  const DAY = Date.parse('2026-10-03T10:00:00Z')
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+  const today = (w: World) => (w.store.get('projectDays') as Record<string, Record<string, Record<string, number>>> | undefined)?.['/p']?.['2026-10-03']
+
+  for (const surface of SURFACES) {
+    test(`spend goes to projectDays under the project, and to the ledger as before (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { tokens: 30_000 } })
+      await w.clock.advance(DAY)
+      await $.session.start(start(surface))
+      w.usage.usd = 1.5
+      await $.session.measure(measure(w))
+      await $.turn.complete(turnDone())
+      expect((w.store.get('ledger') as { days: Record<string, number> }).days).toEqual({ '2026-10-03': 1.5 })
+      expect(today(w)).toEqual({ usd: 1.5, turns: 1, peakContext: 30_000 })
+    })
+
+    test(`a cold-cache ask and a handoff are counted (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+      await w.clock.advance(DAY)
+      await $.session.start(start(surface))
+      await $.turn.complete(turnDone())
+      await w.clock.advance(17 * MIN)
+      await $.prompt.submit(typed('continue with the refactor'))
+      await $.command.run({ command: 'handoff', args: 'quick', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+      expect(today(w)).toMatchObject({ coldAsks: 1, handoffs: 1 })
+    })
+  }
+
+  test('a snapshot compaction records what a summary would have cost', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000 } })
+    await w.clock.advance(DAY)
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+    expect(today(w)).toMatchObject({ snapshots: 1, snapshotSavedTokens: 102_000 })
+    expect(Math.round(today(w)!.snapshotSavedUsd! * 1e4) / 1e4).toBe(0.04)
+  })
+
+  test('junk events carry the project and the session', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+    const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], files: { '/p/big.log': LONG } })
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+    expect((w.store.get('junkLog') as Record<string, unknown>[])[0]).toMatchObject({ tool: 'Read', project: '/p', session: 'sess1' })
+  })
+})
+
+describe('F14 efficiency dashboard: /cw open', () => {
+  const NOW = Date.parse('2026-10-03T12:00:00Z')
+  const TRANSCRIPT = '/home/u/.claude/projects/-p/sess1.jsonl'
+  const PAGE = '/home/u/.claude/ccwarden/dashboard.html'
+  const cw = (args = '') => ({ command: 'cw', args, origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } })
+  const line = JSON.stringify({ type: 'assistant', cwd: '/p', timestamp: new Date(NOW - 60 * MIN).toISOString(), message: { id: 'a', model: 'claude-sonnet-5-5', usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 9_000, cache_creation_input_tokens: 1_000 } } })
+  const files = { [TRANSCRIPT]: line, '/home/u/.claude/projects/-q/big.jsonl': 'x' }
+  const pages = (w: World) => w.writes.filter(f => f.path === PAGE)
+  async function begin($: Engine, w: World, surface: RenderSurface) {
+    await w.clock.advance(NOW)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: TRANSCRIPT })
+    await $.session.start(start(surface))
+  }
+
+  for (const surface of SURFACES) {
+    test(`writes the page next to the transcripts and opens it, Windows (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, env: { OS: 'Windows_NT' } })
+      await begin($, w, surface)
+      await $.command.run(cw('open'))
+      expect(pages(w)).toHaveLength(1)
+      expect(pages(w)[0]!.text).toContain('<b>p</b><span class="path">/p</span>')
+      expect(pages(w)[0]!.text).toContain('2 of 2 transcripts read')
+      expect(w.runs.at(-1)).toEqual(['cmd', '/c', 'start', '', PAGE])
+      expect(w.logs).toContain(`ccwarden: dashboard opened in your browser (${PAGE}).`)
+      expect(w.opened).toEqual([]) // /cw open doesn't open the pane
+      expect(Object.keys(w.store.get('transcriptSummaries') as object)).toEqual([TRANSCRIPT, '/home/u/.claude/projects/-q/big.jsonl'])
+    })
+
+    test(`macOS opens with open; a failing opener logs the path (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, uname: 'Darwin' })
+      await begin($, w, surface)
+      w.openerExit = 1
+      await $.command.run(cw('open'))
+      expect(w.runs.at(-1)).toEqual(['open', PAGE])
+      expect(w.logs).toContain(`ccwarden: dashboard written to ${PAGE}; open it in a browser.`)
+    })
+
+    test(`the timer and session end rewrite it only after /cw open has run once (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files })
+      await begin($, w, surface)
+      await w.clock.advance(11 * MIN)
+      await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+      expect(pages(w)).toHaveLength(0)
+
+      await $.command.run(cw('open'))
+      await w.clock.advance(5 * MIN)
+      expect(pages(w)).toHaveLength(2)
+      await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+      expect(pages(w)).toHaveLength(3)
+    })
+
+    test(`plain /cw, /cw spent and /cw budget are unchanged after /cw open (${surface})`, { options: { billing: 'metered', monthlyBudgetUsd: 100 } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files, store: { ledger: { days: { '2026-10-02': 20 } } } })
+      await begin($, w, surface)
+      await $.command.run(cw('open'))
+      await $.command.run(cw())
+      expect(w.logs).toContain('ccwarden: this month $20.00 of your $100 budget on this machine (est.), ~$248 at this pace; budget mode off.')
+      expect(w.opened).toEqual(['ccwarden-cw'])
+      await $.command.run(cw('spent 30'))
+      expect(w.logs).toContain('ccwarden: month to date calibrated to $30.00; the estimate counts on from there.')
+      await $.command.run(cw('nonsense'))
+      expect(w.logs.at(-1)).toBe('ccwarden: /cw, /cw open, /cw spent <amount>, /cw budget on|off|auto')
+    })
+  }
+
+  test('no transcripts folder: the page still writes and the summary cache is kept', { options: { billing: 'metered' } }, async ($, on) => {
+    const cached = { '/old/a.jsonl': { mtimeMs: 1, size: 1, junk: 0, summary: { days: {}, junk: [] } } }
+    const w = world(on, { surfaces: ['terminal'], env: { HOME: '/home/u' }, store: { transcriptSummaries: cached } })
+    w.messages = []
+    await w.clock.advance(NOW)
+    await $.session.start(start('terminal'))
+    await $.command.run(cw('open'))
+    expect(pages(w)).toHaveLength(1)
+    expect(pages(w)[0]!.text).toContain('0 of 0 transcripts read')
+    expect(w.store.get('transcriptSummaries')).toEqual(cached)
+  })
+})
+
+describe('F15 metrics log', () => {
+  const METRICS = '/home/u/.claude/ccwarden/metrics/sess1.jsonl'
+  const HOME = { HOME: '/home/u' }
+  const metricsOf = (w: World, path = METRICS) => {
+    const f = w.writes.filter(x => x.path === path).at(-1)
+    return f === undefined ? undefined : parseFile(f.text)
+  }
+  const spawn = (subagentType: string, extra: Record<string, unknown> = {}) => ({
+    tool_use_id: `t-${subagentType}`, prompt: 'Find where sessions expire.', description: 'find expiry', subagentType,
+    provider: { plugin: 'engine', tier: 'core' } as const, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra,
+  })
+  const subTurn = (agentId: string, model = 'claude-haiku-4-5-20251001', input = 1_000_000) => ({
+    ...turnDone(model), agentId, usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model },
+  })
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`a pinned subagent: the pin, then its measured saving; the session record (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], env: HOME })
+        await $.session.start(start(surface))
+        const s = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
+        await $.turn.complete(subTurn(s.agentId!))
+        await $.turn.complete(turnDone())
+        const m = metricsOf(w)!
+        const pinned = m.events.find(e => e.action === 'pinned')!
+        expect(pinned).toMatchObject({ feature: 'subagent', measured: { type: 'Explore', asked: 'opus', ran: 'haiku' } })
+        expect(pinned.est).toBeUndefined()
+        const out = m.events.find(e => e.action === 'outcome' && e.ref === pinned.ref)!
+        expect(out.est).toMatchObject({ usd: 3, confidence: 'high', formula: 'subagent tokens × (price opus − price haiku)' })
+        expect(m.records[0]).toMatchObject({ session: 'sess1', project: '/p', part: 1, measuring: false, holdout: false, family: 'sonnet' })
+        expect(m.records[0]!.subagentUsd).toBe(1)
+      })
+    }
+  }
+
+  test('no model named: the parent model is assumed, at medium confidence; a denied spawn is counted', { options: { billing: 'metered', maxParallelAgents: 1 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    const s = await $.agent.spawn(spawn('Explore'))
+    await $.agent.spawn(spawn('Explore', { tool_use_id: 't2' }))
+    await $.turn.complete(subTurn(s.agentId!))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    expect(m.events.find(e => e.action === 'pinned')!.measured.asked).toBe('claude-opus-5-5')
+    expect(m.events.find(e => e.action === 'outcome')!.est!.confidence).toBe('medium')
+    expect(m.events.filter(e => e.action === 'denied')).toHaveLength(1)
+  })
+
+  for (const surface of SURFACES) {
+    test(`a spend alert and a summary compaction are logged, count only (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], env: HOME })
+      await $.session.start(start(surface))
+      w.usage.usd = 5.5
+      await $.session.measure(measure(w))
+      await $.session.compact({ trigger: 'manual', instructions: 'the auth design', messages: [{ role: 'user', text: 'Fix the login bug', toolUses: [] }] })
+      await $.turn.complete(turnDone())
+      const m = metricsOf(w)!
+      expect(m.events.find(e => e.feature === 'alert')).toMatchObject({ action: 'sent', measured: { kind: 'session', shown: true } })
+      expect(m.events.find(e => e.feature === 'compact')).toMatchObject({ action: 'summarised', measured: { trigger: 'manual' } })
+      expect(m.events.filter(e => e.feature === 'alert' || e.feature === 'compact').map(e => e.est)).toEqual([undefined, undefined])
+    })
+  }
+
+  test('a cold-cache ask: the ask, and the rebuild saved when the prompt was kept back', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 }, env: HOME })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await $.prompt.submit(typed('continue with the refactor'))
+    const m = metricsOf(w)!
+    const asked = m.events.find(e => e.feature === 'cold' && e.action === 'asked')!
+    expect(asked.measured).toMatchObject({ tokens: 180_000, minutesCold: 12 })
+    const est = m.events.find(e => e.action === 'outcome' && e.ref === asked.ref)!.est!
+    expect([est.tokens, Math.round(est.usd * 1e4) / 1e4]).toEqual([180_000, 0.45])
+  })
+
+  test('prompts and requests are counted; session end writes the file', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    on('turn.step', async function* (_$, e) {
+      return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } }
+    })
+    await $.session.start(start('terminal'))
+    await $.turn.start({ text: 'hi', turnId: 't' })
+    for (const index of [0, 1]) { const s = $.turn.step({ turnId: 't', index, model: 'claude-sonnet-5-5', messageCount: 2 }); for await (const _ of s); }
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    expect(metricsOf(w)!.records[0]).toMatchObject({ prompts: 1, requests: 2 })
+  })
+
+  test('a file that exists but cannot be read is never overwritten', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [METRICS]: 'earlier events\n' }, unreadable: [METRICS] })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    expect(w.writes.filter(f => f.path === METRICS)).toEqual([])
+    expect(w.logs.filter(l => l.includes("couldn't read the metrics log"))).toHaveLength(1)
+  })
+
+  test('parallel tool calls in the same millisecond each keep their event and saving', { options: { billing: 'metered' } }, async ($, on) => {
+    const long = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { '/p/a.log': long, '/p/b.log': long } })
+    await $.session.start(start('terminal'))
+    await Promise.all(['/p/a.log', '/p/b.log'].map(file_path => $.tool.call({ tool: 'Read', file_path })))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    const kept = m.events.filter(e => e.action === 'would-keep-out')
+    expect(kept.map(e => e.measured.target).sort()).toEqual(['/p/a.log', '/p/b.log'])
+    expect(new Set(kept.map(e => e.ref)).size).toBe(2)
+    expect(m.events.filter(e => e.feature === 'junk' && e.action === 'outcome')).toHaveLength(2)
+  })
+
+  test('a reload reads the file back and goes on from it', { options: { billing: 'metered' } }, async ($, on) => {
+    const before = `${JSON.stringify({ v: 1, at: 1, feature: 'handoff', action: 'written', measured: {} })}\n${JSON.stringify({ v: 1, record: 'session', session: 'sess1', part: 1, project: '/p', startedAt: 1, lastAt: 1, measuring: false, holdout: false, familyTurns: {}, prompts: 3, requests: 4, tokens: { input: 0, read: 0, write: 0, output: 0 }, usd: 0, subagentUsd: 0, events: 1, truncated: false })}\n`
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [METRICS]: before } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    expect(m.events[0]!.feature).toBe('handoff')
+    expect(m.records[0]).toMatchObject({ prompts: 3, requests: 4, startedAt: 1, family: 'sonnet' })
+  })
+
+  test('/clear with the same id starts part 2', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await $.session.end({ reason: 'clear', sessionId: 'sess1', resume: { id: 'sess1' } })
+    await $.turn.complete(turnDone())
+    expect(metricsOf(w)!.records.map(r => r.part)).toEqual([1, 2])
+  })
+
+  test('a refused write is logged once and retried at the next flush', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    w.refuseWrites = true
+    await $.turn.complete(turnDone())
+    await $.turn.complete(turnDone())
+    expect(w.logs.filter(l => l.startsWith("ccwarden: couldn't write the metrics log"))).toHaveLength(1)
+    w.refuseWrites = false
+    await $.turn.complete(turnDone())
+    expect(metricsOf(w)!.records[0]!.familyTurns).toEqual({ sonnet: 3 })
+  })
+
+  test('with no Claude folder nothing is written', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'] })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    expect(w.writes).toEqual([])
+  })
+
+  const run = async ($: Engine) => { const s = $.turn.step({ turnId: 't', index: 0, model: 'claude-sonnet-5-5', messageCount: 2 }); for await (const _ of s); }
+  const stepAnswer = () => ({ turnId: 't', index: 0, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } })
+
+  test('a holdout compaction ends the re-reads a junk would-saving counts', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], env: HOME, sessionId: 'sess5', files: { '/p/big.log': LONG } })
+    on('turn.step', async function* () { return stepAnswer() })
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+    await run($) // writes the output: not a re-read
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+    await run($)
+    await run($)
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w, '/home/u/.claude/ccwarden/metrics/sess5.jsonl')!
+    const kept = m.events.find(e => e.action === 'would-keep-out')!
+    expect(m.events.find(e => e.action === 'outcome' && e.ref === kept.ref)!.measured.requestsAfter).toBe(0)
+  })
+
+  test('a holdout after /clear gets back the compact window it had before ccwarden set one', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const opts: Parameters<typeof world>[1] = { surfaces: ['terminal'], env: { ...HOME, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, sessionId: 'sess1' }
+    const w = world(on, opts)
+    await $.session.start(start('terminal'))
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).not.toBe('900000') // a protected session: ccwarden's window
+    await $.session.end({ reason: 'clear', sessionId: 'sess1', resume: { id: 'sess1' } })
+    opts.sessionId = 'sess5' // the new conversation is a holdout
+    await $.turn.complete(turnDone())
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('900000')
+  })
+
+  test('a keep-warm ping is in the record\'s $: ccwarden\'s own spend counts against it', { options: { billing: 'metered', keepWarm: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(typed('go'))
+    await $.turn.start({ text: 'go', turnId: 't' })
+    await $.turn.complete(turnDone())
+    const before = metricsOf(w)!.records[0]!.usd
+    await w.clock.advance(4.5 * MIN)
+    expect(w.forks).toEqual(['Reply with OK.'])
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    const m = metricsOf(w)!
+    const ping = m.events.find(e => e.action === 'ping')!
+    expect(Math.round(m.records[0]!.usd * 1e9)).toBe(Math.round((before - ping.est!.usd) * 1e9))
+  })
+
+  test('the page refresh reads an unchanged metrics file once', { options: { billing: 'metered' } }, async ($, on) => {
+    const OLD = '/home/u/.claude/ccwarden/metrics/old.jsonl'
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { [OLD]: `${JSON.stringify({ v: 1, at: 1, feature: 'handoff', action: 'written', measured: {} })}\n` } })
+    await $.session.start(start('terminal'))
+    await $.command.run({ command: 'cw', args: 'open', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await w.clock.advance(10 * MIN) // two refreshes
+    expect(w.fsReads.filter(p => p === OLD)).toHaveLength(2) // once for its summary, once for its events
+  })
+
+  test('junk kept out: the event, then its saving from the requests after, settled at session end', { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
+    const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+    const w = world(on, { surfaces: ['terminal'], env: HOME, files: { '/p/big.log': LONG } })
+    on('turn.step', async function* () { return stepAnswer() })
+    await $.session.start(start('terminal'))
+    await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+    for (let i = 0; i < 3; i++) await run($)
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
+    const m = metricsOf(w)!
+    const kept = m.events.find(e => e.feature === 'junk' && e.action === 'kept-out')!
+    expect(kept.measured).toMatchObject({ tool: 'Read', chars: LONG.length })
+    expect(m.events.find(e => e.action === 'outcome' && e.ref === kept.ref)!.measured.requestsAfter).toBe(2)
+  })
+
+  test('a snapshot, a limit hint and a handoff each leave an event', { options: { billing: 'metered', limitOther: 100_000 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, usage: { tokens: 120_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+    await $.command.run({ command: 'handoff', args: 'quick', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    expect(m.events.find(e => e.feature === 'snapshot')!.est).toMatchObject({ tokens: 122_000, confidence: 'low' })
+    expect(m.events.find(e => e.feature === 'handoff')!.measured.route).toBe('quick')
+    expect(m.events.find(e => e.feature === 'limit')!.measured).toMatchObject({ tokens: 120_000, limit: 100_000 })
+  })
+
+  test("a topic clear's saving counts the next conversation's requests", { options: { billing: 'metered', topicShiftHint: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Clear', usage: { tokens: 90_000 }, env: HOME })
+    on('turn.step', async function* () { return stepAnswer() })
+    w.messages.push({ role: 'user', text: 'fix the snapshot compaction for the haiku limit', toolUses: [] }, { role: 'assistant', text: 'Done: compaction now writes a snapshot at the haiku limit.', toolUses: [] })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(MIN)
+    await $.prompt.submit(typed('write a python scraper for weather forecast data'))
+    await w.clock.advance(0) // /clear runs once the drop has settled
+    await run($)
+    await run($)
+    await $.turn.complete(turnDone())
+    const m = metricsOf(w)!
+    const cleared = m.events.find(e => e.feature === 'topic' && e.action === 'cleared')!
+    expect(cleared.measured.tokens).toBe(90_000)
+    expect(m.events.find(e => e.action === 'outcome' && e.ref === cleared.ref)!.measured.requestsAfter).toBe(2)
+  })
+
+  test('/cw open puts the logged savings on the page', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    const s = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
+    await $.turn.complete(subTurn(s.agentId!))
+    await $.turn.complete(turnDone())
+    await $.command.run({ command: 'cw', args: 'open', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    const page = w.writes.filter(f => f.path === '/home/u/.claude/ccwarden/dashboard.html').at(-1)!.text
+    expect(page).toContain('Subagent guard')
+    expect(page).toContain('data-session="sess1"') // the sessions table and the event log
+    expect(page).toContain('<tr data-feature="subagent" data-session="sess1">')
+    expect(page).toContain('Raw files: <code>/home/u/.claude/ccwarden/metrics</code>')
+    expect(Object.keys(w.store.get('metricsSummaries') as object)).toEqual([METRICS])
+  })
+
+  const METRICS5 = '/home/u/.claude/ccwarden/metrics/sess5.jsonl'
+  for (const surface of SURFACES) {
+    test(`a holdout session: nothing pinned, asked, denied or compacted by ccwarden; would-have events; status says holdout (${surface})`, { options: { billing: 'metered', measureHoldout: true, junkGuard: 'enforce' } }, async ($, on) => {
+      const LONG = Array.from({ length: 3_000 }, (_, i) => `line ${i}`).join('\n')
+      const w = world(on, { surfaces: [surface], env: HOME, sessionId: 'sess5', answer: 'Cancel', usage: { tokens: 180_000 }, files: { '/p/big.log': LONG } })
+      await $.session.start(start(surface))
+      expect(w.status.at(-1)).toContain('holdout')
+      expect(w.logs).toContain('ccwarden: proof mode: this session is a holdout, so guards are off and what they would have done is logged.')
+      expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBeUndefined()
+
+      const s = await $.agent.spawn(spawn('Explore', { model: 'opus' }))
+      expect(w.spawned[0]!.model).toBe('opus')
+      expect(w.spawned[0]!.prompt).toBe('Find where sessions expire.')
+      await $.turn.complete(subTurn(s.agentId!, 'claude-opus-5-5'))
+
+      await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
+      expect(w.reads).toContain('/p/big.log')
+
+      await $.turn.complete(turnDone())
+      await w.clock.advance(17 * MIN)
+      await $.prompt.submit(typed('continue with the refactor'))
+      expect(w.asks).toEqual([])
+      expect(w.sent).toContain('continue with the refactor')
+
+      await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'Ship it', toolUses: [] }] })
+      expect(w.coreCompactions).toHaveLength(1)
+
+      await $.turn.complete(turnDone())
+      const m = metricsOf(w, METRICS5)!
+      expect(m.records[0]).toMatchObject({ measuring: true, holdout: true })
+      const pin = m.events.find(e => e.feature === 'subagent' && e.action === 'pinned')!
+      expect(pin.would).toBe(true)
+      expect(m.events.find(e => e.action === 'outcome' && e.ref === pin.ref)!.est!.usd).toBe(3) // opus 1M input − haiku
+      for (const f of ['subagent', 'junk', 'cold', 'snapshot']) expect(m.events.some(e => e.would === true && e.feature === f)).toBe(true)
+    })
+  }
+
+  test('measuring, but not a holdout id: guards on, the record says measuring', { options: { billing: 'metered', measureHoldout: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME })
+    await $.session.start(start('terminal'))
+    await $.agent.spawn(spawn('Explore'))
+    await $.turn.complete(turnDone())
+    expect(w.spawned[0]!.model).toBe('haiku')
+    expect(w.status.at(-1)).not.toContain('holdout')
+    expect(metricsOf(w)!.records[0]).toMatchObject({ measuring: true, holdout: false })
+  })
+
+  test('a holdout id with measureHoldout off is protected', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: HOME, sessionId: 'sess5' })
+    await $.session.start(start('terminal'))
+    await $.agent.spawn(spawn('Explore'))
+    expect(w.spawned[0]!.model).toBe('haiku')
   })
 })

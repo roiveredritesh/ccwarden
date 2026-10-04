@@ -80,7 +80,12 @@ On the first start, the plugin asks once how this machine is billed: **metered**
 | **Model advice** | At a fresh start, when switching is still free, it suggests a cheaper model. It never switches for you. |
 | **Month tracking** | Month-to-date estimate, budget toasts at 50/80/100%, and a stricter budget mode. |
 | **`/cw` dashboard** | This session, guard savings, month to date, context hogs and a 7-day cache report. |
+| **Efficiency dashboard** | `/cw open`: what ccwarden saved (est.), a measured before/after per project, and spend over time, in your browser. Nothing leaves the machine. |
 | **Keep-warm** *(experimental, off)* | Before the active session's cache expires, one tiny fork keeps it warm, within a $ cap. |
+
+On the efficiency dashboard, every number marked *est.* is an estimate, with its formula and a confidence label shown on the page. The reality check is different: it is measured from your transcripts (those under 4 MiB), at list price, and is a trend rather than a saving, because how you work changed too.
+
+Every guard action is also written, raw, to `~/.claude/ccwarden/metrics/<session id>.jsonl`, and the page shows them as an event log you can filter, copy or download. To prove the savings rather than estimate them, turn on **Proof mode** (`measureHoldout` in `/config`): about 1 in 10 new sessions then run with the guards off (the status line says `holdout`), and once there are 10 such sessions and 30 protected ones the page shows how much less a protected session costs per prompt, with a 90% range. Holdout sessions get no protection, so it is off by default.
 
 ## Commands
 
@@ -89,6 +94,7 @@ On the first start, the plugin asks once how this machine is billed: **metered**
 | Command | What it does |
 |---|---|
 | `/cw` | Opens the dashboard and logs this month's spend, your pace and the budget mode |
+| `/cw open` | Writes the efficiency dashboard to `~/.claude/ccwarden/dashboard.html` and opens it; it refreshes itself while you work |
 | `/cw spent <amount>` | Calibrates the month estimate with the real figure from your billing page, e.g. `/cw spent 42.50` |
 | `/cw budget on\|off\|auto` | Turns budget mode on or off by hand, or lets the budget decide (`auto`) |
 | `/handoff` | Writes a full handoff note (one fork of the conversation, best while the cache is warm) |
@@ -126,6 +132,7 @@ Change them in `/config` under the ccwarden plugin. These are the ones you're mo
 | `handoffDir` | `.claude/handoffs` | Point it at a synced folder to continue on another machine |
 | `keepWarm` | `false` | Experimental, metered only |
 | `topicShiftHint` | `false` | Experimental: before a prompt that looks like new work in a long session, offer to `/clear` first |
+| `measureHoldout` | `false` | Proof mode: about 1 in 10 new sessions run unprotected so `/cw open` can measure the savings |
 
 The full list, with descriptions, is in [`mod/.claude-plugin/plugin.json`](mod/.claude-plugin/plugin.json).
 

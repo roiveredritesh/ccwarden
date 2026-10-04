@@ -339,6 +339,64 @@ It never blocks and adds nothing to context.
 - **Learning:** each answer goes to `$.store` `topicLog` (overlap, keyword count, tokens, choice; last 200). Turn it on by default once that log shows few Sends.
 - **Unverified live:** that a mod-run `/clear` clears (Q4), and that the refill lands after it.
 
+**F14. Efficiency dashboard (browser).** A page that answers two questions about ccwarden itself: what did it save (an estimate per feature, with the method next to each number), and is that real (a measured before/after from the transcripts). It covers every project on the machine, with a per-project filter. Measured figures never share a total with estimates. `/cw` stays as it is.
+
+**As built (M4):**
+
+- **Opening:** `/cw open` writes `<claude dir>/ccwarden/dashboard.html` and opens it. The Claude folder comes from the transcript path, else `~/.claude`. The opener is `cmd /c start "" <path>` on Windows (`OS=Windows_NT`), `open` when `uname -s` is Darwin, `xdg-open` otherwise, all as argv with no shell. If the opener fails, the path is logged. Any other `/cw` argument behaves as before, and the usage line gains `open`.
+- **Keeping it fresh:** once `/cw open` has run on the machine (`dashboardOpened`), the file is rewritten every 5 minutes and at session end; users who never open it pay nothing. The page has `<meta http-equiv="refresh" content="60">`. Concurrent sessions may each rewrite it; the last write wins and every write holds the full picture. Session end parses no transcript (it rebuilds from cached summaries) and skips the rewrite when less than 1.5 s of its bound is left.
+- **The page** is one self-contained file: inline CSS, SVG charts, and a few lines of JS for the range (7 days, 30 days, since install) and project filters. No URL is loaded, and every path and text is escaped. Headline cards, then five sections and a coverage line:
+  - **Headline cards:** saved by ccwarden (est. tokens and $; when nothing counted, why, and what the junk guard in observe would have kept out), average prompt before → after with `(before − after) × requests after` as tokens sent less (measured, a trend), cost per request before → after, and spend in the range. Every change reads "▼ 31% better" / "▲ 3 pts worse": arrow and word, the colour only repeats them.
+  1. **What to do:** up to three lines, each naming its figure.
+  2. **Est. savings:** the total and one row per feature: what it did, how many times, what it saved, a confidence label; the formula sits under the feature name.
+  3. **Reality check (measured):** before vs after the install day, with a change column: cost per request, cache hit %, rebuilds per 100 requests, average context. A trend, not a saving.
+  4. **Projects:** the folder name over its path, spend with a bar, sessions, requests, cache hit %, rebuilds, top context hog and est. saved. Folders with no requests and no spend in the range are left out, with a count. A click filters the page. The top hog is the biggest *file* hog under the project's path (`hogDays` has no project; Bash and Grep hogs aren't attributed).
+  5. **Spend over time:** daily spend stacked by project. Colours follow the project (the top 7 by spend, in the dataviz reference palette's fixed order); the rest and unattributed spend fold into "Other".
+  - **Coverage line:** for example "92 of 102 transcripts read; 10 over 4 MiB skipped". Transcripts over 4 MiB (the `$.fs.read` limit) are left out before and after alike, so the longest sessions are not in the measured figures.
+  - In window billing, $ is labelled a list-price equivalent. Install day is the first day in `ledger.days` or `projectDays`.
+- **Data:** live figures go to `projectDays`; each transcript's summary is parsed once and cached in `transcriptSummaries` (keyed by path, invalidated by mtime, size and junk-event count, pruned when the file is gone). A project's spend per day is the larger of its transcripts' sum and `projectDays` (both count the same sessions; transcripts miss files over 4 MiB and subagents, `projectDays` starts at F14). What the ledger counted beyond that shows as "unattributed". **Only projects used with ccwarden are counted:** a project with no spend, request, `projectDays` entry or junk event on or after the install day is left out of every section, before and after alike, and the projects section says how many were left out. Without this, projects worked on only before install skew "before" (on the maintainer's data, 170k → 118k average prompt across all projects, 114k → 120k on the used ones). With no install day, nothing is left out. A projects folder that cannot be listed leaves the cache as it was.
+- **Savings formulas (est.):** prices from `src/prices.ts` for the model family at the time.
+
+  | Feature | Formula | Confidence |
+  |---|---|---|
+  | Junk guard, `enforce` | `tokens × (write5m + read × requestsAfter)`, where `requestsAfter` runs to the session's end or its next compaction | medium |
+  | Junk guard, `observe` | same, shown as "would save", **not in the total** | medium |
+  | Keep-warm | `keepWarmSavedUsd − keepWarmSpentUsd`; may be negative and is shown so | high |
+  | Snapshot compaction | `context × read + SUMMARY_OUTPUT_TOKENS × output`, with `SUMMARY_OUTPUT_TOKENS = 2000`, priced when the snapshot happens | low |
+  | F2 cold guard, F13 Clear, handoff | count only, no $ (the saving depends on what the user did next) | none |
+
+  `requestsAfter` is counted from the transcript, not from turns: a junk event's `session` (`$.session.id()`, the transcript's file name) finds its transcript, and the summary counts the main-loop API requests after the event up to the next compaction. An event with no session (from before F14), or none of whose requests follow, is counted but not priced; its tokens count once (it kept them out of at least the next request).
+- **Unverified live:** see §9 Q15–Q19.
+
+**Out of scope (v1):** $ estimates for F2, F13 and handoff (F15 adds F2 and F13 from its log); reading transcripts over 4 MiB; a live server, or publishing anywhere off the machine; a config option for the refresh interval.
+
+**F15. Metrics log and holdout proof.** Every intervention writes a raw event to the session's own file, F5 and F2 get the measured savings they lacked, and an opt-in `measureHoldout` runs about 1 in 10 sessions with the guards off so the page can show a measured "$ per prompt, protected vs holdout" with a 90% range. Design: `docs/superpowers/specs/2026-10-03-metrics-proof-design.md`.
+
+- **As built (M5):**
+  - **The file:** `<claude dir>/ccwarden/metrics/<session id>.jsonl`, one per session, because `$.fs` has no append and a shared file would lose events between sessions. Event lines first, then one `record: "session"` line per part (a `/clear` that keeps the session id starts part 2, 3…). The module holds the file in memory and rewrites it at `turn.complete` and `session.end`; a reload reads it back. Past `MAX_FILE_CHARS` (3.5M) a session adds no events and its record says `truncated`, so a write never passes 4 MiB. A refused write is logged once and retried at the next flush; it never throws into the turn.
+  - **An event:** `{ v, at, feature, action, model?, ref?, would?, measured, est? }`. `measured` holds what the engine reported, never an estimate; `est` is `{ tokens, usd, formula, confidence }`. An event whose saving is settled later carries no `est`; its `outcome` event (same `ref`) does, so a file totals without a join: every event but an outcome counts once, and estimates add wherever they are. `would: true` marks what a guard would have done (a holdout session, or the junk guard in `observe`); would-have rows are shown but never in the total.
+  - **The record:** project, start and last time, `measuring`, `holdout`, the main loop's family with the most turns, prompts, requests (main-loop `turn.step` results), tokens and $ from `turn.complete` usage (main and subagent turns, cache writes at the 5m rate, priced by `usageUsd`), plus what ccwarden spends itself (keep-warm pings, a full handoff's fork) so the proof weighs it, subagent $, event count. A metrics file that exists but can't be read is never written over: that session's events aren't written, and the log says so once.
+  - **Per feature:**
+
+  | Feature | Actions | Saving | Confidence |
+  |---|---|---|---|
+  | F5 subagent guard | `pinned`, `capped`, `denied`, then `outcome` per subagent turn | subagent tokens × (price asked − price ran); a subagent's usage comes from its `turn.complete` (`agentId`) | high when the Agent call named a model, medium when not (the parent's model is assumed) |
+  | F2 cold-cache guard | `asked`, then `outcome` with the choice | context × cache write price, when the prompt was not sent | medium |
+  | F13 unrelated-prompt hint | `cleared`, then `outcome` | dropped context × read × requests in the next conversation | medium |
+  | F4 junk guard | `kept-out` / `would-keep-out`, then `outcome` | tokens × (write5m + read × requests after, to the session end or next compaction) | medium |
+  | F3 snapshot compaction | `answered` | context × read + 2000 × output | low |
+  | F6 keep-warm | `avoided`, `ping` (negative $) | rebuilds avoided − pings spent | high |
+  | F3 limit hint | `compact-hint` | count only | — |
+  | F7 handoff | `written` (quick or full) | count only | — |
+  | F1b / F11 spend alerts | `alert` / `sent` (`kind`: session, subagent or month; `shown`: false when R9 held it) | count only | — |
+  | F3 summary compaction | `compact` / `summarised` (`/compact <focus>` or `compactMode` summary: the engine's summary ran) | count only | — |
+
+  After the first logged day, the page takes F4, F3 and F6 from the log instead of `junkLog` and `projectDays`, so nothing counts twice. On the first logged day those two stores keep the features they record (they ran all day; the log started partway through it), and the log adds only what they lack: subagent pins, limit hints and holdout events. That day, cold asks and topic clears show as counts without $.
+  - **Holdout:** a part is a holdout when `measureHoldout` was on when it started and `fnv1a(session id) % 10 === 0` (FNV-1a 32-bit over UTF-16 code units; session ids are ASCII). Decided once per session id and kept in `$.state` `holdout`. A holdout session never blocks or rewrites: the junk guard runs in `observe`, the subagent guard pins and denies nothing, F2 and F13 don't ask, F3 neither hints, syncs the compact window nor answers compactions (a holdout after `/clear` puts back the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from before ccwarden set it, since the variable is process-wide; a compaction still ends the junk "would" re-reads), and keep-warm doesn't ping; each logs a `would-…` event instead. The status line says `holdout`, and the session logs one line saying so when it starts.
+  - **Proof:** eligible parts are `measuring`, ≥ 5 prompts, a known family, in a project used with ccwarden. Within each family with ≥ 3 holdout parts: protected median $ per prompt ÷ holdout median, weighted by the protected family mix; claim = (1 − ratio) × 100. The 90% range is 2000 bootstrap resamples seeded from the part ids (mulberry32), so the figure only moves when a session is added. No figure below 10 holdout and 30 protected parts; the page shows the counts instead. Claim texts: "Not proven yet: turn on measureHoldout…", "Not proven yet: n of 10 holdout sessions and m of 30 protected ones." (counting the families that can be compared, then naming those left out), "Protected sessions cost X% less per prompt (90% range …)", "… X% more …", or "No clear difference yet". A self-check compares the estimates' share (est ÷ (spent + est) on protected parts) with the range: agree, optimistic or pessimistic.
+  - **The page:** the proof section, est. savings bars by feature, "What ccwarden did" (events per day by feature), sessions of the last 30 days (click one to filter the event log), and the event log (latest 5000 events of the last 30 days, filterable by feature). Copy summary (Markdown) and download raw JSON use data embedded in the page; the page stays one file with one `<script>`. Each file's summary is cached in `$.store` `metricsSummaries` by mtime and size.
+- **Unverified live:** §9 Q21–Q23; F15 live: turn on `measureHoldout`, use it for 2–3 weeks, read the proof.
+
 ## 5. Configuration (`userConfig`)
 
 | Key | Default | Feature |
@@ -358,6 +416,7 @@ It never blocks and adds nothing to context.
 | `alertTiming` | `immediate` | F1b |
 | `handoffDir` / `handoffOnCompact` / `handoffMaxUsd` | `.claude/handoffs` / off / 0.50 | F7 |
 | `topicShiftHint` | off (until tuned from `topicLog`) | F13 |
+| `measureHoldout` | off (opt-in: holdout sessions get no protection) | F15 |
 
 M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.
 
@@ -365,7 +424,13 @@ M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handof
 
 - **`$.state`** (session): cache expiry, alert steps, guard counters.
 - **`$.store`** (machine): daily totals, hog history (30 days).
-- **Files:** trimmed outputs and handoffs only.
+  - `projectDays` (F14): per project (`projectKey`: `/`-separated, drive letter lower-cased) and UTC day: `usd`, `turns`, `peakContext`, `keepWarmPings`, `keepWarmSavedUsd`, `keepWarmSavedTokens`, `keepWarmSpentUsd`, `snapshots`, `snapshotSavedUsd`, `snapshotSavedTokens`, `coldAsks`, `topicClears`, `handoffs`. Days older than 400 are dropped.
+  - `transcriptSummaries` (F14): transcript path → `{ mtimeMs, size, junk, summary }`; entries for gone files are dropped on each build, and past 1.5M characters of JSON the files changed longest ago are dropped (read again when needed), so the 4 MiB store keeps room for the other keys.
+  - `dashboardOpened` (F14): `true` once `/cw open` has run.
+  - `junkLog` events (F14): optional `project` and `session`. Older events lack them.
+  - `metricsSummaries` (F15): metrics file path → `{ mtimeMs, size, summary }`; entries for gone files are dropped on each build, with the same 1.5M-character cap. The page's recent events are cached in memory per file by mtime and size.
+  - `holdout` (F15, `$.state`): this session is a holdout; read by the status line.
+- **Files:** trimmed outputs and handoffs, the F14 page (`<claude dir>/ccwarden/dashboard.html`) and the F15 metrics log (`<claude dir>/ccwarden/metrics/<session id>.jsonl`).
 
 ## 7. Layout
 
@@ -384,7 +449,8 @@ docs/            this spec
 | **M1** | F1, F1b, F2, F3, F4 (observe → enforce), F5, F6 (after Q2) | `claude plugin validate` clean; tests on terminal + desktop × both billing modes; a week of real use on a metered and a window machine |
 | **M2** | F7, F8, F9, F12 | Handoff round trip loses nothing needed |
 | **M3** | F10, F11 | Dashboard within 10% of `/usage` |
-| **M4** | F13, marketplace packaging | One-command install |
+| **M4** | F13, F14, marketplace packaging | One-command install |
+| **M5** | F15 metrics log and holdout proof | The page shows a holdout figure, or how many sessions it still needs |
 
 ## 9. Open questions (verify in M1 week one)
 
@@ -406,6 +472,15 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 12 | **Real spend:** is the org's real month-to-date spend readable locally? If yes, it replaces the F11 estimate. | **No $ figure.** `usage().cost.usd` is this session's total only. The one account-level reading is a gateway's `spend_limit` rate-limit kind, which gives `percentUsed` and no dollars. F11 stays an estimate. | confirm: `/cw-probe info` on `metered` |
 | 13 | **Mod-run `/compact`:** does `$.command.run({ command: 'compact' })` reach the mod's own `session.compact` hook? | **No** (live test: the `/cw` Compact button ran the engine's own summary compaction, no snapshot log). A plugin's own `$.session.compact` skips its hook too. A `/compact` the person types does reach it. | closed: F3 only advises `/compact`; the pane's Compact button is removed |
 | 14 | **Setting names not in the docs read for this spec:** `CLAUDE_CODE_SUBAGENT_MODEL`, `promptSuggestionEnabled`, `crossSessionInbound`, `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`. | All four are strings in the 2.1.287 binary. The setup offers the first two only as opt-in flags, and F8's texts name the last two. | open: check code.claude.com/docs (settings, model-config) |
+| 15 | **`/cw open` opener (F14):** does it open the page on Windows (`cmd /c start "" <path>` via argv), macOS (`open`) and Linux (`xdg-open`)? | Argv with no shell; the tests cover the argv per OS and the logged-path fallback. | open: live check per OS (the interactive `claude --plugin-dir ./mod` run of the build plan was not done) |
+| 16 | **Page refresh (F14):** does a `file://` page with `<meta http-equiv="refresh" content="60">` reload and keep its `#hash` in Chrome, Edge and Safari? | Browser behaviour, not in the plugin API. | open |
+| 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | open |
+| 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
+| 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
+| 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | Not needed: the types state a subagent run ends in a `turn.complete` carrying its `agentId` and summed `usage`; F15 reads that, as F5 does. | answered by the types |
+| 21 | **`$.fs.write` parent folder (F15):** does it create a missing `metrics/`? | Not stated. | **yes** (2026-10-03, Windows terminal): the first write created `~/.claude/ccwarden/metrics/` |
+| 22 | **Session id after `/clear` (F15):** does the next conversation get a new `$.session.id()`? | Not stated. | open: one file per conversation, or `part` records |
+| 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | **Chrome: yes** (2026-10-03, Windows): Copy summary put the Markdown on the clipboard. Edge, Safari: open; the fallback selects the text |
 
 ## 10. Gaps found in design review, and resolutions
 

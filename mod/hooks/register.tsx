@@ -7,7 +7,7 @@ import { hogsOver } from '../src/hogs'
 import { backgroundSource, backgroundToast } from '../src/background'
 import type { BackgroundSource } from '../src/background'
 import { handoffModelLine, startAdvice, switchNote } from '../src/advisor'
-import { AGENT_WARN_USD, planSpawn, runningCount, turnUsd } from '../src/agents'
+import { AGENT_WARN_USD, planSpawn, runningCount } from '../src/agents'
 import { avoidedRebuild, PING_PROMPT, pingUsd, pingVerdict, TICK_MS } from '../src/keepwarm'
 import { FULL_PROMPT, fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread, pickupPrompt } from '../src/handoff'
 import { alertStep, alertText, isAlertDue } from '../src/alerts'
@@ -18,7 +18,7 @@ import type { Ttl } from '../src/cache'
 import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
-import { rebuildUsd } from '../src/prices'
+import { familyOf, rebuildUsd } from '../src/prices'
 import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
 import { addSpend, calibrate, costDelta, dayKey, monthKey, monthToDate, projectMonth } from '../src/ledger'
@@ -29,6 +29,11 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
+import { addProjectDay, claudeDirOf, efficiencyData, fitCache, RECENT_EVENTS, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
+import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCache, TranscriptSummary } from '../src/efficiency'
+import { dashboardHtml } from '../src/htmlDashboard'
+import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, parseFile, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, usageUsd } from '../src/metrics'
+import type { MetricEvent, MetricsFile, MetricsSummary, Pending, Pin, Usage } from '../src/metrics'
 import { fmtTokens, formatStatus } from '../src/status'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -65,6 +70,26 @@ type Runtime = {
   turnSource?: BackgroundSource
   /** Budget mode (SPEC §3), as last worked out. */
   isBudget: boolean
+  /** F15: this session's metrics file as held in memory (loaded on first use), and whether it changed since the last write. */
+  metrics?: MetricsFile
+  isMetricsDirty: boolean
+  isMetricsWarned: boolean
+  /** F15: the session's file exists but couldn't be read, so it is never written over. */
+  isMetricsUnread: boolean
+  /** F15: makes event refs unique when two events share a millisecond (parallel tool calls). */
+  refs: number
+  /** F15: the page's recent events per metrics file, read again only when the file changes. */
+  recentEvents: Map<string, { mtimeMs: number; size: number; events: MetricEvent[] }>
+  /** F3: the compact window ccwarden set, and the one before it, for a holdout to put back (the variable is process-wide). */
+  compactWindow?: { set: string; before: string | undefined }
+  /** F15: /clear ended the part; the next event starts a new one, or a new file if the id changed. */
+  isNewPart: boolean
+  /** F15: pinned subagents whose saving adds up with each turn (F5), by agentId. */
+  pins: Record<string, Pin>
+  /** F15: savings that grow with each main-loop request (F4 kept-out output, F13 dropped context). */
+  pending: Pending[]
+  /** F15: a topic clear waiting for /clear to land; its saving counts the next conversation (F13). */
+  topicCleared?: Pending
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -74,7 +99,9 @@ const billingAsked = { plugin: 'ccwarden', key: 'billingAsked' } as const
 const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
 const dashboardRef = { plugin: 'ccwarden', key: 'dashboard' } as const
+const holdoutRef = { plugin: 'ccwarden', key: 'holdout' } as const
 const WEEK_MS = 7 * 24 * 60 * 60_000
+const DAY_MS = 24 * 60 * 60_000
 const WEEK_MAX_FILES = 20
 
 const STATUS_TICK_MS = 60_000 // the cache countdown is shown in whole minutes
@@ -88,14 +115,21 @@ const HOG_DAYS_KEY = 'hogDays' // $.store: the day's biggest tool results (F10)
 const MONTH_ALERTS_KEY = 'monthAlerts' // $.store: the month steps already alerted (F11)
 const BUDGET_SWITCH_KEY = 'budgetSwitch' // $.store: /cw budget on|off|auto
 const TOPIC_LOG_KEY = 'topicLog' // $.store: each unrelated-prompt hint and its answer, for tuning (F13)
+const PROJECT_DAYS_KEY = 'projectDays' // $.store: per project and day, spend and what each guard did (F14)
+const SUMMARIES_KEY = 'transcriptSummaries' // $.store: each transcript's summary, parsed once (F14)
+const DASHBOARD_OPENED_KEY = 'dashboardOpened' // $.store: /cw open has run on this machine, so the page is kept fresh
+const DASHBOARD_TICK_MS = 5 * 60_000
+const DASHBOARD_FILE = 'ccwarden/dashboard.html'
+const END_MIN_MS = 1_500 // of session end's short bound, needed to rewrite the page
 const JUNK_SHOWN = 20 // events /ccwarden-junk lists
 const TAIL_SHARE = 0.15 // of the model limit, for the turns kept verbatim
 const CHARS_PER_TOKEN = 4
+const MIN_MS = 60_000
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [] }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -114,15 +148,17 @@ export const register: Register = (on, options) => {
       })
     }
     await $.command.register({ name: 'handoff', description: 'ccwarden: write a handoff note for a fresh session (full while the cache is warm)', argumentHint: '[quick]' })
-    await $.command.register({ name: 'cw', description: 'ccwarden: month to date, budget mode, calibration', argumentHint: '[spent <amount> | budget on|off|auto]' })
+    await $.command.register({ name: 'cw', description: 'ccwarden: month to date, budget mode, calibration; open: the efficiency dashboard', argumentHint: '[open | spent <amount> | budget on|off|auto]' })
     runtime.isBudget = (await $.state.get(budgetModeRef)).value === true // a reload keeps it, unannounced
     await updateBudgetMode($, config, runtime)
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
+    $.clock.every(DASHBOARD_TICK_MS, () => void refreshEfficiency($, config, runtime, true))
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
-    await syncCompactWindow($, config)
+    await metricsFile($, config, runtime)
+    await syncCompactWindow($, config, runtime)
     await refreshStatus($, config)
     return result
   })
@@ -156,14 +192,16 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'handoff' }, async ($, e) => {
-    await writeHandoff($, config, e.args.trim() === 'quick' ? 'quick' : 'full')
+    await writeHandoff($, config, runtime, e.args.trim() === 'quick' ? 'quick' : 'full')
     return {}
   })
 
   // /clear ends the conversation: its figures start over, a held alert is
   // dropped, and the window share is measured from here.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') await startOver($, config)
+    await endMetrics($, runtime, e.reason === 'clear')
+    if (e.reason === 'clear') await startOver($, config, runtime)
+    if (next.budget.remainingMs >= END_MIN_MS) await refreshEfficiency($, config, runtime, false)
     return next(e)
   })
 
@@ -189,8 +227,11 @@ export const register: Register = (on, options) => {
       if (step > c.alerted) c.alerted = step
       return c
     })
-    if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
-    if (spent > 0) await trackMonth($, config, await recordSpend($, spent))
+    if (due !== undefined && config.alertTiming === 'immediate') await spendAlert($, config, runtime, 'session', due)
+    if (spent > 0) {
+      await trackMonth($, config, runtime, await recordSpend($, spent))
+      await recordProject($, { usd: spent })
+    }
     if (spent > 0 || reading !== undefined) await updateBudgetMode($, config, runtime)
     await refreshStatus($, config, conv)
     return result
@@ -233,23 +274,38 @@ export const register: Register = (on, options) => {
       if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
       return c
     })
-    if (saved > 0) await refreshStatus($, config, conv)
+    if (saved > 0) {
+      await recordProject($, { keepWarmSavedUsd: saved, keepWarmSavedTokens: tokens ?? 0 })
+      await recordEvent($, config, runtime, { at: now, feature: 'keepwarm', action: 'avoided', measured: { tokens: tokens ?? 0 }, est: { tokens: tokens ?? 0, usd: saved, formula: 'rebuild avoided by a ping: context × cache write price', confidence: 'high' } })
+      await refreshStatus($, config, conv)
+    }
 
     if ((await $.session.surfaces()).length === 0) return next(e)
     const cache = cacheView(lastCacheUse(conv), ttl, now)
     const isDue = isColdAskDue({ cache, tokens, coldMinTokens: config.coldMinTokens, lastResponseAt: conv.lastResponseAt, askedFor: conv.coldAskedFor, text: e.text })
     if (!isDue || cache.kind !== 'cold' || tokens === undefined) {
       // F13 only where F2 didn't ask: its question already names /clear.
-      const reason = config.topicShiftHint ? await topicHint($, config, e.text, tokens, conv) : undefined
+      const reason = config.topicShiftHint ? await topicHint($, config, runtime, e.text, tokens, conv, await isHoldout($, config, runtime)) : undefined
       return reason === undefined ? next(e) : { drop: reason }
     }
 
+    if (await isHoldout($, config, runtime)) {
+      await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
+      await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'would-ask', would: true, measured: { tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) ?? 0 } })
+      return next(e)
+    }
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), coldAskedFor: conv.lastResponseAt }))
-    const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuildUsd(tokens, model, ttl) })
+    await recordProject($, { coldAsks: 1 })
+    const rebuild = rebuildUsd(tokens, model, ttl)
+    const ref = `cold-${now}-${++runtime.refs}`
+    await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'asked', ref, measured: { tokens, minutesCold: Math.round(cache.msCold / MIN_MS), rebuildUsd: rebuild ?? 0 } })
+    const question = coldQuestion({ msCold: cache.msCold, tokens, rebuildUsd: rebuild })
     const choice = coldChoice(await $.ui.ask(question, { header: 'Cold cache', options: [COLD_CONTINUE, COLD_HANDOFF, COLD_CANCEL] }).catch(() => undefined))
+    await recordEvent($, config, runtime, { at: now, feature: 'cold', action: 'outcome', ref, measured: { choice }, est: coldEstimate(choice, tokens, rebuild) })
     if (choice === 'send') return next(e)
+    await flushMetrics($, runtime) // no turn follows to write it
     // Quick on a cold cache: no model call, so nothing is re-cached.
-    const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
+    const handoffPath = choice === 'handoff' ? await writeHandoff($, config, runtime, 'quick') : undefined
     // After the drop has settled, so the box isn't cleared over the refill.
     $.clock.after(0, () => void $.prompt.fill({ text: e.text, mode: 'replace' }))
     // The drop reason isn't kept in the conversation; the log line is.
@@ -263,13 +319,14 @@ export const register: Register = (on, options) => {
   // long and aren't read; files one $.fs.read can't take are left alone.
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     if (config.junkGuard === 'off' || !isWholeTextRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
+    const mode = (await isHoldout($, config, runtime)) ? 'observe' : config.junkGuard
     const stat = await $.fs.stat(e.file_path).catch(() => undefined)
     if (stat === undefined || stat.kind !== 'file' || stat.size <= eff().readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
     const text = await $.fs.read(e.file_path).catch(() => undefined)
     const lines = text === undefined ? 0 : countLines(text)
     if (lines <= eff().readMaxLines) return next(e)
-    await recordJunk($, { at: await $.clock.now(), tool: 'Read', mode: config.junkGuard, target: e.file_path, size: lines, savedChars: stat.size })
-    if (config.junkGuard === 'observe') return next(e)
+    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Read', mode, target: e.file_path, size: lines, savedChars: stat.size })
+    if (mode === 'observe') return next(e)
     const reason = readDenyText(e.file_path, lines, eff().readMaxLines)
     $.ui.log(reason)
     return { deny: reason }
@@ -282,14 +339,15 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (config.junkGuard === 'off' || ran.deny !== undefined || isAlreadyFiltered(e.command)) return ran
+    const mode = (await isHoldout($, config, runtime)) ? 'observe' : config.junkGuard
     // A test run, passed or failed, keeps only its failure lines and summary.
     // A failed one goes back as a plain result: a hook can't shorten an error.
     if (isTestCommand(e.command)) {
       const failed = ran.isError === true
       const text = failed ? (ran.text ?? '') : [ran.result.stdout, ran.result.stderr].filter(s => s !== '').join('\n')
       if ((!failed && ran.result.persistedOutputPath !== undefined) || text.length <= eff().bashMaxChars) return ran
-      await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: text.length, savedChars: text.length - eff().bashMaxChars })
-      if (config.junkGuard === 'observe') return ran
+      await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode, target: e.command.slice(0, 200), size: text.length, savedChars: text.length - eff().bashMaxChars })
+      if (mode === 'observe') return ran
       const path = await saveOutput($, e.tool_use_id, text)
       if (path === undefined) return ran
       $.ui.log(`ccwarden junk guard: test output cut from ${text.length} characters to its failures and summary; the full text is in ${path}.`)
@@ -298,8 +356,8 @@ export const register: Register = (on, options) => {
     if (ran.isError) return ran
     const { stdout } = ran.result
     if (ran.result.persistedOutputPath !== undefined || stdout.length <= eff().bashMaxChars) return ran
-    await recordJunk($, { at: await $.clock.now(), tool: 'Bash', mode: config.junkGuard, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
-    if (config.junkGuard === 'observe') return ran
+    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Bash', mode, target: e.command.slice(0, 200), size: stdout.length, savedChars: stdout.length - eff().bashMaxChars })
+    if (mode === 'observe') return ran
     const path = await saveOutput($, e.tool_use_id, stdout)
     if (path === undefined) return ran
     $.ui.log(`ccwarden junk guard: Bash output cut from ${stdout.length} to ~${eff().bashMaxChars} characters; the full text is in ${path}.`)
@@ -310,6 +368,12 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'cw' }, async ($, e) => {
     const [verb, arg] = e.args.trim().split(/\s+/)
     const now = await $.clock.now()
+    if (verb === 'open') {
+      await $.store.set(DASHBOARD_OPENED_KEY, true)
+      const path = await writeEfficiency($, config, runtime, true)
+      if (path !== undefined) await openInBrowser($, path)
+      return {}
+    }
     if (verb === 'spent') {
       const real = Number((arg ?? '').replace(/^\$/, ''))
       if (!Number.isFinite(real) || real < 0) {
@@ -323,7 +387,7 @@ export const register: Register = (on, options) => {
       await updateBudgetMode($, config, runtime)
       $.ui.log(budgetModeText(runtime.isBudget, arg === 'auto' ? 'automatic' : 'set by hand'))
     } else if (verb !== undefined && verb !== '') {
-      $.ui.log('ccwarden: /cw, /cw spent <amount>, /cw budget on|off|auto')
+      $.ui.log('ccwarden: /cw, /cw open, /cw spent <amount>, /cw budget on|off|auto')
       return {}
     }
     const ledger = (await $.store.get(LEDGER_KEY)) as Ledger | undefined
@@ -353,7 +417,7 @@ export const register: Register = (on, options) => {
         ))}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Button key="refresh" hotkey="r" onPress={() => void refresh()}>Refresh</Button>
-          <Button key="handoff" hotkey="h" onPress={() => void writeHandoff($, config, 'full')}>Handoff</Button>
+          <Button key="handoff" hotkey="h" onPress={() => void writeHandoff($, config, runtime, 'full')}>Handoff</Button>
           <Button key="budget" hotkey="b" onPress={async () => {
             await $.store.set(BUDGET_SWITCH_KEY, runtime.isBudget ? 'off' : 'on')
             await updateBudgetMode($, config, runtime)
@@ -381,12 +445,27 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     if (!config.subagentGuard) return next(e)
     const plan = planSpawn(e, config, runningCount(await $.agent.list()))
+    if (await isHoldout($, config, runtime)) {
+      const started = await next(e)
+      if ('deny' in plan) await recordEvent($, config, runtime, { feature: 'subagent', action: 'would-deny', would: true, measured: { type: e.subagentType } })
+      else if (started.deny === undefined) {
+        await recordSpawn($, config, runtime, { type: e.subagentType, agentId: started.agentId, isPinned: plan.model !== undefined, would: true, from: started.model, to: plan.model ?? started.model, confidence: 'high' })
+      }
+      return started
+    }
     if ('deny' in plan) {
       $.ui.log(plan.deny)
+      await recordEvent($, config, runtime, { feature: 'subagent', action: 'denied', measured: { type: e.subagentType } })
       return { deny: plan.deny }
     }
     const started = await next({ ...e, prompt: plan.prompt, ...(plan.model === undefined ? {} : { model: plan.model }) })
-    if (started.deny === undefined) $.ui.log(`ccwarden: ${e.subagentType} subagent: ${plan.notes.join(', ')}.`)
+    if (started.deny === undefined) {
+      $.ui.log(`ccwarden: ${e.subagentType} subagent: ${plan.notes.join(', ')}.`)
+      await recordSpawn($, config, runtime, {
+        type: e.subagentType, agentId: started.agentId, isPinned: plan.model !== undefined, would: false,
+        from: e.model ?? e.parentModel, to: started.model, confidence: e.model === undefined ? 'medium' : 'high',
+      })
+    }
     await refreshStatus($, config)
     return started
   })
@@ -397,6 +476,7 @@ export const register: Register = (on, options) => {
     const i = runtime.queued.findIndex(q => q.text === e.text)
     runtime.turnSource = i === -1 ? undefined : runtime.queued[i]!.source
     if (i !== -1) runtime.queued = runtime.queued.filter((_, j) => j !== i)
+    if (runtime.turnSource === undefined) await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, prompts: f.record.prompts + 1 } }))
     return next(e)
   })
 
@@ -405,6 +485,7 @@ export const register: Register = (on, options) => {
   // request and the response pass through unchanged.
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)
+    if (e.agentId === undefined && r.usage !== null) await countRequest($, config, runtime)
     if (e.agentId !== undefined || e.index !== 0 || r.usage === null) return r
     const usage = r.usage
     const now = await $.clock.now()
@@ -430,11 +511,12 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.usage !== undefined) await addTurnMetrics($, config, runtime, e.usage, e.agentId)
     if (e.agentId === undefined) runtime.isTurnRunning = false
     if (e.agentId !== undefined) {
       // A subagent's turn: its cost, and one toast if it passes AGENT_WARN_USD.
       // Its requests don't touch the main cache.
-      const usd = e.usage === undefined ? undefined : turnUsd(e.usage)
+      const usd = e.usage === undefined ? undefined : usageUsd(e.usage)
       if (usd === undefined) return result
       const agentId = e.agentId
       let total = 0
@@ -451,13 +533,13 @@ export const register: Register = (on, options) => {
         c.agents = agents
         return c
       })
-      if (isWarnDue) await notify($, 'spend', `⚠ A subagent (${agentId}) has cost $${total.toFixed(2)} so far (est.).`)
+      if (isWarnDue) await spendAlert($, config, runtime, 'subagent', `⚠ A subagent (${agentId}) has cost $${total.toFixed(2)} so far (est.).`)
       await refreshStatus($, config, conv)
       return result
     }
     const source = runtime.turnSource
     runtime.turnSource = undefined
-    if (source !== undefined && config.backgroundWatch && e.usage !== undefined) await watchBackground($, source, turnUsd(e.usage) ?? 0)
+    if (source !== undefined && config.backgroundWatch && e.usage !== undefined) await watchBackground($, source, usageUsd(e.usage) ?? 0)
     const now = await $.clock.now()
     let pending: string | undefined
     const conv = await update($, conversation, prev => {
@@ -467,7 +549,7 @@ export const register: Register = (on, options) => {
       delete c.pendingAlert
       return c
     })
-    if (pending !== undefined) await notify($, 'spend', pending)
+    if (pending !== undefined) await spendAlert($, config, runtime, 'session', pending)
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
@@ -475,18 +557,24 @@ export const register: Register = (on, options) => {
     // snapshot. Should the context still be past it (one long turn), say so
     // once: the mod can't compact itself, since `$.command.run('compact')` and
     // `$.session.compact` both skip its own session.compact hook (SPEC §9 Q13).
-    await syncCompactWindow($, config)
+    await syncCompactWindow($, config, runtime)
     const usage = await $.session.usage()
     const model = await $.session.model()
     const limit = await limitOf($, model, config, usage.context.window)
     const tokens = usage.context.tokens ?? 0
+    await recordProject($, { turns: 1, peakContext: tokens })
     if (tokens <= limit) runtime.isCompactAdvised = false
-    else if (!runtime.isCompactAdvised) {
+    else if (!runtime.isCompactAdvised && (await isHoldout($, config, runtime))) {
       runtime.isCompactAdvised = true
+      await recordEvent($, config, runtime, { feature: 'limit', action: 'would-hint', would: true, measured: { tokens, limit } })
+    } else if (!runtime.isCompactAdvised) {
+      runtime.isCompactAdvised = true
+      await recordEvent($, config, runtime, { feature: 'limit', action: 'compact-hint', measured: { tokens, limit } })
       const text = `ccwarden: ${Math.round(tokens / 1000)}k tokens is past the ${Math.round(limit / 1000)}k limit for ${model}. Type /compact: it keeps a snapshot, no summary request.`
       $.ui.log(text)
       await notify($, 'advisor', text)
     }
+    await flushMetrics($, runtime)
     return result
   })
 
@@ -496,6 +584,15 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     const plan = planCompaction(e, config.compactMode)
     if (plan === 'pass') return next(e)
+    if (await isHoldout($, config, runtime)) {
+      if (plan !== 'skip') {
+        const usage = await $.session.usage()
+        const saving = snapshotSaving(usage.context.tokens ?? 0, await $.session.model())
+        await settleJunk($, config, runtime)
+        await recordEvent($, config, runtime, { feature: 'snapshot', action: 'would-answer', would: true, measured: { tokens: usage.context.tokens ?? 0, trigger: e.trigger }, ...(saving === undefined ? {} : { est: { tokens: saving.tokens, usd: saving.usd, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low' as const } }) })
+      }
+      return next(e)
+    }
     if (plan === 'skip') return { skip: 'ccwarden: snapshot compaction is on, so no summary is precomputed.' }
 
     await update($, conversation, prev => ({
@@ -503,10 +600,12 @@ export const register: Register = (on, options) => {
       compactions: (prev?.compactions ?? 0) + 1,
       snapshots: (prev?.snapshots ?? 0) + (plan === 'snapshot' ? 1 : 0),
     }))
+    await settleJunk($, config, runtime)
     const facts = await snapshotFacts($, e.messages)
-    if (config.handoffOnCompact) await writeHandoff($, config, 'quick', e.messages)
+    if (config.handoffOnCompact) await writeHandoff($, config, runtime, 'quick', e.messages)
     if (plan === 'summary+facts') {
       const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: 0 })
+      await recordEvent($, config, runtime, { feature: 'compact', action: 'summarised', measured: { tokens: (await $.session.usage()).context.tokens ?? 0, trigger: e.trigger } })
       return next({ ...e, instructions: summaryInstructions(e.instructions, text) })
     }
 
@@ -514,13 +613,20 @@ export const register: Register = (on, options) => {
     const limit = await limitOf($, await $.session.model(), config, usage.context.window)
     const { tail, turns } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
     const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: turns })
+    const saving = snapshotSaving(usage.context.tokens ?? 0, await $.session.model())
+    await recordProject($, { snapshots: 1, ...(saving === undefined ? {} : { snapshotSavedUsd: saving.usd, snapshotSavedTokens: saving.tokens }) })
+    if (saving !== undefined) await recordEvent($, config, runtime, { feature: 'snapshot', action: 'answered', measured: { tokens: usage.context.tokens ?? 0, trigger: e.trigger }, est: { tokens: saving.tokens, usd: saving.usd, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low' } })
     $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
     return { messages: [{ role: 'user', text, toolUses: [] }, ...tail] }
   })
 }
 
 /** /clear: the conversation's figures start over, a held alert is dropped, and the window share is measured from here. */
-async function startOver($: $, config: Config): Promise<void> {
+async function startOver($: $, config: Config, runtime: Runtime): Promise<void> {
+  if (runtime.topicCleared !== undefined) {
+    runtime.pending = [...runtime.pending.filter(p => p.ref !== runtime.topicCleared!.ref), runtime.topicCleared]
+    runtime.topicCleared = undefined
+  }
   const reading = fiveHour((await $.session.usage()).rateLimits)
   await $.state.set(conversation, { alerted: 0, ledgerUsd: 0, ...(reading === undefined ? {} : { window: trackWindow(undefined, reading) }) })
   $.clock.after(0, () => void refreshStatus($, config))
@@ -533,11 +639,15 @@ async function startOver($: $, config: Config): Promise<void> {
  * the hint until the context grows 20%. Returns the drop reason, or undefined
  * to send.
  */
-async function topicHint($: $, config: Config, text: string, tokens: number | undefined, conv: CcwardenConversation): Promise<string | undefined> {
+async function topicHint($: $, config: Config, runtime: Runtime, text: string, tokens: number | undefined, conv: CcwardenConversation, isHoldoutSession: boolean): Promise<string | undefined> {
   if (tokens === undefined || !isTopicCandidate({ text, tokens, mutedAt: conv.topicMutedAt, skip: conv.topicSkip })) return undefined
   const facts = await sessionFacts($, (await $.state.get(transcriptPath)).value)
   const history = [goalOf({ goal: conv.goal, asks: facts.asks }) ?? '', ...facts.asks.slice(-5), lastAnswer(await $.session.messages()) ?? '']
   if (!isTopicShift(text, history)) return undefined
+  if (isHoldoutSession) {
+    await recordEvent($, config, runtime, { feature: 'topic', action: 'would-ask', would: true, measured: { tokens } })
+    return undefined
+  }
   const answer = await $.ui.ask(topicQuestion(tokens), { header: 'New topic?', options: [TOPIC_SEND, TOPIC_CLEAR, TOPIC_HANDOFF_CLEAR] }).catch(() => undefined)
   const choice = topicChoice(answer)
   await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), ...(choice === 'send' ? { topicMutedAt: tokens } : { topicSkip: text.trim() }) }))
@@ -546,14 +656,25 @@ async function topicHint($: $, config: Config, text: string, tokens: number | un
   await $.store.set(TOPIC_LOG_KEY, appendTopic(log, { at: await $.clock.now(), overlap, keywords: count, tokens, choice }))
   if (choice === 'send') return undefined
   // Quick: no model call, so the old context isn't re-read just to write it.
-  const handoffPath = choice === 'handoff' ? await writeHandoff($, config, 'quick') : undefined
+  const handoffPath = choice === 'handoff' ? await writeHandoff($, config, runtime, 'quick') : undefined
   const isCleared = choice !== 'keep'
+  if (isCleared) {
+    await recordProject($, { topicClears: 1 })
+    const family = familyOf(await $.session.model())
+    const at = await $.clock.now()
+    const ref = `topic-${at}-${++runtime.refs}`
+    await recordEvent($, config, runtime, { at, feature: 'topic', action: 'cleared', ref, measured: { tokens } })
+    if (family !== undefined) runtime.topicCleared = { ref, feature: 'topic', at, tokens, family, requests: 0, would: false }
+  }
   // After the drop has settled; /clear itself waits until the session is idle.
   $.clock.after(0, async () => {
     if (isCleared) {
       const ran = await $.command.run({ command: 'clear' }).catch(() => undefined)
       // A plugin's own command skips its own hooks (Q13), so session.end may not reset it.
-      if (ran !== undefined) await startOver($, config)
+      if (ran !== undefined) {
+        await endMetrics($, runtime, true)
+        await startOver($, config, runtime)
+      }
       else $.ui.log('ccwarden: /clear could not be run from here; type /clear, then send your prompt.')
     }
     await $.prompt.fill({ text, mode: 'replace' })
@@ -603,8 +724,152 @@ async function recordSpend($: $, usd: number): Promise<Ledger> {
   return ledger
 }
 
+/** F14: adds `add` to today's line for this session's project in `projectDays`. */
+async function recordProject($: $, add: DayFigures): Promise<void> {
+  const day = dayKey(await $.clock.now())
+  const pd = (await $.store.get(PROJECT_DAYS_KEY)) as ProjectDays | undefined
+  await $.store.set(PROJECT_DAYS_KEY, addProjectDay(pd, await $.session.root(), day, add))
+}
+
+/** F15: this session's metrics file: held, else read back from disk (a reload), else new. A changed id writes the old file first. */
+async function metricsFile($: $, config: Config, runtime: Runtime): Promise<MetricsFile> {
+  const session = await $.session.id()
+  const now = await $.clock.now()
+  const held = runtime.metrics
+  if (held !== undefined && held.record.session === session) {
+    if (runtime.isNewPart) {
+      runtime.isNewPart = false
+      runtime.metrics = nextPart(held, now)
+      runtime.isMetricsDirty = true
+    }
+    return runtime.metrics!
+  }
+  if (held !== undefined) await flushMetrics($, runtime) // /clear gave a new id (Q22): that file is done
+  runtime.isNewPart = false
+  const fresh = newRecord({ session, project: projectKey(await $.session.root()), now, measuring: config.measureHoldout })
+  const path = await metricsPath($, session)
+  const text = path === undefined ? undefined : await $.fs.read(path).catch(() => undefined)
+  const isUnread = text === undefined && path !== undefined && (await $.fs.stat(path).then(() => true, () => false))
+  // Another hook loaded the file while this one waited: go on from that one, changes and all.
+  if (runtime.metrics?.record.session === session) return runtime.metrics
+  runtime.isMetricsUnread = isUnread
+  runtime.metrics = text === undefined ? emptyFile(fresh) : resume(text, fresh)
+  await $.state.set(holdoutRef, runtime.metrics.record.holdout)
+  if (runtime.metrics.record.holdout && text === undefined) $.ui.log('ccwarden: proof mode: this session is a holdout, so guards are off and what they would have done is logged.')
+  runtime.isMetricsDirty = true
+  return runtime.metrics
+}
+
+/** F15: this session runs with the guards off (a holdout); decided once per session id. */
+async function isHoldout($: $, config: Config, runtime: Runtime): Promise<boolean> {
+  return (await metricsFile($, config, runtime)).record.holdout
+}
+
+async function metricsPath($: $, session: string): Promise<string | undefined> {
+  const claude = await claudeDir($)
+  return claude === undefined ? undefined : joinPath(claude, `${METRICS_DIR}/${session}.jsonl`)
+}
+
+/** F15: changes this session's file in memory; the next flush writes it. */
+async function editMetrics($: $, config: Config, runtime: Runtime, change: (f: MetricsFile) => MetricsFile): Promise<void> {
+  await metricsFile($, config, runtime)
+  runtime.metrics = change(runtime.metrics!) // a hook that ran during the wait keeps its change
+  runtime.isMetricsDirty = true
+}
+
+/** F15: one event, stamped with the time (unless given) and the main model. */
+async function recordEvent($: $, config: Config, runtime: Runtime, ev: Omit<MetricEvent, 'v' | 'at' | 'model'> & { at?: number }): Promise<void> {
+  const at = ev.at ?? (await $.clock.now())
+  const model = await $.session.model()
+  await editMetrics($, config, runtime, f => addEvent(f, { ...ev, v: 1, at, model }))
+}
+
+/** F15: writes the file if anything changed; a refusal is logged once per session and retried at the next flush. */
+async function flushMetrics($: $, runtime: Runtime): Promise<void> {
+  let f = runtime.metrics
+  if (f === undefined || !runtime.isMetricsDirty) return
+  for (const p of runtime.pending) f = putOutcome(f, pendingOutcome(p))
+  runtime.metrics = f
+  const path = await metricsPath($, f.record.session)
+  if (path === undefined) return
+  if (runtime.isMetricsUnread) {
+    if (!runtime.isMetricsWarned) {
+      runtime.isMetricsWarned = true
+      $.ui.log(`ccwarden: couldn't read the metrics log at ${path}, so this session's events aren't written, to keep what it holds.`)
+    }
+    return
+  }
+  const isWritten = await $.fs.write(path, serialize(f)).then(() => true, () => false)
+  if (isWritten && runtime.metrics === f) runtime.isMetricsDirty = false // an event added during the write stays due
+  else if (!runtime.isMetricsWarned) {
+    runtime.isMetricsWarned = true
+    $.ui.log(`ccwarden: couldn't write the metrics log to ${path}; it will retry.`)
+  }
+}
+
+/** F15: what ccwarden spent itself (a keep-warm ping, a full handoff's fork) in the session's $, so the proof weighs it. */
+async function addOwnSpend($: $, config: Config, runtime: Runtime, usd: number): Promise<void> {
+  if (usd > 0) await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, usd: f.record.usd + usd } }))
+}
+
+/** F15: a spend toast (or one held by R9), counted on the page; it saves nothing by itself. */
+async function spendAlert($: $, config: Config, runtime: Runtime, kind: 'session' | 'subagent' | 'month', text: string): Promise<void> {
+  const shown = await notify($, 'spend', text)
+  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: { kind, shown } })
+}
+
+/** F15: a conversation ended: the file is written; after /clear the next event starts a new part. */
+async function endMetrics($: $, runtime: Runtime, isClear: boolean): Promise<void> {
+  if (runtime.metrics === undefined) return
+  runtime.isMetricsDirty = true
+  await flushMetrics($, runtime)
+  // ponytail: a topic saving with no request yet belongs to the conversation after this /clear, so it waits
+  runtime.pending = runtime.pending.filter(p => p.feature === 'topic' && p.requests === 0 && isClear)
+  if (isClear) runtime.isNewPart = true
+}
+
+/** F15: a compaction drops kept-out output from the context, so its re-reads stop here. */
+async function settleJunk($: $, config: Config, runtime: Runtime): Promise<void> {
+  const junk = runtime.pending.filter(p => p.feature === 'junk')
+  if (junk.length === 0) return
+  await editMetrics($, config, runtime, f => junk.reduce((acc, p) => putOutcome(acc, pendingOutcome(p)), f))
+  runtime.pending = runtime.pending.filter(p => p.feature !== 'junk')
+}
+
+/** F15: a main-loop request, counted in the record. */
+async function countRequest($: $, config: Config, runtime: Runtime): Promise<void> {
+  for (const p of runtime.pending) p.requests++
+  await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, requests: f.record.requests + 1 } }))
+}
+
+/** F15: a finished turn into the record; a pinned subagent's turn also rewrites its saving. */
+async function addTurnMetrics($: $, config: Config, runtime: Runtime, usage: Usage, agentId: string | undefined): Promise<void> {
+  const now = await $.clock.now()
+  await editMetrics($, config, runtime, f => ({ ...f, record: addTurn(f.record, usage, agentId !== undefined, now) }))
+  const pin = agentId === undefined ? undefined : runtime.pins[agentId]
+  if (pin === undefined) return
+  pin.usage = addUsage(pin.usage, usage)
+  const total = pin.usage
+  const est = pinEstimate(total, pin.from, pin.to, pin.confidence)
+  const tokens = total.input_tokens + total.output_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens
+  await editMetrics($, config, runtime, f => putOutcome(f, {
+    v: 1, at: now, feature: 'subagent', action: 'outcome', ref: pin.ref, ...(pin.would ? { would: true as const } : {}),
+    measured: { agentId: agentId!, tokens, usd: usageUsd(total) ?? 0 }, ...(est === undefined ? {} : { est }),
+  }))
+}
+
+/** F15: a started subagent (F5): pinned or only capped; a pin's saving is settled by its turns. */
+async function recordSpawn($: $, config: Config, runtime: Runtime, s: { type: string; agentId?: string; isPinned: boolean; would: boolean; from: string; to: string; confidence: 'high' | 'medium' }): Promise<void> {
+  const at = await $.clock.now()
+  const ref = `subagent-${at}-${s.agentId ?? ''}`
+  await recordEvent($, config, runtime, {
+    at, feature: 'subagent', action: s.isPinned ? 'pinned' : 'capped', ref, ...(s.would ? { would: true as const } : {}),
+    measured: { type: s.type, asked: s.from, ran: s.to },
+  })
+  if (s.isPinned && s.agentId !== undefined) runtime.pins[s.agentId] = { ref, from: s.from, to: s.to, confidence: s.confidence, would: s.would }
+}
 /** F11 (metered): a toast at 50%, 80% and 100% of the month budget, each once a month on this machine. */
-async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
+async function trackMonth($: $, config: Config, runtime: Runtime, ledger: Ledger): Promise<void> {
   if (config.billing === 'window' || config.monthlyBudgetUsd <= 0) return
   const now = await $.clock.now()
   const month = monthKey(now)
@@ -614,7 +879,7 @@ async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
   const due = monthStepsDue(mtd, config.monthlyBudgetUsd, sent)
   if (due.length === 0) return
   await $.store.set(MONTH_ALERTS_KEY, { month, sent: [...sent, ...due] })
-  await notify($, 'spend', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
+  await spendAlert($, config, runtime, 'month', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
 }
 
 /**
@@ -685,6 +950,157 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
   }
 }
 
+/** F14: rewrites the page if /cw open has run on this machine; never throws. `canParse` false reads no transcript anew. */
+async function refreshEfficiency($: $, config: Config, runtime: Runtime, canParse: boolean): Promise<void> {
+  if ((await $.store.get(DASHBOARD_OPENED_KEY)) !== true) return
+  await writeEfficiency($, config, runtime, canParse).catch((err: unknown) => $.ui.log(`ccwarden: dashboard refresh failed: ${String(err)}`, { to: 'debug' }))
+}
+
+/** F14: gathers the figures and writes the page; resolves its path, or undefined (logged) when it couldn't. */
+async function writeEfficiency($: $, config: Config, runtime: Runtime, canParse: boolean): Promise<string | undefined> {
+  const claude = await claudeDir($)
+  if (claude === undefined) {
+    $.ui.log('ccwarden: no home folder found, so the dashboard has nowhere to go.')
+    return undefined
+  }
+  await flushMetrics($, runtime) // so the page has this session
+  const junkLog = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
+  const { summaries, coverage } = await readSummaries($, joinPath(claude, 'projects'), junkLog, canParse)
+  const data = efficiencyData({
+    now: await $.clock.now(),
+    ...(config.billing === undefined ? {} : { billing: config.billing }),
+    junkMode: config.junkGuard,
+    ledger: (await $.store.get(LEDGER_KEY)) as Ledger | undefined,
+    projectDays: (await $.store.get(PROJECT_DAYS_KEY)) as ProjectDays | undefined,
+    junkLog,
+    hogDays: (await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined,
+    summaries,
+    coverage,
+    metrics: await readMetrics($, joinPath(claude, METRICS_DIR), canParse),
+    // ponytail: read at session end too: metrics files are small and capped; skip it there if the end bound proves too short (Q18)
+    events: await readRecentEvents($, runtime, joinPath(claude, METRICS_DIR), await $.clock.now()),
+    metricsDir: joinPath(claude, METRICS_DIR),
+  })
+  const path = joinPath(claude, DASHBOARD_FILE)
+  const written = await $.fs.write(path, dashboardHtml(data)).then(() => true, () => false)
+  if (!written) $.ui.log(`ccwarden: couldn't write the dashboard to ${path}.`)
+  return written ? path : undefined
+}
+
+/** The Claude folder: the one the transcript is in, else ~/.claude. */
+async function claudeDir($: $): Promise<string | undefined> {
+  const fromTranscript = claudeDirOf((await $.state.get(transcriptPath)).value)
+  if (fromTranscript !== undefined) return fromTranscript
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+  return home === undefined ? undefined : joinPath(home, '.claude')
+}
+
+/**
+ * F14: every transcript's summary, parsed once and cached in $.store while
+ * the file (and the junk events priced in it) is unchanged. Files one
+ * $.fs.read can't take are skipped and counted. With `canParse` false a
+ * changed file keeps its last summary and a new one waits. A projects
+ * folder that lists empty leaves the cache as it was.
+ */
+async function readSummaries($: $, projectsDir: string, junkLog: readonly JunkEvent[], canParse: boolean): Promise<{ summaries: Record<string, TranscriptSummary>; coverage: Coverage }> {
+  const coverage: Coverage = { total: 0, read: 0, skippedBig: 0, failed: 0, pending: 0 }
+  const folders = (await $.fs.list(projectsDir).catch(() => [])).filter(f => f.kind === 'dir')
+  if (folders.length === 0) return { summaries: {}, coverage }
+  const cache = ((await $.store.get(SUMMARIES_KEY)) as SummaryCache | undefined) ?? {}
+  const junkAt = junkTimesBySession(junkLog)
+  const next: SummaryCache = {}
+  for (const folder of folders) {
+    const dir = joinPath(projectsDir, folder.name)
+    for (const f of await $.fs.list(dir).catch(() => [])) {
+      if (f.kind !== 'file' || !f.name.endsWith('.jsonl')) continue
+      coverage.total++
+      if (f.size > MAX_TRANSCRIPT_BYTES) {
+        coverage.skippedBig++
+        continue
+      }
+      const path = joinPath(dir, f.name)
+      const times = junkAt[f.name.replace(/\.jsonl$/, '')] ?? []
+      const cached = cache[path]
+      if (cached !== undefined && (!canParse || isFresh(cached, f, times.length))) {
+        next[path] = cached
+        coverage.read++
+        continue
+      }
+      if (!canParse) {
+        coverage.pending++
+        continue
+      }
+      const text = await $.fs.read(path).catch(() => undefined)
+      if (text === undefined) {
+        coverage.failed++
+        continue
+      }
+      next[path] = { mtimeMs: f.mtimeMs, size: f.size, junk: times.length, summary: summarize(parseJsonl(text), times) }
+      coverage.read++
+    }
+  }
+  await $.store.set(SUMMARIES_KEY, fitCache(next, CACHE_MAX_CHARS)) // files gone since are dropped
+  return { summaries: Object.fromEntries(Object.entries(next).map(([p, e]) => [p, e.summary])), coverage }
+}
+
+const METRICS_SUMMARIES_KEY = 'metricsSummaries' // $.store: each metrics file's summary, parsed once (F15)
+// Each summary cache's share of $.store, whose JSON is capped at 4 MiB for all keys: past it the files changed
+// longest ago are dropped from the cache (and read again when needed), so the ledger and the rest keep room.
+const CACHE_MAX_CHARS = 1_500_000
+
+type MetricsCache = Record<string, { mtimeMs: number; size: number; summary: MetricsSummary }>
+
+/** F15: every metrics file's summary, cached while the file is unchanged; `canParse` false reads no file anew. */
+async function readMetrics($: $, dir: string, canParse: boolean): Promise<Record<string, MetricsSummary>> {
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.kind === 'file' && f.name.endsWith('.jsonl'))
+  const cache = ((await $.store.get(METRICS_SUMMARIES_KEY)) as MetricsCache | undefined) ?? {}
+  const next: MetricsCache = {}
+  for (const f of files) {
+    const path = joinPath(dir, f.name)
+    const cached = cache[path]
+    if (cached !== undefined && (!canParse || (cached.mtimeMs === f.mtimeMs && cached.size === f.size))) {
+      next[path] = cached
+      continue
+    }
+    if (!canParse || f.size > MAX_TRANSCRIPT_BYTES) continue
+    const text = await $.fs.read(path).catch(() => undefined)
+    if (text !== undefined) next[path] = { mtimeMs: f.mtimeMs, size: f.size, summary: summarizeMetrics(text, f.name.replace(/\.jsonl$/, '')) }
+  }
+  await $.store.set(METRICS_SUMMARIES_KEY, fitCache(next, CACHE_MAX_CHARS))
+  return Object.fromEntries(Object.entries(next).map(([p, e]) => [p, e.summary]))
+}
+
+/** F15: the last 30 days' events from the metrics files, newest first, at most RECENT_EVENTS. */
+async function readRecentEvents($: $, runtime: Runtime, dir: string, now: number): Promise<SessionEvent[]> {
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.kind === 'file' && f.name.endsWith('.jsonl') && now - f.mtimeMs <= 30 * DAY_MS && f.size <= MAX_TRANSCRIPT_BYTES)
+  const out: SessionEvent[] = []
+  const held = new Map<string, { mtimeMs: number; size: number; events: MetricEvent[] }>()
+  for (const f of files) {
+    const path = joinPath(dir, f.name)
+    const cached = runtime.recentEvents.get(path)
+    let events = cached?.mtimeMs === f.mtimeMs && cached.size === f.size ? cached.events : undefined
+    if (events === undefined) {
+      const text = await $.fs.read(path).catch(() => undefined)
+      if (text === undefined) continue
+      events = parseFile(text).events
+    }
+    held.set(path, { mtimeMs: f.mtimeMs, size: f.size, events })
+    const session = f.name.replace(/\.jsonl$/, '')
+    for (const e of events) if (now - e.at <= 30 * DAY_MS) out.push({ ...e, session })
+  }
+  runtime.recentEvents = held // files gone or past 30 days are dropped
+  return out.sort((a, b) => b.at - a.at).slice(0, RECENT_EVENTS)
+}
+
+/** F14: opens the page in the default browser; when that fails, says where it is. */
+async function openInBrowser($: $, path: string): Promise<void> {
+  let os: HostOs = 'linux'
+  if ((await $.env.get('OS')) === 'Windows_NT') os = 'windows'
+  else if ((await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin') os = 'mac'
+  const ran = await $.process.run(openerArgv(os, path), { timeoutMs: 10_000 }).catch(() => undefined)
+  $.ui.log(ran?.exitCode === 0 ? `ccwarden: dashboard opened in your browser (${path}).` : `ccwarden: dashboard written to ${path}; open it in a browser.`)
+}
+
 /** Budget mode (SPEC §3): by hand, or past budgetModeAt% of the month budget or 5h window; says when it switches on by itself. */
 async function updateBudgetMode($: $, config: Config, runtime: Runtime): Promise<void> {
   const manual = ((await $.store.get(BUDGET_SWITCH_KEY)) as BudgetSwitch | undefined) ?? 'auto'
@@ -730,7 +1146,7 @@ async function watchBackground($: $, source: BackgroundSource, usd: number): Pro
  * to quick when the cache is cold (the fork would re-read everything), the
  * estimate passes handoffMaxUsd, or the reply isn't the four sections.
  */
-async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?: readonly SessionMessage[]): Promise<string | undefined> {
+async function writeHandoff($: $, config: Config, runtime: Runtime, mode: 'quick' | 'full', known?: readonly SessionMessage[]): Promise<string | undefined> {
   const messages = known ?? (await $.session.messages())
   const facts = await snapshotFacts($, messages)
   const model = await $.session.model()
@@ -746,6 +1162,7 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
     else if (estimate > config.handoffMaxUsd) why = `a full one would cost ~$${estimate.toFixed(2)} (handoffMaxUsd is $${config.handoffMaxUsd})`
     else {
       const reply = await $.model.fork({ prompt: FULL_PROMPT }).catch(() => undefined)
+      if (reply !== undefined && 'usage' in reply) await addOwnSpend($, config, runtime, usageUsd({ ...reply.usage, model }) ?? 0)
       full = reply?.isAnswered === true ? fullSections(reply.text) : undefined
       if (full === undefined) why = "the fork didn't return the four sections"
     }
@@ -759,6 +1176,8 @@ async function writeHandoff($: $, config: Config, mode: 'quick' | 'full', known?
   $.ui.log(!written
     ? `ccwarden: couldn't write the handoff to ${path}.`
     : `ccwarden: ${full === undefined ? 'quick' : 'full'} handoff written to ${path}${why === '' ? '' : ` (quick: ${why})`}.`)
+  if (written) await recordProject($, { handoffs: 1 })
+  if (written) await recordEvent($, config, runtime, { feature: 'handoff', action: 'written', measured: { route: full === undefined ? 'quick' : 'full' } })
   return written ? path : undefined
 }
 
@@ -782,8 +1201,17 @@ async function offerHandoff($: $, config: Config): Promise<void> {
 }
 
 /** Adds one junk-guard event to the log in $.store (machine-wide, kept for review before `enforce`). */
-async function recordJunk($: $, event: JunkEvent): Promise<void> {
-  await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, event))
+async function recordJunk($: $, config: Config, runtime: Runtime, event: JunkEvent): Promise<void> {
+  const tagged: JunkEvent = { ...event, project: projectKey(await $.session.root()), session: await $.session.id() }
+  await $.store.set(JUNK_LOG_KEY, appendJunk((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined, tagged))
+  const family = familyOf(await $.session.model())
+  const ref = `junk-${event.at}-${++runtime.refs}`
+  const would = event.mode === 'observe'
+  await recordEvent($, config, runtime, {
+    at: event.at, feature: 'junk', action: would ? 'would-keep-out' : 'kept-out', ref, ...(would ? { would: true as const } : {}),
+    measured: { tool: event.tool, target: event.target.slice(0, 200), size: event.size, chars: event.savedChars },
+  })
+  if (family !== undefined) runtime.pending.push({ ref, feature: 'junk', at: event.at, tokens: event.savedChars / CHARS_PER_TOKEN, family, requests: 0, would })
   $.ui.log(`ccwarden junk guard (${event.mode}): ${event.tool} ${event.target}`, { to: 'debug' })
 }
 
@@ -822,6 +1250,7 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     keepWarm: conv.keepWarm,
     miss: conv.lastMiss,
     isBudget,
+    isHoldout: (await $.state.get(holdoutRef)).value === true,
     backgroundUsd: conv.background?.usd,
     agents: {
       running: runningCount(await $.agent.list()),
@@ -837,10 +1266,21 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
  * the session.compact hook and is a snapshot. Overrides a value set by hand:
  * the per-model limits are limitHaiku/limitOther.
  */
-async function syncCompactWindow($: $, config: Config): Promise<void> {
+async function syncCompactWindow($: $, config: Config, runtime: Runtime): Promise<void> {
   const usage = await $.session.usage()
   const target = String(compactWindowFor(limitFor(await $.session.model(), config), usage.context.window))
-  if ((await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')) === target) return
+  const current = await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+  if (await isHoldout($, config, runtime)) {
+    // A protected conversation before /clear set it in this process. ponytail: after a reload the old value is
+    // unknown, so a window that matches ccwarden's own is unset (the engine's default) rather than kept.
+    const own = runtime.compactWindow
+    if (own !== undefined && current === own.set) await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', own.before)
+    else if (own === undefined && current === target) await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', undefined)
+    runtime.compactWindow = undefined
+    return
+  }
+  if (current === target) return
+  runtime.compactWindow = { set: target, before: runtime.compactWindow === undefined ? current : runtime.compactWindow.before }
   await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', target)
   $.ui.log(`ccwarden: auto-compact window set to ${target} tokens for ${await $.session.model()}.`, { to: 'debug' })
 }
@@ -872,6 +1312,7 @@ function lastCacheUse(conv: CcwardenConversation): number | undefined {
  */
 async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<void> {
   if (runtime.isPinging) return
+  if (await isHoldout($, config, runtime)) return
   const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
   const now = await $.clock.now()
   const usage = await $.session.usage()
@@ -892,7 +1333,7 @@ async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<voi
   const reply = await $.model.fork({ prompt: PING_PROMPT }).catch(() => undefined)
   runtime.isPinging = false
   if (reply === undefined || !('usage' in reply)) return
-  const spent = turnUsd({ ...reply.usage, model }) ?? 0
+  const spent = usageUsd({ ...reply.usage, model }) ?? 0
   const didRead = reply.usage.cache_read_input_tokens >= (usage.context.tokens ?? 0) * 0.5
   const at = await $.clock.now()
   const after = await update($, conversation, prev => {
@@ -903,6 +1344,9 @@ async function keepWarmTick($: $, config: Config, runtime: Runtime): Promise<voi
     else c.keepWarmMissedFor = lastUse
     return c
   })
+  await recordProject($, { keepWarmPings: 1, keepWarmSpentUsd: spent })
+  await addOwnSpend($, config, runtime, spent)
+  await recordEvent($, config, runtime, { at, feature: 'keepwarm', action: 'ping', measured: { read: reply.usage.cache_read_input_tokens, didRead }, est: { tokens: 0, usd: -spent, formula: 'ping cost', confidence: 'high' } })
   $.ui.log(`ccwarden keep-warm: ping read ${reply.usage.cache_read_input_tokens} cached tokens for ~$${spent.toFixed(3)}${didRead ? '' : ' (the cache had lapsed)'}.`, { to: 'debug' })
   await refreshStatus($, config, after)
 }

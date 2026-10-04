@@ -21,7 +21,8 @@ import { backgroundSource, backgroundToast } from '../src/background'
 import { fullSections, handoffFileName, handoffMarkdown, handoffTopic, newestUnread } from '../src/handoff'
 import { avoidedRebuild, PING_LEAD_MS, pingUsd, pingVerdict } from '../src/keepwarm'
 import { coldChoice, coldDropReason, coldQuestion, isColdAskDue, isHandoffAsk } from '../src/cold'
-import { planSpawn, REPORT_CAP, runningCount, turnUsd } from '../src/agents'
+import { planSpawn, REPORT_CAP, runningCount } from '../src/agents'
+import { usageUsd } from '../src/metrics'
 import { isTopicCandidate, isTopicShift, keywords, topicChoice, topicOverlap } from '../src/topic'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
 
@@ -29,6 +30,18 @@ describe('config', () => {
   test('empty options read as the defaults, billing unset', () => {
     expect(readConfig({})).toEqual(DEFAULTS)
     expect(readConfig({ billing: 'ask' }).billing).toBeUndefined()
+  })
+
+  test('measureHoldout: off by default, a boolean', () => {
+    expect(readConfig({} as never).measureHoldout).toBe(false)
+    expect(readConfig({ measureHoldout: true } as never).measureHoldout).toBe(true)
+    expect(readConfig({ measureHoldout: 'yes' } as never).measureHoldout).toBe(false)
+  })
+
+  test('a holdout session says so in the status line', () => {
+    const base = { billing: 'metered' as const, model: 'claude-sonnet-5-5', tokens: 1_000, limit: 300_000, cache: { kind: 'none' as const }, ttl: '5m' as const, now: 0, isAlerted: false, usd: 0 }
+    expect(formatStatus({ ...base, isHoldout: true })).toContain(' · holdout')
+    expect(formatStatus(base)).not.toContain('holdout')
   })
 
   test('bad values fall back; steps and limits must be positive', () => {
@@ -401,8 +414,8 @@ describe('T4 subagents', () => {
   test('cost of a turn at list price', () => {
     const usage = { input_tokens: 100_000, output_tokens: 10_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 200_000 }
     // Haiku: 0.1 + 0.05 + 0.1 + 0.25
-    expect(Math.round((turnUsd({ ...usage, model: 'claude-haiku-4-5' }) ?? 0) * 100) / 100).toBe(0.5)
-    expect(turnUsd({ ...usage, model: 'mystery' })).toBeUndefined()
+    expect(Math.round((usageUsd({ ...usage, model: 'claude-haiku-4-5' }) ?? 0) * 100) / 100).toBe(0.5)
+    expect(usageUsd({ ...usage, model: 'mystery' })).toBeUndefined()
   })
 
   test('running count', () => {
