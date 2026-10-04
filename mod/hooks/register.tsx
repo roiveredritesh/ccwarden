@@ -19,7 +19,7 @@ import { compactWindowFor, limitFor, readConfig } from '../src/config'
 import { joinPath } from '../src/paths'
 import type { Billing, Config } from '../src/config'
 import { familyOf, rebuildUsd } from '../src/prices'
-import { appendJunk, isAllowlisted, isAlreadyFiltered, isWholeTextRead, countLines, junkSavedText, junkTokens, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
+import { appendJunk, isAllowlisted, isAlreadyFiltered, isCheckedRead, readPlan, junkSavedText, junkTokens, outputPath, parseGlobs, readDenyText, isTestCommand, testOutput, trimmedOutput } from '../src/junk'
 import type { JunkEvent } from '../src/junk'
 import { addSpend, calibrate, costDelta, dayKey, monthKey, monthToDate, projectMonth } from '../src/ledger'
 import { budgetConfig, budgetModeText, isBudgetMode, monthAlertText, monthStepsDue } from '../src/budget'
@@ -314,20 +314,29 @@ export const register: Register = (on, options) => {
     return { drop: reason }
   })
 
-  // F4: a whole-file Read of a long text file is denied with a pointer to
-  // Grep or a ranged Read. Files under `readMaxLines` bytes can't be that
-  // long and aren't read; files one $.fs.read can't take are left alone.
+  // F4: a whole-file Read of a long text file, or a Read whose limit asks for
+  // more than `readMaxLines` lines, is denied with a pointer to Grep or a
+  // ranged Read. Files under `readMaxLines` bytes can't be that long and
+  // aren't read; files one $.fs.read can't take are left alone.
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
-    if (config.junkGuard === 'off' || !isWholeTextRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
+    if (config.junkGuard === 'off' || !isCheckedRead(e) || isAllowlisted(e.file_path, junkAllowlist)) return next(e)
     const mode = (await isHoldout($, config, runtime)) ? 'observe' : config.junkGuard
     const stat = await $.fs.stat(e.file_path).catch(() => undefined)
     if (stat === undefined || stat.kind !== 'file' || stat.size <= eff().readMaxLines || stat.size > MAX_TRANSCRIPT_BYTES) return next(e)
     const text = await $.fs.read(e.file_path).catch(() => undefined)
-    const lines = text === undefined ? 0 : countLines(text)
-    if (lines <= eff().readMaxLines) return next(e)
-    await recordJunk($, config, runtime, { at: await $.clock.now(), tool: 'Read', mode, target: e.file_path, size: lines, savedChars: stat.size })
-    if (mode === 'observe') return next(e)
-    const reason = readDenyText(e.file_path, lines, eff().readMaxLines)
+    if (text === undefined) return next(e)
+    const plan = readPlan(e, text)
+    if (plan.asked <= eff().readMaxLines) return next(e)
+    const event = { at: await $.clock.now(), tool: 'Read' as const, mode, target: e.file_path, size: plan.asked }
+    if (mode === 'observe') {
+      // What the engine really put in the context, when it says; else the estimate.
+      const ran = await next(e)
+      const got = ran.deny === undefined && !ran.isError && ran.result?.type === 'text' ? ran.result.file.content.length : undefined
+      await recordJunk($, config, runtime, { ...event, savedChars: got ?? plan.estChars })
+      return ran
+    }
+    await recordJunk($, config, runtime, { ...event, savedChars: plan.estChars })
+    const reason = readDenyText(e.file_path, plan.asked, eff().readMaxLines, e.limit)
     $.ui.log(reason)
     return { deny: reason }
   })
@@ -471,6 +480,9 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     runtime.isTurnRunning = true
+    // F3: before the turn's first request, so a model picked with /model
+    // compacts at its own limit from that request on (SPEC §9 Q25).
+    await syncCompactWindow($, config, runtime)
     // The turn's prompt, matched by text; a turn no queued prompt matches is the user's.
     const i = runtime.queued.findIndex(q => q.text === e.text)
     runtime.turnSource = i === -1 ? undefined : runtime.queued[i]!.source

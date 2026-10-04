@@ -83,9 +83,9 @@
     },
     "readMaxLines": {
       "type": "number",
-      "title": "Junk guard: max lines for a Read without a limit",
+      "title": "Junk guard: max lines for one Read",
       "default": 2000,
-      "description": "A Read with no limit on a longer file is redirected to Grep or a ranged Read."
+      "description": "A Read with no limit on a longer file, or a limit that asks for more lines, is redirected to Grep or a ranged Read."
     },
     "bashMaxChars": {
       "type": "number",

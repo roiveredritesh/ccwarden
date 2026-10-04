@@ -10,7 +10,7 @@ import { familyOf, rebuildUsd } from '../src/prices'
 import { joinPath, relativeTo } from '../src/paths'
 import { fmtDuration, fmtTokens, formatStatus } from '../src/status'
 import { fiveHour, trackWindow } from '../src/window'
-import { appendJunk, countLines, failuresOnly, isAllowlisted, isAlreadyFiltered, isTestCommand, isWholeTextRead, JUNK_LOG_MAX, junkSavedText, junkTokens, outputPath, parseGlobs, trimOutput } from '../src/junk'
+import { appendJunk, countLines, failuresOnly, isAllowlisted, isAlreadyFiltered, isCheckedRead, isTestCommand, JUNK_LOG_MAX, readDenyText, readPlan, junkSavedText, junkTokens, outputPath, parseGlobs, trimOutput } from '../src/junk'
 import { analyze, requestsOf, ttlVerdict, weekReport } from '../src/report'
 import { dashboardText } from '../src/dashboard'
 import { budgetConfig, isBudgetMode, monthStepsDue } from '../src/budget'
@@ -459,11 +459,23 @@ describe('T5 cold-cache guard', () => {
 
 describe('T6 junk guard', () => {
   test('which Reads are checked', () => {
-    expect(isWholeTextRead({ file_path: '/a.ts' })).toBe(true)
-    expect(isWholeTextRead({ file_path: '/a.ts', limit: 10 })).toBe(false)
-    expect(isWholeTextRead({ file_path: '/a.ts', offset: 10 })).toBe(false)
-    expect(isWholeTextRead({ file_path: '/a.pdf' })).toBe(false)
-    expect(isWholeTextRead({ file_path: '/a.PNG' })).toBe(false)
+    expect(isCheckedRead({ file_path: '/a.ts' })).toBe(true)
+    expect(isCheckedRead({ file_path: '/a.ts', limit: 10 })).toBe(true) // a large limit would get round the guard
+    expect(isCheckedRead({ file_path: '/a.ts', offset: 10, limit: 10 })).toBe(true)
+    expect(isCheckedRead({ file_path: '/a.ts', offset: 10 })).toBe(false) // the engine's default page from there
+    expect(isCheckedRead({ file_path: '/a.pdf' })).toBe(false)
+    expect(isCheckedRead({ file_path: '/a.PNG' })).toBe(false)
+  })
+  test('what a Read asks for, and what it would put in the context', () => {
+    const text = Array.from({ length: 3_000 }, () => 'abcd').join('\n') // 5 characters a line, with its newline
+    // Whole: the file's lines, but only the engine's first page (2000 lines) would come back.
+    expect(readPlan({}, text)).toEqual({ asked: 3_000, estChars: 2_000 * 5 - 1 })
+    expect(readPlan({ limit: 2_500 }, text)).toEqual({ asked: 2_500, estChars: 2_500 * 5 - 1 })
+    expect(readPlan({ offset: 2_001, limit: 2_500 }, text)).toEqual({ asked: 1_000, estChars: 1_000 * 5 - 1 })
+    expect(readPlan({ offset: 1, limit: 100 }, text).asked).toBe(100)
+    expect(readDenyText('/a.log', 3_000, 2_000)).toContain('a whole Read would put up to 2000 of them in the context')
+    expect(readDenyText('/a.log', 1_500, 800)).toContain('up to 1500 of them')
+    expect(readDenyText('/a.log', 2_500, 2_000, 2_500)).toBe('ccwarden junk guard: this Read asks for 2500 lines of /a.log (limit 2500), more than 2000. Use Grep to find what you need in it, or Read at most 2000 lines at a time.')
   })
   test('lines, filtered commands, trimming', () => {
     expect(countLines('')).toBe(0)
