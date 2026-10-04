@@ -244,11 +244,12 @@ function proofHtml(p: ProofResult): string {
   return `<section class="proof"><h2>Proof (holdout)</h2><p class="total">${claim}</p>${svg}<p class="dim">Median per prompt: holdout $${p.holdoutMedian.toFixed(3)}, protected $${p.protectedMedian.toFixed(3)}.${check === undefined ? '' : ` ${escapeHtml(check)}`}</p></section>`
 }
 
-/** F15: the logged features in a fixed order, which is also their chart colour slot; Handoffs fold to "Other". */
-const FEATURES: readonly Feature[] = ['subagent', 'cold', 'topic', 'junk', 'snapshot', 'keepwarm', 'limit', 'handoff']
+/** F15: the logged features in a fixed order, which is also their chart colour slot; Handoffs and after fold to "Other". */
+const FEATURES: readonly Feature[] = ['subagent', 'cold', 'topic', 'junk', 'snapshot', 'keepwarm', 'limit', 'handoff', 'alert', 'compact']
 const FEATURE_LABEL: Record<Feature, string> = {
   subagent: 'Subagent guard', cold: 'Cold-cache guard', topic: 'Unrelated-prompt hint', junk: 'Junk guard',
   snapshot: 'Snapshot compaction', keepwarm: 'Keep-warm', limit: 'Limit hints', handoff: 'Handoffs',
+  alert: 'Spend alerts', compact: 'Summary compactions',
 }
 /** Events the page lists; the raw JSON holds up to RECENT_EVENTS. */
 const EVENTS_SHOWN = 100

@@ -405,6 +405,8 @@ const LOGGED: Record<Feature, { feature: string; did: string; formula: string; c
   keepwarm: { feature: 'Keep-warm', did: 'pings that kept the cache warm', formula: 'rebuilds avoided − pings spent', confidence: 'high', would: 'Keep-warm (holdout)', wouldDid: 'pings it would have sent' },
   limit: { feature: 'Limit hints', did: '/compact hints past the model limit', formula: 'count only', confidence: 'count only', would: 'Limit hints (holdout)', wouldDid: 'hints it would have shown' },
   handoff: { feature: 'Handoffs', did: 'notes written', formula: 'count only', confidence: 'count only', would: 'Handoffs (holdout)', wouldDid: 'notes' },
+  alert: { feature: 'Spend alerts', did: 'spend alerts raised (session, subagent, month)', formula: 'count only', confidence: 'count only', would: 'Spend alerts (holdout)', wouldDid: 'alerts' },
+  compact: { feature: 'Summary compactions', did: 'compactions the engine summarised (/compact <focus> or compactMode summary)', formula: 'count only', confidence: 'count only', would: 'Summary compactions (holdout)', wouldDid: 'compactions' },
 }
 
 /** Adds a logged feature's totals to its row, making the row if the range has none yet. */

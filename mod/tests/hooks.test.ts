@@ -1609,6 +1609,21 @@ describe('F15 metrics log', () => {
     expect(m.events.filter(e => e.action === 'denied')).toHaveLength(1)
   })
 
+  for (const surface of SURFACES) {
+    test(`a spend alert and a summary compaction are logged, count only (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], env: HOME })
+      await $.session.start(start(surface))
+      w.usage.usd = 5.5
+      await $.session.measure(measure(w))
+      await $.session.compact({ trigger: 'manual', instructions: 'the auth design', messages: [{ role: 'user', text: 'Fix the login bug', toolUses: [] }] })
+      await $.turn.complete(turnDone())
+      const m = metricsOf(w)!
+      expect(m.events.find(e => e.feature === 'alert')).toMatchObject({ action: 'sent', measured: { kind: 'session', shown: true } })
+      expect(m.events.find(e => e.feature === 'compact')).toMatchObject({ action: 'summarised', measured: { trigger: 'manual' } })
+      expect(m.events.filter(e => e.feature === 'alert' || e.feature === 'compact').map(e => e.est)).toEqual([undefined, undefined])
+    })
+  }
+
   test('a cold-cache ask: the ask, and the rebuild saved when the prompt was kept back', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 }, env: HOME })
     await $.session.start(start('terminal'))

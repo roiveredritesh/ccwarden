@@ -334,6 +334,13 @@ describe('F15 rows from the metrics log', () => {
     expect(r('Limit hints')).toMatchObject({ count: 1 })
   })
 
+  test('spend alerts and summary compactions: count-only rows, never in the total', () => {
+    const counted = { ...SUMMARY, days: { ...SUMMARY.days, '2026-10-03': { alert: { done: total(2, 0, 0), would: none }, compact: { done: total(1, 0, 0), would: none } } } }
+    const rows = efficiencyData({ ...FIXTURE, metrics: { x: counted } }).ranges['7d'].views['']!.savings
+    expect(rows.find(r => r.feature === 'Spend alerts')).toMatchObject({ count: 2, usd: 0, confidence: 'count only', isInTotal: false })
+    expect(rows.find(r => r.feature === 'Summary compactions')).toMatchObject({ count: 1, usd: 0, confidence: 'count only', isInTotal: false })
+  })
+
   test('no log: exactly the F14 rows', () => {
     expect(efficiencyData(FIXTURE).ranges['7d'].views['']!.savings.map(r => r.feature)).toEqual(['Junk guard', 'Junk guard (observe)', 'Keep-warm', 'Snapshot compaction', 'Cold-cache guard', 'Handoffs'])
   })

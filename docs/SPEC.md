@@ -388,6 +388,8 @@ It never blocks and adds nothing to context.
   | F6 keep-warm | `avoided`, `ping` (negative $) | rebuilds avoided − pings spent | high |
   | F3 limit hint | `compact-hint` | count only | — |
   | F7 handoff | `written` (quick or full) | count only | — |
+  | F1b / F11 spend alerts | `alert` / `sent` (`kind`: session, subagent or month; `shown`: false when R9 held it) | count only | — |
+  | F3 summary compaction | `compact` / `summarised` (`/compact <focus>` or `compactMode` summary: the engine's summary ran) | count only | — |
 
   After the first logged day, the page takes F4, F3 and F6 from the log instead of `junkLog` and `projectDays`, so nothing counts twice. On the first logged day those two stores keep the features they record (they ran all day; the log started partway through it), and the log adds only what they lack: subagent pins, limit hints and holdout events. That day, cold asks and topic clears show as counts without $.
   - **Holdout:** a part is a holdout when `measureHoldout` was on when it started and `fnv1a(session id) % 10 === 0` (FNV-1a 32-bit over UTF-16 code units; session ids are ASCII). Decided once per session id and kept in `$.state` `holdout`. A holdout session never blocks or rewrites: the junk guard runs in `observe`, the subagent guard pins and denies nothing, F2 and F13 don't ask, F3 neither hints, syncs the compact window nor answers compactions, and keep-warm doesn't ping; each logs a `would-…` event instead. The status line says `holdout`, and the session logs one line saying so when it starts.

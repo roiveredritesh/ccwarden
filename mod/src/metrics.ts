@@ -16,7 +16,7 @@ export const MAX_FILE_CHARS = 3_500_000
 const HOLDOUT_SHARE = 10
 const RECORD_ROOM = 4_000 // the records' lines, kept free under MAX_FILE_CHARS
 
-export type Feature = 'subagent' | 'cold' | 'topic' | 'junk' | 'snapshot' | 'keepwarm' | 'limit' | 'handoff'
+export type Feature = 'subagent' | 'cold' | 'topic' | 'junk' | 'snapshot' | 'keepwarm' | 'limit' | 'handoff' | 'alert' | 'compact'
 export type Confidence = 'high' | 'medium' | 'low' | 'count only'
 export type Estimate = { tokens: number; usd: number; formula: string; confidence: Confidence }
 export type MetricEvent = {

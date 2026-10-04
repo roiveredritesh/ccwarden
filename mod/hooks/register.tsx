@@ -219,9 +219,9 @@ export const register: Register = (on, options) => {
       if (step > c.alerted) c.alerted = step
       return c
     })
-    if (due !== undefined && config.alertTiming === 'immediate') await notify($, 'spend', due)
+    if (due !== undefined && config.alertTiming === 'immediate') await spendAlert($, config, runtime, 'session', due)
     if (spent > 0) {
-      await trackMonth($, config, await recordSpend($, spent))
+      await trackMonth($, config, runtime, await recordSpend($, spent))
       await recordProject($, { usd: spent })
     }
     if (spent > 0 || reading !== undefined) await updateBudgetMode($, config, runtime)
@@ -525,7 +525,7 @@ export const register: Register = (on, options) => {
         c.agents = agents
         return c
       })
-      if (isWarnDue) await notify($, 'spend', `⚠ A subagent (${agentId}) has cost $${total.toFixed(2)} so far (est.).`)
+      if (isWarnDue) await spendAlert($, config, runtime, 'subagent', `⚠ A subagent (${agentId}) has cost $${total.toFixed(2)} so far (est.).`)
       await refreshStatus($, config, conv)
       return result
     }
@@ -541,7 +541,7 @@ export const register: Register = (on, options) => {
       delete c.pendingAlert
       return c
     })
-    if (pending !== undefined) await notify($, 'spend', pending)
+    if (pending !== undefined) await spendAlert($, config, runtime, 'session', pending)
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
@@ -596,6 +596,7 @@ export const register: Register = (on, options) => {
     if (config.handoffOnCompact) await writeHandoff($, config, runtime, 'quick', e.messages)
     if (plan === 'summary+facts') {
       const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: 0 })
+      await recordEvent($, config, runtime, { feature: 'compact', action: 'summarised', measured: { tokens: (await $.session.usage()).context.tokens ?? 0, trigger: e.trigger } })
       return next({ ...e, instructions: summaryInstructions(e.instructions, text) })
     }
 
@@ -785,6 +786,12 @@ async function flushMetrics($: $, runtime: Runtime): Promise<void> {
   }
 }
 
+/** F15: a spend toast (or one held by R9), counted on the page; it saves nothing by itself. */
+async function spendAlert($: $, config: Config, runtime: Runtime, kind: 'session' | 'subagent' | 'month', text: string): Promise<void> {
+  const shown = await notify($, 'spend', text)
+  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: { kind, shown } })
+}
+
 /** F15: a conversation ended: the file is written; after /clear the next event starts a new part. */
 async function endMetrics($: $, runtime: Runtime, isClear: boolean): Promise<void> {
   if (runtime.metrics === undefined) return
@@ -836,7 +843,7 @@ async function recordSpawn($: $, config: Config, runtime: Runtime, s: { type: st
   if (s.isPinned && s.agentId !== undefined) runtime.pins[s.agentId] = { ref, from: s.from, to: s.to, confidence: s.confidence, would: s.would }
 }
 /** F11 (metered): a toast at 50%, 80% and 100% of the month budget, each once a month on this machine. */
-async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
+async function trackMonth($: $, config: Config, runtime: Runtime, ledger: Ledger): Promise<void> {
   if (config.billing === 'window' || config.monthlyBudgetUsd <= 0) return
   const now = await $.clock.now()
   const month = monthKey(now)
@@ -846,7 +853,7 @@ async function trackMonth($: $, config: Config, ledger: Ledger): Promise<void> {
   const due = monthStepsDue(mtd, config.monthlyBudgetUsd, sent)
   if (due.length === 0) return
   await $.store.set(MONTH_ALERTS_KEY, { month, sent: [...sent, ...due] })
-  await notify($, 'spend', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
+  await spendAlert($, config, runtime, 'month', monthAlertText(mtd, config.monthlyBudgetUsd, projectMonth(mtd, now)))
 }
 
 /**
