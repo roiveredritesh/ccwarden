@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { addProjectDay, claudeDirOf, efficiencyData, fitCache, installDay, isFresh, junkTimesBySession, openerArgv, projectKey, sessionOf, snapshotSaving, summarize } from '../src/efficiency'
-import type { DayUsage, EfficiencyInput } from '../src/efficiency'
+import type { DayUsage, EfficiencyInput, SessionEvent } from '../src/efficiency'
 import { requestsOf } from '../src/report'
 import { coverageLine, dashboardHtml, escapeHtml, summaryMarkdown } from '../src/htmlDashboard'
 import type { MetricsSummary } from '../src/metrics'
@@ -374,7 +374,7 @@ describe('F15 the page', () => {
   const DAY = Date.parse('2026-10-03T10:00:00Z')
   const r = { ...newRecord({ session: 's2', project: '/p', now: DAY, measuring: true }), family: 'sonnet' as const, prompts: 8, usd: 4 }
   const SUMMARY = { session: 's2', project: '/p', records: [r], estUsd: 1.5, wouldUsd: 0, skipped: 0, days: { '2026-10-03': { subagent: { done: { count: 2, tokens: 0, usd: 1.5 }, would: { count: 0, tokens: 0, usd: 0 } } } } }
-  const evs = [
+  const evs: SessionEvent[] = [
     { v: 1 as const, at: DAY, feature: 'subagent' as const, action: 'pinned', measured: { type: 'Explore' }, session: 's2' },
     { v: 1 as const, at: DAY + 1, feature: 'subagent' as const, action: 'outcome', measured: {}, est: { tokens: 0, usd: 1.5, formula: 'x', confidence: 'high' as const }, session: 's2' },
   ]

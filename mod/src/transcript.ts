@@ -42,7 +42,7 @@ export type TranscriptEntry = {
 /** When the main thread's last response was written (ms), so a resumed conversation knows its cache's age. */
 export function lastResponseTime(entries: readonly TranscriptEntry[]): number | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]
+    const e = entries[i]!
     if (e.type !== 'assistant' || e.isSidechain || e.timestamp === undefined) continue
     const ms = Date.parse(e.timestamp)
     if (!Number.isNaN(ms)) return ms
