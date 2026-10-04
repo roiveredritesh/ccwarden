@@ -23,7 +23,7 @@ export type JunkEvent = {
   target: string
   /** Lines in the file, or characters of output. */
   size: number
-  /** Characters kept out of the context (est. for a denied Read: the file's). */
+  /** Characters kept out of the context: for a Read in observe, what the engine returned; for a denied one, est. by `readPlan`. */
   savedChars: number
   /** The project (its `projectKey`) and session (the transcript's name) it happened in (F14); absent on events from before. */
   project?: string
@@ -52,9 +52,30 @@ export function junkSavedText(mode: JunkMode, t: { kept: number; would: number }
 
 const BINARY_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|pdf|ipynb|zip|gz|tar|wasm|woff2?|ttf|otf|mp[34]|mov|avi)$/i
 
-/** A Read the guard checks: a text file read whole (no offset, limit or pages). */
-export function isWholeTextRead(e: { file_path: string; offset?: number; limit?: number; pages?: string }): boolean {
-  return e.offset === undefined && e.limit === undefined && e.pages === undefined && !BINARY_EXT.test(e.file_path)
+/**
+ * A Read the guard checks: a text file read whole, or with a `limit` (a large
+ * limit would get round the guard). An offset with no limit is left alone: the
+ * engine returns its default page from there.
+ */
+export function isCheckedRead(e: { file_path: string; offset?: number; limit?: number; pages?: string }): boolean {
+  return e.pages === undefined && !BINARY_EXT.test(e.file_path) && (e.limit !== undefined || e.offset === undefined)
+}
+
+/** Lines a Read with no limit returns: the Read tool's default page (its description; SPEC §9 Q24). */
+export const ENGINE_READ_LINES = 2000
+
+/**
+ * What a checked Read asks for: `asked` lines (read whole: the file's), and
+ * the characters it would put in the context (est.: whole, the engine's first
+ * page; with a limit, that range). An upper bound: the engine also caps a
+ * whole Read by tokens (`truncatedByTokenCap`), at a size the types don't give.
+ */
+export function readPlan(e: { offset?: number; limit?: number }, text: string): { asked: number; estChars: number } {
+  const total = countLines(text)
+  const start = Math.max(0, (e.offset ?? 1) - 1)
+  const count = e.limit === undefined ? ENGINE_READ_LINES : e.limit
+  const asked = e.limit === undefined ? total : Math.max(0, Math.min(e.limit, total - start))
+  return { asked, estChars: text.split('\n').slice(start, start + count).join('\n').length }
 }
 
 export function countLines(text: string): number {
@@ -64,9 +85,12 @@ export function countLines(text: string): number {
   return n
 }
 
-export function readDenyText(path: string, lines: number, max: number): string {
+export function readDenyText(path: string, lines: number, max: number, limit?: number): string {
+  if (limit !== undefined) {
+    return `ccwarden junk guard: this Read asks for ${lines} lines of ${path} (limit ${limit}), more than ${max}. Use Grep to find what you need in it, or Read at most ${max} lines at a time.`
+  }
   return (
-    `ccwarden junk guard: ${path} has ${lines} lines (more than ${max}), so reading it whole would put all of it in the context. ` +
+    `ccwarden junk guard: ${path} has ${lines} lines (more than ${max}), so a whole Read would put up to ${Math.min(lines, ENGINE_READ_LINES)} of them in the context. ` +
     'Use Grep to find what you need in it, or Read it with offset and limit.'
   )
 }

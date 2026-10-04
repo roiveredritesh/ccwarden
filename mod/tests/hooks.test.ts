@@ -130,7 +130,14 @@ function world(on: On, opts: {
     return { value: { isAnswered: true, text: e.prompt.startsWith('Write the second half') ? shown.forkHandoff : 'OK', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: shown.forkCacheRead, cache_creation_input_tokens: 10 } } }
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
-  on('tool.call', { tool: 'Read' }, (_$, e) => { shown.reads.push(e.file_path); return { result: { type: 'text', file: { filePath: e.file_path, content: '', numLines: 0, startLine: 1, totalLines: 0 } } as never } })
+  // Core's Read: the range asked for, or its default first page of 2000 lines.
+  on('tool.call', { tool: 'Read' }, (_$, e) => {
+    shown.reads.push(e.file_path)
+    const lines = (file(e.file_path) ?? '').split('\n')
+    const start = Math.max(0, (e.offset ?? 1) - 1)
+    const content = lines.slice(start, start + (e.limit ?? 2_000)).join('\n')
+    return { result: { type: 'text', file: { filePath: e.file_path, content, numLines: 0, startLine: start + 1, totalLines: lines.length } } as never }
+  })
   on('tool.call', { tool: 'Grep' }, (_$, e) => ({ result: { mode: 'content' } as never, text: (e as unknown as { pattern: string }).pattern === 'big' ? 'x'.repeat(40_000) : 'small' }))
   on('tool.call', { tool: 'Bash' }, () => opts.bashError !== undefined ? { isError: true, result: opts.bashError, text: opts.bashError } : ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -257,9 +264,13 @@ describe('F1 status line', () => {
     expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('300000') // limitOther, over the hand-set value
     expect(w.status.at(-1)).toContain('100k/300k')
 
+    // A /model switch: the next turn's start sets the new model's window, before its first request.
     w.model = 'claude-haiku-4-5-20251001'
-    await $.turn.complete(turnDone('claude-haiku-4-5-20251001'))
+    await $.turn.start({ text: 'go on', turnId: 't1' })
     expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('120000')
+    w.model = 'claude-opus-5-5'
+    await $.turn.complete(turnDone('claude-opus-5-5'))
+    expect(w.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')).toBe('300000')
   })
 
   test('a subagent turn leaves the main cache clock alone', { options: { billing: 'metered' } }, async ($, on) => {
@@ -780,13 +791,27 @@ describe('F4 junk guard', () => {
       await $.session.start(start(surface))
 
       const denied = await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })
-      expect(denied.deny).toBe('ccwarden junk guard: /p/big.log has 3000 lines (more than 2000), so reading it whole would put all of it in the context. Use Grep to find what you need in it, or Read it with offset and limit.')
+      expect(denied.deny).toBe('ccwarden junk guard: /p/big.log has 3000 lines (more than 2000), so a whole Read would put up to 2000 of them in the context. Use Grep to find what you need in it, or Read it with offset and limit.')
 
+      // A large limit doesn't get round it; a range within readMaxLines, or an offset alone, goes through.
+      expect((await $.tool.call({ tool: 'Read', file_path: '/p/big.log', limit: 2_500 })).deny).toContain('this Read asks for 2500 lines of /p/big.log (limit 2500), more than 2000')
       await $.tool.call({ tool: 'Read', file_path: '/p/big.log', offset: 1, limit: 100 })
+      await $.tool.call({ tool: 'Read', file_path: '/p/big.log', offset: 2_001, limit: 2_500 })
+      await $.tool.call({ tool: 'Read', file_path: '/p/big.log', offset: 100 })
       await $.tool.call({ tool: 'Read', file_path: '/p/small.ts' })
       await $.tool.call({ tool: 'Read', file_path: '/p/yarn.lock' })
       await $.tool.call({ tool: 'Read', file_path: '/p/missing.ts' })
-      expect(w.reads).toEqual(['/p/big.log', '/p/small.ts', '/p/yarn.lock', '/p/missing.ts'])
+      expect(w.reads).toEqual(['/p/big.log', '/p/big.log', '/p/big.log', '/p/small.ts', '/p/yarn.lock', '/p/missing.ts'])
+      // Kept out: what core would have returned (its first 2000 lines; the 2500-line range), not the whole file.
+      const firstPage = LONG.split('\n').slice(0, 2_000).join('\n').length
+      expect((w.store.get('junkLog') as { savedChars: number }[]).map(ev => ev.savedChars)).toEqual([firstPage, LONG.split('\n').slice(0, 2_500).join('\n').length])
+    })
+
+    test(`observe: a long Read's kept-out size is what core returned (${surface})`, { options: { billing: 'metered' } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], files })
+      await $.session.start(start(surface))
+      expect((await $.tool.call({ tool: 'Read', file_path: '/p/big.log' })).deny).toBeUndefined()
+      expect((w.store.get('junkLog') as { savedChars: number; size: number }[])[0]).toMatchObject({ size: 3_000, savedChars: LONG.split('\n').slice(0, 2_000).join('\n').length })
     })
 
     test(`enforce: long Bash output is cut to head + tail, the full text saved (${surface})`, { options: { billing: 'metered', junkGuard: 'enforce' } }, async ($, on) => {
@@ -1779,7 +1804,7 @@ describe('F15 metrics log', () => {
     await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess1', resume: { id: 'sess1' } })
     const m = metricsOf(w)!
     const kept = m.events.find(e => e.feature === 'junk' && e.action === 'kept-out')!
-    expect(kept.measured).toMatchObject({ tool: 'Read', chars: LONG.length })
+    expect(kept.measured).toMatchObject({ tool: 'Read', chars: LONG.split('\n').slice(0, 2_000).join('\n').length }) // core's first page, not the whole file
     expect(m.events.find(e => e.action === 'outcome' && e.ref === kept.ref)!.measured.requestsAfter).toBe(2)
   })
 
