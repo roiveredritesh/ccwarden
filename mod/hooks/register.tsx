@@ -43,7 +43,9 @@ import { heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '.
 import type { Px } from '../src/sprite'
 import { WARDEN_SVG } from '../src/wardenSvg'
 import { CHIME_ASSET, chimeCommands } from '../src/chime'
-import { addTally, NO_COUNTS, RANKS, rankOf, tally } from '../src/ranks'
+import { addTally, BADGES, NO_COUNTS, RANKS, rankBar, rankLine, rankOf, tally } from '../src/ranks'
+import { patrolLines } from '../src/patrol'
+import { receiptText } from '../src/receipt'
 import type { Tally, WardenStore } from '../src/ranks'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
@@ -456,12 +458,54 @@ export const register: Register = (on, options) => {
 
   // F10: the /cw pane. It draws what /cw gathered; Refresh gathers again.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button, Code } = ui
+    const isRaster = e.surface === 'terminal' && 'Raster' in ui
     const d = (await $.state.get(dashboardRef)).value
     if (d === undefined) return <Text dimColor>Run /cw to gather the figures.</Text>
+    const wd = d.warden
     const refresh = async () => { await $.state.set(dashboardRef, await buildDashboard($, config, runtime)) }
     return (
       <Box flexDirection="column" gap={1}>
+        {wd !== undefined && (
+          <Box key="warden" flexDirection="column" gap={1}>
+            <Box flexDirection="column">
+              <Text bold>Rank</Text>
+              <Box flexDirection="row" gap={2}>
+                {RANKS.map((r, i) => (
+                  <Box key={`rank-${i}`} flexDirection="column">
+                    {isRaster
+                      ? <ui.Raster key={`rank-face-${i}`} {...rasterCells(wardenPixels('warm', 0, i))} />
+                      : 'Svg' in ui && <ui.Svg key={`rank-face-${i}`} source={WARDEN_SVG} alt={r.name} width={47} height={32} />}
+                    <Text bold={i === wd.rank} dimColor={i !== wd.rank}>{i === wd.rank ? '▶ ' : ''}{r.name}</Text>
+                    <Text dimColor>from ${r.fromUsd}</Text>
+                  </Box>
+                ))}
+              </Box>
+              <Text>{rankBar(wd.savedUsd)} {rankLine(wd.savedUsd)}</Text>
+            </Box>
+            <Box flexDirection="column">
+              <Text bold>Badges</Text>
+              {[...BADGES].sort((a, b) => Number(wd.counts[b.key] >= b.need) - Number(wd.counts[a.key] >= a.need)).map(b => {
+                const n = wd.counts[b.key]
+                return <Text key={`badge-${b.key}`} dimColor={n < b.need}>{n >= b.need ? `  [✓] ${b.name}` : `  [ ] ${b.name} ${n}/${b.need}`}</Text>
+              })}
+            </Box>
+            <Box flexDirection="column">
+              <Text bold>Patrol log (today)</Text>
+              {wd.patrol.length === 0
+                ? <Text dimColor>  Nothing yet today.</Text>
+                : wd.patrol.map((line, i) => <Text key={`patrol-${i}`} wrap="truncate-end">  {line}</Text>)}
+            </Box>
+            {wd.receipt !== undefined && (
+              <Box flexDirection="column">
+                <Text bold>Receipt</Text>
+                <Code key="receipt" source={wd.receipt} language="text" />
+                <Button key="receipt-copy" hotkey="e" onPress={press => void $.ui.copy({ text: wd.receipt!, surface: press.surface })}>Copy receipt</Button>
+              </Box>
+            )}
+          </Box>
+        )}
         {dashboardSections(d).map(section => (
           <Box key={section.title} flexDirection="column">
             <Text bold>{section.title}</Text>
@@ -1090,6 +1134,7 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
     month: { mtd, budget: config.monthlyBudgetUsd, projected: projectMonth(mtd, now), isBudget: runtime.isBudget, isMetered: config.billing !== 'window' },
     hogs: { session: conv.hogs ?? [], month: hogsOver((await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined, month) },
     week,
+    ...(config.warden ? { warden: await wardenData($, runtime, now) } : {}),
   }
 }
 
@@ -1491,6 +1536,19 @@ async function updateRank($: $, runtime: Runtime): Promise<void> {
   if (before !== undefined && rank > before.rank) {
     const text = `Promoted to ${RANKS[rank]!.name}. $${total.savedUsd.toFixed(2)} saved so far.`
     await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), bandPromotion: text }))
+  }
+}
+
+/** F16: the /cw pane's warden sections: rank and badges from $.store, today's patrol log, this conversation's receipt. */
+async function wardenData($: $, runtime: Runtime, now: number): Promise<NonNullable<CcwardenDashboard['warden']>> {
+  const w = ((await $.store.get(WARDEN_KEY)) as WardenStore | undefined) ?? { savedUsd: 0, rank: 0, counts: NO_COUNTS }
+  await flushMetrics($, runtime) // so today's log has this session
+  const claude = await claudeDir($)
+  const events = claude === undefined ? [] : await readRecentEvents($, runtime, joinPath(claude, METRICS_DIR), now)
+  const f = runtime.metrics
+  return {
+    savedUsd: w.savedUsd, rank: w.rank, counts: w.counts, patrol: patrolLines(events, now),
+    ...(f === undefined ? {} : { receipt: receiptText(f.record, f.events, rankLine(w.savedUsd)) }),
   }
 }
 

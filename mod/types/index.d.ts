@@ -85,6 +85,8 @@ export type CcwardenDashboard = {
   month: { mtd: number; budget: number; projected: number; isBudget: boolean; isMetered: boolean }
   hogs: { session: CcwardenHog[]; month: CcwardenHog[] }
   week?: { sessions: { id: string; lastTs: number; requests: number; hitRatio?: number; rebuilds: number }[]; causes: Record<string, number>; verdict: string }
+  /** F16: the warden's sections; absent with `warden` off. `counts` is src/ranks.ts BadgeCounts (the contract can't import). */
+  warden?: { savedUsd: number; rank: number; counts: { saves: number; coolHead: number; leanTeam: number; cleanReads: number }; patrol: string[]; receipt?: string }
 }
 
 declare module 'claude-code' {
