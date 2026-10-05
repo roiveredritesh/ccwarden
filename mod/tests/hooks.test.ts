@@ -2009,4 +2009,61 @@ describe('F16 warden', () => {
     await $.session.start(start(null))
     expect(w.status.at(-1)).toMatch(/^Sonnet · ctx /)
   })
+
+  for (const surface of SURFACES) {
+    test(`a spend alert waits in the band, not a toast; OK takes it down (${surface})`, { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { tokens: 10_000 } })
+      await $.session.start(start(surface))
+      w.usage.usd = 6
+      await $.session.measure(measure(w))
+      expect(w.toasts).toEqual([])
+      const ui = await mountBand($, surface)
+      expect(await textsOf(ui)).toContain("Warden: You've spent $6.00 in this conversation (est.). Continuing.")
+      await ui.press({ key: 'ok' })
+      expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+    })
+  }
+
+  test('with no band (headless) the alert is a toast, as before', { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+    const w = world(on, { surfaces: [], usage: { tokens: 10_000 } })
+    await $.session.start(start(null))
+    w.usage.usd = 6
+    await $.session.measure(measure(w))
+    expect(w.toasts).toEqual(["⚠ You've spent $6.00 in this conversation (est.). Continuing."])
+  })
+
+  test('the next prompt, or /clear, takes a waiting alert down', { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    const ui = await mountBand($, 'terminal')
+    const hasAlert = async () => (await textsOf(ui)).some(t => t.startsWith("Warden: You've spent"))
+    w.usage.usd = 6
+    await $.session.measure(measure(w))
+    expect(await hasAlert()).toBe(true)
+    await $.prompt.submit(typed('next'))
+    expect(await hasAlert()).toBe(false)
+    w.usage.usd = 11
+    await $.session.measure(measure(w))
+    expect(await hasAlert()).toBe(true)
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await w.clock.advance(0)
+    expect(await hasAlert()).toBe(false)
+  })
+
+  test('a note R9 held back shows in the band until OK', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    // Two kinds of background turn: advisor toasts get one slot an hour (R9), so the second is held.
+    const bgTurn = { ...turnDone(), usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } }
+    for (const kind of ['scheduled-trigger', 'peer']) {
+      await $.prompt.submit({ text: 'tick', wait: false, origin: { kind } as never })
+      await $.turn.start({ text: 'tick', turnId: 'b' })
+      await $.turn.complete(bgTurn)
+    }
+    expect(w.toasts).toHaveLength(1)
+    const ui = await mountBand($, 'terminal')
+    expect((await textsOf(ui)).some(t => t.startsWith("Warden: a turn started by another Claude session's message cost ~$0.20 (est.)."))).toBe(true)
+    await ui.press({ key: 'ok' })
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
 })

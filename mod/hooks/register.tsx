@@ -293,8 +293,12 @@ export const register: Register = (on, options) => {
       const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }), lastPromptAt: now }
       if (c.lastResponseAt === undefined && seeded !== undefined) c.lastResponseAt = seeded
       if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
+      // F16: a typed prompt answers what waited in the band.
+      delete c.bandAlert
+      delete c.bandPromotion
       return c
     })
+    await $.state.set(heldNote, null)
     if (saved > 0) {
       await recordProject($, { keepWarmSavedUsd: saved, keepWarmSavedTokens: tokens ?? 0 })
       await recordEvent($, config, runtime, { at: now, feature: 'keepwarm', action: 'avoided', measured: { tokens: tokens ?? 0 }, est: { tokens: tokens ?? 0, usd: saved, formula: 'rebuild avoided by a ping: context × cache write price', confidence: 'high' } })
@@ -904,10 +908,12 @@ async function addOwnSpend($: $, config: Config, runtime: Runtime, usd: number):
   if (usd > 0) await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, usd: f.record.usd + usd } }))
 }
 
-/** F15: a spend toast (or one held by R9), counted on the page; it saves nothing by itself. */
+/** F15: a spend alert, counted on the page; it saves nothing by itself. F16: it waits in the band where one is drawn (no toast, none of R9's budget), else a toast under R9. */
 async function spendAlert($: $, config: Config, runtime: Runtime, kind: 'session' | 'subagent' | 'month', text: string): Promise<void> {
-  const shown = await notify($, 'spend', text)
-  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: { kind, shown } })
+  const isBand = await isBandDrawn($, config)
+  if (isBand) await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), bandAlert: text }))
+  const shown = isBand || (await notify($, 'spend', text))
+  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: isBand ? { kind, shown, band: true } : { kind, shown } })
 }
 
 /** F15: a conversation ended: the file is written; after /clear the next event starts a new part. */
