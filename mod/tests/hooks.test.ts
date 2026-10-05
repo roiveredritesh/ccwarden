@@ -1915,3 +1915,98 @@ describe('F15 metrics log', () => {
     expect(w.spawned[0]!.model).toBe('haiku')
   })
 })
+
+describe('F16 warden', () => {
+  const BAND = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 140, scroll: { offset: 0, bodyRows: 20 }, view: {} }
+  const mountBand = ($: Engine, surface: RenderSurface, bodyColumns = 140) =>
+    $.ui.mount({ plugin: 'ccwarden', surface, component: 'AbovePrompt', props: { ...BAND, bodyColumns } })
+  const textsOf = async (ui: Awaited<ReturnType<typeof mountBand>>) => (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`one row in place of the status line (${surface}, ${billing})`, { options: { billing, warden: true } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], usage: { tokens: 60_000, usd: 1.25, rateLimits: [fiveHour(30)] } })
+        await $.session.start(start(surface))
+        expect(w.status).toEqual([])
+        const ui = await mountBand($, surface)
+        const texts = await textsOf(ui)
+        expect(texts).toContain('Sonnet')
+        expect(texts).toContain('ctx 20% 60k/300k')
+        expect(texts).toContain(billing === 'window' ? 'this chat 0% of 5h' : 'this chat $1.25')
+        expect(texts.some(t => t.startsWith('Warden:'))).toBe(false)
+        expect((await ui.find({ type: 'Raster' })) !== undefined).toBe(surface === 'terminal')
+      })
+
+      test(`cold cache: the warden's row; Send anyway answers the spell, so F2 doesn't ask (${surface}, ${billing})`, { options: { billing, warden: true } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+        await $.session.start(start(surface))
+        await $.turn.complete(turnDone())
+        await w.clock.advance(billing === 'window' ? 65 * MIN : 17 * MIN)
+        const ui = await mountBand($, surface)
+        expect(await textsOf(ui)).toContain(billing === 'window'
+          ? 'Warden: The cache is cold. Your next prompt re-reads 180k tokens (≈ $0.72).'
+          : 'Warden: The cache is cold. Your next prompt re-reads 180k tokens (≈ $0.45).')
+        await ui.press({ key: 'send' })
+        expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+        await $.prompt.submit(typed('continue'))
+        expect(w.asks).toEqual([])
+        expect(w.sent).toEqual(['continue'])
+      })
+    }
+  }
+
+  test('the band warns, F2 still guards: unanswered, the cold prompt is asked about once', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    const ui = await mountBand($, 'terminal')
+    await $.prompt.submit(typed('continue'))
+    expect(w.asks).toHaveLength(1)
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden: The cache is cold'))).toBe(false)
+  })
+
+  test('desktop cold row: the still warden, a blinking flag; Handoff writes a quick handoff', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['desktop'], usage: { tokens: 180_000 } })
+    await $.session.start(start('desktop'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    const ui = await mountBand($, 'desktop')
+    expect(await ui.find({ type: 'Svg' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⚑' })).toBeDefined()
+    await ui.press({ key: 'handoff' })
+    expect(w.writes.some(f => f.path.startsWith('/p/.claude/handoffs/'))).toBe(true)
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  test('Clear runs /clear', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await (await mountBand($, 'terminal')).press({ key: 'clear' })
+    expect(w.commandsRun).toContain('clear')
+  })
+
+  test('a narrow terminal drops 5h, then this chat; the band stays one row', { options: { billing: 'window', warden: true } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 60_000, rateLimits: [fiveHour(30)] } })
+    await $.session.start(start('terminal'))
+    const at = async (cols: number) => {
+      const ui = await mountBand($, 'terminal', cols)
+      const texts = await textsOf(ui)
+      await ui.unmount()
+      return texts
+    }
+    expect((await at(140)).some(t => t.startsWith('5h 30%'))).toBe(true)
+    expect((await at(80)).some(t => t.startsWith('5h '))).toBe(false)
+    expect(await at(80)).toContain('this chat 0% of 5h')
+    expect((await at(60)).some(t => t.startsWith('this chat'))).toBe(false)
+  })
+
+  test('no surface to draw on: the status line, as before', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: [], usage: { tokens: 60_000 } })
+    await $.session.start(start(null))
+    expect(w.status.at(-1)).toMatch(/^Sonnet · ctx /)
+  })
+})

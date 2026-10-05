@@ -54,6 +54,10 @@ export type CcwardenConversation = {
   snapshots?: number
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
+  /** F16: a spend alert waiting in the band until OK or the next prompt. */
+  bandAlert?: string
+  /** F16: a new rank waiting in the band until OK or the next prompt. */
+  bandPromotion?: string
 }
 
 export type CcwardenHog = { tool: string; target: string; tokens: number }
@@ -98,6 +102,11 @@ declare module 'claude-code' {
       conversation: CcwardenConversation
       /** F15: this session is a holdout: guards off, display on. */
       holdout: boolean
+      /** F16: the status facts the band draws, and the cache's last use (the band works the countdown out per frame). */
+      // The contract can't import: `facts` is src/status.ts StatusFacts, written and read only by register.tsx.
+      band: { facts: object; lastCacheUse?: number }
+      /** F16: the warden's animation frame; a change redraws the band. */
+      wardenFrame: number
     }
   }
 }
