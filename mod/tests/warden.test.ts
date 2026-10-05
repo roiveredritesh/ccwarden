@@ -4,6 +4,8 @@ import { formatStatus, statusSegments } from '../src/status'
 import type { StatusFacts } from '../src/status'
 import { DEFAULT_COLOR, HEAT, HEAT_EMPTY, HEAT_MARK, heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '../src/sprite'
 import { WARDEN_SVG } from '../src/wardenSvg'
+import { AMBER, bandView, fmtClock, GREEN, RED } from '../src/band'
+import type { BandFacts } from '../src/band'
 
 describe('F16 config', () => {
   test('warden is on and its chime off by default; both can be switched', () => {
@@ -77,5 +79,74 @@ describe('F16 pixels', () => {
   test('the desktop warden is one still SVG', () => {
     expect(WARDEN_SVG.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true)
     expect(WARDEN_SVG).not.toContain('<animate')
+  })
+})
+
+describe('F16 bandView', () => {
+  const base: BandFacts = {
+    billing: 'metered', model: 'claude-sonnet-5-5', tokens: 140_000, limit: 300_000, compactAt: 55,
+    cache: { kind: 'warm', msLeft: 30 * 60_000 }, ttl: '1h', rebuildUsd: 3.3, usd: 1.84, now: 0, isAlerted: false,
+    coldMinTokens: 50_000, isColdAnswered: false,
+  }
+  const cold: BandFacts = { ...base, cache: { kind: 'cold', msCold: 5 * 60_000 } }
+  const alert = "⚠ You've spent $5.00 in this conversation (est.). Continuing."
+  const row = (f: BandFacts) => bandView(f, 140).message?.row
+
+  test('calm: one row, the status segments in colour', () => {
+    const v = bandView(base, 140)
+    expect(v.message).toBeUndefined()
+    expect(v.pct).toBe(47)
+    expect(v.segments.map(s => s.kind)).toEqual(['model', 'ctx', 'cache', 'chat'])
+    expect(v.segments[0]!.isBold).toBe(true)
+    expect(v.segments[1]).toMatchObject({ text: 'ctx 47% 140k/300k', color: GREEN })
+    expect(v.segments[2]).toMatchObject({ text: 'cache ● 30m', color: GREEN })
+    expect(bandView({ ...base, tokens: 200_000 }, 140).segments[1]!.color).toBe(AMBER)
+    expect(bandView({ ...base, tokens: 240_000 }, 140).segments[1]!.color).toBe(RED)
+  })
+
+  test('row 1: a cold cache over a big context; gone once answered or when the context is small', () => {
+    expect(bandView(cold, 140).message).toEqual({
+      row: 1, mood: 'cold', color: '#ff5a5a', facts: 'ctx 47% 140k/300k', buttons: ['handoff', 'clear', 'send'], isAnimated: true,
+      text: 'Warden: The cache is cold. Your next prompt re-reads 140k tokens (≈ $3.30).',
+    })
+    expect(bandView(cold, 140).segments[2]!.color).toBe(RED)
+    expect(row({ ...cold, isColdAnswered: true })).toBeUndefined()
+    expect(row({ ...cold, tokens: 40_000 })).toBeUndefined()
+  })
+
+  test('the priority order: cold, spend alert, nearly full, last minute, past 80%, promotion, held note', () => {
+    expect(row({ ...cold, spendAlert: alert })).toBe(1)
+    expect(bandView({ ...base, spendAlert: alert }, 140).message).toMatchObject({ row: 2, text: "Warden: You've spent $5.00 in this conversation (est.). Continuing.", buttons: ['cw', 'ok'] })
+    expect(bandView({ ...base, tokens: 288_000 }, 140).message).toMatchObject({ row: 3, mood: 'full', text: 'Warden: Context is nearly full (96%). Compact now, or ccwarden compacts at the limit.' })
+    expect(row({ ...base, tokens: 288_000, spendAlert: alert })).toBe(2)
+    const lastMinute = { ...base, cache: { kind: 'warm' as const, msLeft: 47_200 } }
+    expect(bandView(lastMinute, 140).message).toMatchObject({
+      row: 4, mood: 'lastMinute', isAnimated: true, facts: 'ctx 47% 140k/300k · rebuild after that ≈ $3.30',
+      text: 'Warden: The cache goes cold in 0:48. Send your next prompt before then to keep it warm.',
+    })
+    expect(bandView(lastMinute, 140).segments[2]!.color).toBe(AMBER)
+    expect(row({ ...lastMinute, tokens: 40_000 })).toBeUndefined()
+    expect(bandView({ ...base, tokens: 255_000 }, 140).message).toMatchObject({ row: 5, text: 'Warden: Context is at 85%. Compact at a break soon.' })
+    const promoted = { ...base, promotion: 'Promoted to Sergeant. $5.00 saved so far.', heldNote: 'ccwarden: a held note' }
+    expect(bandView(promoted, 140).message).toMatchObject({ row: 6, color: GREEN, text: 'Warden: Promoted to Sergeant. $5.00 saved so far.', buttons: ['ok'] })
+    expect(bandView({ ...base, heldNote: 'ccwarden: a held note' }, 140).message).toMatchObject({ row: 7, text: 'Warden: a held note', buttons: ['ok'] })
+  })
+
+  test('a holdout session: facts and holdout, never a warden row', () => {
+    const v = bandView({ ...cold, isHoldout: true, spendAlert: alert }, 140)
+    expect(v.message).toBeUndefined()
+    expect(v.segments.map(s => s.kind)).toContain('holdout')
+  })
+
+  test('narrow: 5h goes below 90 columns, this chat below 70', () => {
+    const window: BandFacts = { ...base, billing: 'window', chatPct: 9, fiveHour: { kind: 'five_hour', percentUsed: 30 } }
+    const kinds = (cols: number) => bandView(window, cols).segments.map(s => s.kind)
+    expect(kinds(90)).toEqual(['model', 'ctx', 'cache', 'chat', 'fiveHour'])
+    expect(kinds(89)).toEqual(['model', 'ctx', 'cache', 'chat'])
+    expect(kinds(69)).toEqual(['model', 'ctx', 'cache'])
+  })
+
+  test('fmtClock: whole seconds rounded up', () => {
+    expect([fmtClock(47_200), fmtClock(60_000), fmtClock(0)]).toEqual(['0:48', '1:00', '0:00'])
   })
 })
