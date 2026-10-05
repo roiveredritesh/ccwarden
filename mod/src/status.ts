@@ -110,3 +110,16 @@ export function fmtDuration(ms: number): string {
   if (m < 60) return `${m}m`
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
+
+/** F16: what closes a turn: `$0.18 · 96% cached`, and `· re-cached 111k` when the turn wrote over 20k to the cache. */
+export function turnBill(usd: number, u: { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }): string {
+  const seen = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+  const cached = seen > 0 ? Math.round((u.cache_read_input_tokens / seen) * 100) : 0
+  return `$${usd.toFixed(2)} · ${cached}% cached${u.cache_creation_input_tokens > 20_000 ? ` · re-cached ${fmtTokens(u.cache_creation_input_tokens)}` : ''}`
+}
+
+/** The turn line's duration, as the engine writes it: `42s`, `1m 5s`. */
+export function fmtTurnSeconds(ms: number): string {
+  const s = Math.round(ms / 1000)
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
+}

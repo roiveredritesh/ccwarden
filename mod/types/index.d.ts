@@ -58,6 +58,10 @@ export type CcwardenConversation = {
   bandAlert?: string
   /** F16: a new rank waiting in the band until OK or the next prompt. */
   bandPromotion?: string
+  /** F16: the engine's cost total when the running turn started (spinner, turn bill); kept here so a reload keeps it (Q31). */
+  turnStartUsd?: number
+  /** F16: each turn's bill by its durationMs, the last 50: the TurnDuration line has the same durationMs (Q30). */
+  bills?: Record<string, string>
 }
 
 export type CcwardenHog = { tool: string; target: string; tokens: number }

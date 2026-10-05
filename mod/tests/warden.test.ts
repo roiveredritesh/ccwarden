@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { readConfig } from '../src/config'
-import { formatStatus, statusSegments } from '../src/status'
+import { fmtTurnSeconds, formatStatus, statusSegments, turnBill } from '../src/status'
 import type { StatusFacts } from '../src/status'
 import { DEFAULT_COLOR, HEAT, HEAT_EMPTY, HEAT_MARK, heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '../src/sprite'
 import { WARDEN_SVG } from '../src/wardenSvg'
@@ -160,5 +160,14 @@ describe('F16 chime', () => {
     ]])
     expect(chimeCommands('linux', '/m/sounds/chime.wav')).toEqual([['paplay', '/m/sounds/chime.wav'], ['aplay', '-q', '/m/sounds/chime.wav']])
     expect(chimeCommands('mac', '/m/sounds/chime.wav')).toEqual([])
+  })
+})
+
+describe('F16 turn bill', () => {
+  test('$ and the cached share; re-cached past 20k written', () => {
+    expect(turnBill(0.18, { input_tokens: 400, cache_read_input_tokens: 96_000, cache_creation_input_tokens: 3_600 })).toBe('$0.18 · 96% cached')
+    expect(turnBill(0.5, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 111_000 })).toBe('$0.50 · 0% cached · re-cached 111k')
+    expect(turnBill(0, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })).toBe('$0.00 · 0% cached')
+    expect([fmtTurnSeconds(42_300), fmtTurnSeconds(65_000)]).toEqual(['42s', '1m 5s'])
   })
 })

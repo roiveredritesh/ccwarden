@@ -181,6 +181,9 @@ function world(on: On, opts: {
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('classic.SessionStart', () => ({}))
+  // F16: core's own spinner and turn line, drawn from their props, so a plugin's rewrite of them shows.
+  on('ui.render', { component: 'Spinner' }, (_$, e) => ({ type: 'Text', children: [`${e.props.message ?? e.props.word}${e.props.suffix}`] }) as never)
+  on('ui.render', { component: 'TurnDuration' }, (_$, e) => ({ type: 'Text', children: [`✻ ${e.props.word} for ${e.props.durationMs}ms`] }) as never)
   on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
     const question = e.questions[0]!.question
     shown.asks.push(question)
@@ -2081,6 +2084,37 @@ describe('F16 warden', () => {
     await $.turn.complete(turnDone())
     await w.clock.advance(17 * MIN)
     expect(chimes()).toHaveLength(2) // a new spell
+  })
+
+  const SPINNER = { word: 'Baking', message: null, suffix: '…', mode: 'responding' as const }
+
+  for (const surface of SURFACES) {
+    test(`the spinner shows the turn's spend so far (${surface})`, { options: { billing: 'metered', warden: true } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { usd: 1 } })
+      await $.session.start(start(surface))
+      await $.prompt.submit(typed('go'))
+      w.usage.usd = 1.07
+      const ui = await $.ui.mount({ plugin: 'ccwarden', surface, component: 'Spinner', props: SPINNER })
+      expect(await ui.find({ type: 'Text', text: /… · \$0\.07/ })).toBeDefined()
+    })
+  }
+
+  test("no turn start known (a reload mid-turn): the spinner is the engine's", { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { usd: 1 } })
+    await $.session.start(start('terminal'))
+    const ui = await $.ui.mount({ plugin: 'ccwarden', surface: 'terminal', component: 'Spinner', props: SPINNER })
+    expect(await ui.find({ type: 'Text', text: 'Baking…' })).toBeDefined()
+  })
+
+  test("the turn line carries the bill; a line with another duration is the engine's", { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { usd: 1 } })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(typed('go'))
+    w.usage.usd = 1.07
+    await $.turn.complete(turnDone())
+    const line = (durationMs: number) => $.ui.mount({ plugin: 'ccwarden', surface: 'terminal', component: 'TurnDuration', props: { word: 'Baked', durationMs } })
+    expect((await (await line(1000)).find({ type: 'Text' }))?.text).toBe('✻ Baked for 1s · $0.07 · 83% cached')
+    expect((await (await line(2000)).find({ type: 'Text' }))?.text).toBe('✻ Baked for 2000ms')
   })
 
   test('no chime with wardenChime off', { options: { billing: 'metered', warden: true } }, async ($, on) => {
