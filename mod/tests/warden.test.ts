@@ -7,6 +7,9 @@ import { WARDEN_SVG } from '../src/wardenSvg'
 import { AMBER, bandView, fmtClock, GREEN, RED } from '../src/band'
 import type { BandFacts } from '../src/band'
 import { CHIME_ASSET, chimeCommands } from '../src/chime'
+import { addTally, NO_COUNTS, rankBar, rankLine, rankOf, tally } from '../src/ranks'
+import { summarizeMetrics } from '../src/metrics'
+import type { MetricEvent } from '../src/metrics'
 
 describe('F16 config', () => {
   test('warden is on and its chime off by default; both can be switched', () => {
@@ -169,5 +172,39 @@ describe('F16 turn bill', () => {
     expect(turnBill(0.5, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 111_000 })).toBe('$0.50 · 0% cached · re-cached 111k')
     expect(turnBill(0, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })).toBe('$0.00 · 0% cached')
     expect([fmtTurnSeconds(42_300), fmtTurnSeconds(65_000)]).toEqual(['42s', '1m 5s'])
+  })
+})
+
+describe('F16 ranks and badges', () => {
+  const est = (usd: number) => ({ tokens: 0, usd, formula: 'f', confidence: 'high' as const })
+  const ev = (feature: MetricEvent['feature'], action: string, extra: Partial<MetricEvent> = {}): MetricEvent => ({ v: 1, at: 0, feature, action, measured: {}, ...extra })
+  const events = [
+    ev('junk', 'kept-out'), ev('junk', 'outcome', { est: est(0.02) }),
+    ev('subagent', 'pinned'),
+    ev('cold', 'outcome', { measured: { choice: 'handoff' }, est: est(0.12) }),
+    ev('cold', 'outcome', { measured: { choice: 'send' } }),
+    ev('keepwarm', 'ping', { est: est(-0.01) }),
+    ev('subagent', 'pinned', { would: true }),
+    ev('snapshot', 'would-answer', { would: true, est: est(5) }),
+  ]
+
+  test("tally: protected savings, net of ccwarden's own spend, and badge counts; would-have events count for nothing", () => {
+    const t = tally(events)
+    expect(Math.round(t.savedUsd * 100)).toBe(13)
+    expect(t.counts).toEqual({ saves: 2, coolHead: 1, leanTeam: 1, cleanReads: 1 })
+    expect(addTally(t, { savedUsd: 1, counts: { ...NO_COUNTS, leanTeam: 2 } }).counts.leanTeam).toBe(3)
+  })
+
+  test('a metrics summary carries the counts', () => {
+    const text = `${events.map(e => JSON.stringify(e)).join('\n')}\n`
+    expect(summarizeMetrics(text, 's').counts).toEqual({ saves: 2, coolHead: 1, leanTeam: 1, cleanReads: 1 })
+  })
+
+  test('ranks at their thresholds; the line and bar toward the next', () => {
+    expect([0, 4.99, 5, 19.99, 20, 50, 500].map(rankOf)).toEqual([0, 0, 1, 1, 2, 3, 3])
+    expect(rankLine(12.4)).toBe('Sergeant · $12.40 saved · $7.60 to Inspector')
+    expect(rankLine(60)).toBe('Chief Warden · $60.00 saved')
+    expect(rankBar(12.5)).toBe('████████░░░░░░░░')
+    expect(rankBar(60)).toBe('█'.repeat(16))
   })
 })

@@ -1,5 +1,7 @@
 import { dayKey } from './ledger'
 import { familyOf, PRICES } from './prices'
+import { tally } from './ranks'
+import type { BadgeCounts } from './ranks'
 import type { Family } from './prices'
 
 // F15: the metrics log. Every intervention is one event in the session's own
@@ -230,7 +232,11 @@ export function pendingOutcome(p: Pending): MetricEvent {
 export type FeatureTotals = { count: number; tokens: number; usd: number }
 export type DayFeatures = Partial<Record<Feature, { done: FeatureTotals; would: FeatureTotals }>>
 /** One file, summarised for the page and cached in $.store (`metricsSummaries`). */
-export type MetricsSummary = { session: string; project?: string; records: SessionRecord[]; days: Record<string, DayFeatures>; estUsd: number; wouldUsd: number; skipped: number }
+export type MetricsSummary = {
+  session: string; project?: string; records: SessionRecord[]; days: Record<string, DayFeatures>; estUsd: number; wouldUsd: number; skipped: number
+  /** F16: badge counts; absent in summaries cached before F16, which are parsed again. */
+  counts?: BadgeCounts
+}
 
 /** Per UTC day and feature: each event but an outcome counts once; an estimate adds wherever it is; would-have events apart. */
 export function summarizeMetrics(text: string, session: string): MetricsSummary {
@@ -249,5 +255,5 @@ export function summarizeMetrics(text: string, session: string): MetricsSummary 
     if (e.would) wouldUsd += e.est.usd
     else estUsd += e.est.usd
   }
-  return { session, ...(records[0] === undefined ? {} : { project: records[0].project }), records, days, estUsd, wouldUsd, skipped }
+  return { session, ...(records[0] === undefined ? {} : { project: records[0].project }), records, days, estUsd, wouldUsd, skipped, counts: tally(events).counts }
 }
