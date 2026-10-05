@@ -163,6 +163,7 @@ function world(on: On, opts: {
     shown.runs.push([...e.argv])
     const done = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (e.argv[0] === 'uname') return done(0, `${opts.uname ?? 'Linux'}\n`)
+    if (e.argv[0] === 'powershell') return done(0) // F16: the Windows chime player
     if (['cmd', 'open', 'xdg-open'].includes(e.argv[0]!)) return done(shown.openerExit)
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
     return done(out === undefined ? 128 : 0, out ?? '')
@@ -2065,5 +2066,30 @@ describe('F16 warden', () => {
     expect((await textsOf(ui)).some(t => t.startsWith("Warden: a turn started by another Claude session's message cost ~$0.20 (est.)."))).toBe(true)
     await ui.press({ key: 'ok' })
     expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  test('the chime plays once per cold spell, and only when switched on', { options: { billing: 'metered', warden: true, wardenChime: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 }, env: { OS: 'Windows_NT' } })
+    const chimes = () => w.runs.filter(a => a[0] === 'powershell')
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await mountBand($, 'terminal')
+    await w.clock.advance(5_000) // the band redraws
+    expect(chimes()).toHaveLength(1)
+    expect(chimes()[0]!.at(-1)).toMatch(/^\(New-Object Media\.SoundPlayer '.*sounds\/chime\.wav'\)\.PlaySync\(\)$/)
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    expect(chimes()).toHaveLength(2) // a new spell
+  })
+
+  test('no chime with wardenChime off', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 }, env: { OS: 'Windows_NT' } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await mountBand($, 'terminal')
+    await w.clock.advance(5_000)
+    expect(w.runs.filter(a => a[0] === 'powershell')).toEqual([])
   })
 })

@@ -6,6 +6,7 @@ import { DEFAULT_COLOR, HEAT, HEAT_EMPTY, HEAT_MARK, heatColumns, heatPixels, ra
 import { WARDEN_SVG } from '../src/wardenSvg'
 import { AMBER, bandView, fmtClock, GREEN, RED } from '../src/band'
 import type { BandFacts } from '../src/band'
+import { CHIME_ASSET, chimeCommands } from '../src/chime'
 
 describe('F16 config', () => {
   test('warden is on and its chime off by default; both can be switched', () => {
@@ -148,5 +149,16 @@ describe('F16 bandView', () => {
 
   test('fmtClock: whole seconds rounded up', () => {
     expect([fmtClock(47_200), fmtClock(60_000), fmtClock(0)]).toEqual(['0:48', '1:00', '0:00'])
+  })
+})
+
+describe('F16 chime', () => {
+  test('the players per OS, tried in order', () => {
+    expect(CHIME_ASSET).toBe('sounds/chime.wav')
+    expect(chimeCommands('windows', "C:/it's/sounds/chime.wav")).toEqual([[
+      'powershell', '-NoProfile', '-NonInteractive', '-Command', "(New-Object Media.SoundPlayer 'C:/it''s/sounds/chime.wav').PlaySync()",
+    ]])
+    expect(chimeCommands('linux', '/m/sounds/chime.wav')).toEqual([['paplay', '/m/sounds/chime.wav'], ['aplay', '-q', '/m/sounds/chime.wav']])
+    expect(chimeCommands('mac', '/m/sounds/chime.wav')).toEqual([])
   })
 })

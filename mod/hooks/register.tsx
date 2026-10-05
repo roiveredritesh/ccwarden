@@ -42,6 +42,7 @@ import type { BandButton, BandSegment } from '../src/band'
 import { heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '../src/sprite'
 import type { Px } from '../src/sprite'
 import { WARDEN_SVG } from '../src/wardenSvg'
+import { CHIME_ASSET, chimeCommands } from '../src/chime'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
@@ -100,6 +101,10 @@ type Runtime = {
   /** F16: the band shows a moving warden (last minute, cold): the frame ticks at 2 fps, else every 5 s for the countdown. */
   isAnimated: boolean
   wardenTicks: number
+  /** F16: the cold spell (its last cache use) the chime played for; a player that failed isn't tried again this session. */
+  chimedFor?: number
+  isChimeBroken: boolean
+  os?: HostOs
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -144,7 +149,7 @@ const MIN_MS = 60_000
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [], isAnimated: false, wardenTicks: 0 }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [], isAnimated: false, wardenTicks: 0, isChimeBroken: false }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -486,6 +491,11 @@ export const register: Register = (on, options) => {
     }, e.props.bodyColumns)
     const m = view.message
     runtime.isAnimated = m?.isAnimated === true
+    // ponytail: once per spell per module load; a reload mid-spell chimes again
+    if (m?.row === 1 && config.wardenChime && !runtime.isChimeBroken && runtime.chimedFor !== band.lastCacheUse) {
+      runtime.chimedFor = band.lastCacheUse
+      void playChime($, runtime)
+    }
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
@@ -1190,12 +1200,29 @@ async function readRecentEvents($: $, runtime: Runtime, dir: string, now: number
   return out.sort((a, b) => b.at - a.at).slice(0, RECENT_EVENTS)
 }
 
+/** The host OS: `OS=Windows_NT` (Q19), else `uname -s`. */
+async function hostOs($: $): Promise<HostOs> {
+  if ((await $.env.get('OS')) === 'Windows_NT') return 'windows'
+  return (await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin' ? 'mac' : 'linux'
+}
+
+/** F16: the cold-cache chime; a failure is logged once and not retried this session. */
+async function playChime($: $, runtime: Runtime): Promise<void> {
+  runtime.os ??= await hostOs($)
+  if (runtime.os === 'mac') {
+    if (await $.audio.play({ asset: CHIME_ASSET }).then(() => true, () => false)) return
+  } else {
+    for (const argv of chimeCommands(runtime.os, `${$.plugin.root}/${CHIME_ASSET}`)) {
+      if ((await $.process.run(argv, { timeoutMs: 5_000 }).catch(() => undefined))?.exitCode === 0) return
+    }
+  }
+  runtime.isChimeBroken = true
+  $.ui.log('ccwarden: the cold-cache chime could not play here; no more tries this session.', { to: 'debug' })
+}
+
 /** F14: opens the page in the default browser; when that fails, says where it is. */
 async function openInBrowser($: $, path: string): Promise<void> {
-  let os: HostOs = 'linux'
-  if ((await $.env.get('OS')) === 'Windows_NT') os = 'windows'
-  else if ((await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin') os = 'mac'
-  const ran = await $.process.run(openerArgv(os, path), { timeoutMs: 10_000 }).catch(() => undefined)
+  const ran = await $.process.run(openerArgv(await hostOs($), path), { timeoutMs: 10_000 }).catch(() => undefined)
   $.ui.log(ran?.exitCode === 0 ? `ccwarden: dashboard opened in your browser (${path}).` : `ccwarden: dashboard written to ${path}; open it in a browser.`)
 }
 
