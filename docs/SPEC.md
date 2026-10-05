@@ -389,7 +389,7 @@ It never blocks and adds nothing to context.
   | F6 keep-warm | `avoided`, `ping` (negative $) | rebuilds avoided − pings spent | high |
   | F3 limit hint | `compact-hint` | count only | — |
   | F7 handoff | `written` (quick or full) | count only | — |
-  | F1b / F11 spend alerts | `alert` / `sent` (`kind`: session, subagent or month; `shown`: false when R9 held it) | count only | — |
+  | F1b / F11 spend alerts | `alert` / `sent` (`kind`: session, subagent or month; `shown`: false when R9 held it; `band`: true when it waited in the F16 band) | count only | — |
   | F3 summary compaction | `compact` / `summarised` (`/compact <focus>` or `compactMode` summary: the engine's summary ran) | count only | — |
 
   After the first logged day, the page takes F4, F3 and F6 from the log instead of `junkLog` and `projectDays`, so nothing counts twice. On the first logged day those two stores keep the features they record (they ran all day; the log started partway through it), and the log adds only what they lack: subagent pins, limit hints and holdout events. That day, cold asks and topic clears show as counts without $.
@@ -397,6 +397,20 @@ It never blocks and adds nothing to context.
   - **Proof:** eligible parts are `measuring`, ≥ 5 prompts, a known family, in a project used with ccwarden. Within each family with ≥ 3 holdout parts: protected median $ per prompt ÷ holdout median, weighted by the protected family mix; claim = (1 − ratio) × 100. The 90% range is 2000 bootstrap resamples seeded from the part ids (mulberry32), so the figure only moves when a session is added. No figure below 10 holdout and 30 protected parts; the page shows the counts instead. Claim texts: "Not proven yet: turn on measureHoldout…", "Not proven yet: n of 10 holdout sessions and m of 30 protected ones." (counting the families that can be compared, then naming those left out), "Protected sessions cost X% less per prompt (90% range …)", "… X% more …", or "No clear difference yet". A self-check compares the estimates' share (est ÷ (spent + est) on protected parts) with the range: agree, optimistic or pessimistic.
   - **The page:** the proof section, est. savings bars by feature, "What ccwarden did" (events per day by feature), sessions of the last 30 days (click one to filter the event log), and the event log (latest 5000 events of the last 30 days, filterable by feature). Copy summary (Markdown) and download raw JSON use data embedded in the page; the page stays one file with one `<script>`. Each file's summary is cached in `$.store` `metricsSummaries` by mtime and size.
 - **Unverified live:** §9 Q21–Q23; F15 live: turn on `measureHoldout`, use it for 2–3 weeks, read the proof.
+
+### F16: the warden UI (M6)
+
+Design: `docs/superpowers/specs/2026-10-05-warden-ui-design.md`; plan: `docs/superpowers/plans/2026-10-05-warden-ui.md`. Off with `warden: false` (exactly the UI before F16).
+
+- **The band** (`AbovePrompt`, terminal and Desktop): one coloured row in place of the status line (the same segments, `src/status.ts` `statusSegments`) with a context heatmap filled against the per-model limit; two rows when the warden has something to say, one message at a time: cold cache (Handoff / Clear / Send anyway, which answer the spell so F2 doesn't ask again), a spend alert, context ≥ 95 %, the cache's last minute, context ≥ 80 %, a promotion, a note R9 held back. Never a warden row in a holdout session. Where no band is drawn (`-p`, VS Code, mobile) the status line is set as before.
+- **The warden:** a 16 × 4 px Raster sprite on the terminal (the 12-px warden, margins, and a 2-px cold flag; the lantern flame is the cache); one still SVG on the Desktop with a blinking `⚑` Text when cold, since the Desktop keeps a Svg's first picture (Q27). The frame tick is always on and cheap: 2 fps while the warden moves (last minute, cold), else every 5 s for the countdown.
+- **Spend alerts** (session, subagent, month) wait in the band and use none of R9's budget; with no band they are toasts under R9. The row says the existing alert text, prefixed `Warden:`. A typed prompt or `/clear` takes a waiting alert, promotion or held note down.
+- **Chime** (`wardenChime`, off): once per cold spell, `mod/sounds/chime.wav` (made by `scripts/make-chime.js`) through PowerShell's `SoundPlayer` on Windows, `paplay`/`aplay` on Linux, `$.audio.play` on macOS; a failure is logged once and not retried that session.
+- **Spinner and turn line:** the spinner's suffix is `… · $0.07`, this turn's spend so far (`turnStartUsd` in `$.state`, set at `prompt.submit`); on the terminal the turn line becomes `✻ Baked for 42s · $0.18 · 96% cached` (+ `re-cached 111k` past 20k written), matched by `durationMs` (Q30). Unknown start cost: the engine's own.
+- **Ranks and badges:** lifetime est. savings from the metrics summaries (other sessions, read at session start) plus this session's events; Cadet $0, Sergeant $5, Inspector $20, Chief Warden $50. Ranks never go down; a new one is announced once in the band; the first count is the starting rank, not a promotion. `$.store` `warden` holds `{ savedUsd, counts, rank }` (badge counts, not earned badges, so the pane shows progress). Badges: First save, Cool head (10 cold asks not sent), Lean team (25 pins), Clean reads (25 kept-out reads).
+- **`/cw` pane:** Rank (the four sprites, the current one marked, the bar to the next), Badges, Patrol log (today, UTC, from the metrics log, an action joined to its `outcome`), and this conversation's Receipt with Copy receipt.
+- **The types contract can't import**, so `$.state` `band.facts` is declared `object` and cast to `StatusFacts` in `register.tsx`.
+- **Unverified live:** §9 Q32–Q34, and a full live pass on both surfaces.
 
 ## 5. Configuration (`userConfig`)
 
@@ -418,6 +432,8 @@ It never blocks and adds nothing to context.
 | `handoffDir` / `handoffOnCompact` / `handoffMaxUsd` | `.claude/handoffs` / off / 0.50 | F7 |
 | `topicShiftHint` | off (until tuned from `topicLog`) | F13 |
 | `measureHoldout` | off (opt-in: holdout sessions get no protection) | F15 |
+| `warden` | on (off: the status line and toasts as before F16) | F16 |
+| `wardenChime` | off (opt-in) | F16 |
 
 M1 declares only the M1 keys above in `plugin.json`. `monthlyBudgetUsd`, `handoffDir`/`handoffOnCompact` and `topicShiftHint` are added with their features. A `userConfig` value is a string, number, boolean or string list, so limits are one field per family, not a map. A field with `options` needs a `default` among them, which is why `billing` has `ask`.
 
@@ -452,6 +468,7 @@ docs/            this spec
 | **M3** | F10, F11 | Dashboard within 10% of `/usage` |
 | **M4** | F13, F14, marketplace packaging | One-command install |
 | **M5** | F15 metrics log and holdout proof | The page shows a holdout figure, or how many sessions it still needs |
+| **M6** | F16 the warden UI | The band, chime, spinner $, turn bill and `/cw` ranks work live on the terminal and the Desktop |
 
 ## 9. Open questions (verify in M1 week one)
 
@@ -462,7 +479,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 1 | **Default TTL on usage-billed plans:** what is the 5m/1h split of cache writes? | No `$` call returns the split. It is in the transcript (`message.usage.cache_creation.ephemeral_5m/1h_input_tokens`; the Agent tool result carries it too). `classic.PreModelSwitch` gets `cache_ttl: '5m'\|'1h'`, and `classic.SessionStart` (resume/fork) gets `prompt_cache_likely_expired` plus `estimated_cache_write_usd`. | open: `/cw-probe info` |
 | 2 | **Keep-warm refresh:** does the ping refresh the main conversation's cached prefix? | `$.model.fork` re-sends "the main thread's last request (its model, system prompt, tools, messages)… so the API serves that prefix from its cache". The prefix is "billed afresh once the entry lapsed or after `/model`". `usage.cache_read_input_tokens` shows how much the cache served. Whether the fork extends the main entry's TTL is not stated. | open: `/cw-probe wait` vs `/cw-probe fork` |
 | 3 | **Post-compaction re-reads:** after a hook answers `session.compact`, does core still re-read recent files? | Answering `{ messages }` without `next` means core makes no summary request (`usage` absent). Re-reads after a hook's answer are not stated. | open: `/cw-probe compact` |
-| 4 | **`/clear` from a mod:** can a mod trigger it, or only tell the user? | **Likely yes.** `$.command.run({ command })` "runs a slash command as if the person typed `/command args`", and `$.command.list()` includes built-ins. `$.prompt.fill({ text, mode })` prefills the prompt box (`isFilled: false` under a dialog or headless). `/clear` raises `session.end` with `reason: 'clear'` and **no `session.start` after it**. | open: `/cw-probe newchat` |
+| 4 | **`/clear` from a mod:** can a mod trigger it, or only tell the user? | **Likely yes.** `$.command.run({ command })` "runs a slash command as if the person typed `/command args`", and `$.command.list()` includes built-ins. `$.prompt.fill({ text, mode })` prefills the prompt box (`isFilled: false` under a dialog or headless). `/clear` raises `session.end` with `reason: 'clear'` and **no `session.start` after it**. | **yes** (2026-10-05, Windows terminal, F16 spike): a band Button's `$.command.run({ command: 'clear' })` cleared the conversation |
 | 5 | **Live env re-read:** does the engine re-read `CLAUDE_CODE_AUTO_COMPACT_WINDOW` after `$.env.set`? | `$.env.set` sets the variable "for this process and everything it starts after". Nothing says the engine re-reads it. `usage({ breakdown: 'summary' }).context.breakdown.rawMaxTokens` exposes the compaction window, so the effect is measurable. | **Yes** (live: 1000000 → 150000 right after `$.env.set`). F3 now sets it per model. |
 | 6 | **Bash trim schema:** does a trimmed Bash result pass the tool's output schema? | **Likely yes.** Bash's result is `{ stdout: string, stderr: string, interrupted: boolean, … }`, so a shorter `stdout` keeps the shape. "Core validates a hook's answer against the tool's output schema." `claude plugin test` does **not** run that check: a malformed result passed in a test. | **Yes** (2026-10-04, Windows terminal, `claude -p`): `seq 1 4000 # cw-probe-trim` was cut 18892 → 2000 chars and the model saw the trimmed text and the `[cw-probe: trimmed …]` marker, with no refusal. The first run (`seq 1 100000`) was inconclusive: the engine caps stdout at 30000 chars and persists bigger output (`persistedOutputPath`), which F4 leaves alone. So with the default `bashMaxChars` (30000) plain Bash output is never trimmed; only a lower `bashMaxChars` or budget mode trims it. |
 | 7 | **Rate-limit windows:** are `rateLimits` available to mods on Team? | `rateLimits` is "empty off a subscription or before the first reading". Kinds are `five_hour`, `seven_day`, and a gateway's `spend_limit`. | open: `/cw-probe info` on `window` |
@@ -475,7 +492,7 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 14 | **Setting names not in the docs read for this spec:** `CLAUDE_CODE_SUBAGENT_MODEL`, `promptSuggestionEnabled`, `crossSessionInbound`, `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`. | All four are strings in the 2.1.287 binary. The setup offers the first two only as opt-in flags, and F8's texts name the last two. | open: check code.claude.com/docs (settings, model-config) |
 | 15 | **`/cw open` opener (F14):** does it open the page on Windows (`cmd /c start "" <path>` via argv), macOS (`open`) and Linux (`xdg-open`)? | Argv with no shell; the tests cover the argv per OS and the logged-path fallback. | open: live check per OS (the interactive `claude --plugin-dir ./mod` run of the build plan was not done) |
 | 16 | **Page refresh (F14):** does a `file://` page with `<meta http-equiv="refresh" content="60">` reload and keep its `#hash` in Chrome, Edge and Safari? | Browser behaviour, not in the plugin API. | open |
-| 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | open |
+| 17 | **`$.process.run` on Desktop (F14):** is it available in the Desktop Code tab? | The types say "CLI only". If not, the path is logged instead of opened. | **yes** (2026-10-05, Desktop, F16 spike): `$.process.run` ran PowerShell and played the chime |
 | 18 | **`session.end` bound (F14):** how long is it in practice; does the page rewrite fit or is it always skipped? | `next.budget.remainingMs` at `session.end` is what is left of one short bound; the rewrite needs 1.5 s. | open |
 | 19 | **`OS=Windows_NT` (F14):** is it visible through `$.env.get` on Windows? | `$.env.get` reads the process environment. | open: if not, the Windows opener is never chosen |
 | 20 | **`turn.step` for subagents (F15):** does it fire with `usage` when `agentId` is set? | Not needed: the types state a subagent run ends in a `turn.complete` carrying its `agentId` and summed `usage`; F15 reads that, as F5 does. | answered by the types |
@@ -484,6 +501,15 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 24 | **Read's default page (F4):** how much does a whole-file `Read` (no limit) return? | The Read result type has `truncatedByTokenCap` ("a whole-file read was auto-paginated because it exceeded the token cap (the content is a partial first page)") but no size. The Read tool's own description says it reads up to 2000 lines by default. | open: F4 estimates a denied whole Read as its first 2000 lines; an upper bound while the token cap is unknown |
 | 25 | **Compact window at `turn.start` (F3):** does the engine read `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for its auto-compaction check after the `turn.start` hooks run? | `turn.start` "fires when a model turn begins, before its first model call". Where the engine's compaction check falls is not stated. | open: after `/model` to a model with a lower limit, past that limit, look for `ccwarden: snapshot compaction (auto)` before the first answer |
 | 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | **Chrome: yes** (2026-10-03, Windows): Copy summary put the Markdown on the clipboard. Edge, Safari: open; the fallback selects the text |
+| 26 | **Desktop `isInteractive` Svg (F16):** does one animate in the AbovePrompt band? | Not stated. | **No** (2026-10-05, Desktop bundled 2.1.286): it draws only its `alt`; a plain Svg draws |
+| 27 | **Desktop Svg redraw (F16):** does the band redraw a `Svg` whose source changed? | Not stated. | **No** (2026-10-05): it keeps the first picture until the band's structure changes, and drops a Svg's `key`; Text redraws. So the Desktop warden is one still SVG |
+| 28 | **`$.audio.play` (F16):** does it sound? | The types: a Windows or Linux terminal has no player for an asset. | **Not on the Windows terminal or the Desktop** (resolves, silent; asset and base64). PowerShell's `SoundPlayer` plays. macOS `afplay`, Linux `paplay`/`aplay`: open |
+| 29 | **Plugin commands on the Desktop (F16):** are they in the `/` list? | Not stated. | Not listed, but typed they run (in a new session). After a hot reload an open Desktop session may stop routing them (development only) |
+| 30 | **`TurnDuration.durationMs` (F16):** does it equal `turn.complete`'s? | Not stated. | **Yes**, exactly (2026-10-05, Windows terminal) |
+| 31 | **Spinner suffix live (F16):** does a rewritten `suffix` redraw as the cost rises? | `$.ui.invalidate('ui.render')` redraws. | **Yes**, terminal and Desktop. A module variable for the start cost broke across a reload, so it is in `$.state` |
+| 32 | **Band Buttons on the Desktop (F16):** do they press on a click? | Buttons are surface-independent. | open (terminal: yes, click and hotkey) |
+| 33 | **Raster without 24-bit colour (F16):** how does the band look in macOS Terminal.app? | Not stated. | open |
+| 34 | **Chime players on macOS and Linux (F16):** do `$.audio.play` (afplay) and `paplay`/`aplay` play `chime.wav`? | Q28. | open |
 
 ## 10. Gaps found in design review, and resolutions
 
