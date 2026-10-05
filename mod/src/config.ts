@@ -39,6 +39,10 @@ export type Config = {
   modelAdvisor: boolean
   topicShiftHint: boolean
   measureHoldout: boolean
+  /** F16: the band above the prompt instead of the status line, the turn's $ in the spinner and turn line, ranks in /cw. */
+  warden: boolean
+  /** F16: a chime when the warden says the cache went cold. */
+  wardenChime: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -72,6 +76,8 @@ export const DEFAULTS: Config = {
   modelAdvisor: true,
   topicShiftHint: false, // until tuned from its log (SPEC F13)
   measureHoldout: false, // opt-in: holdout sessions get no protection (SPEC F15)
+  warden: true,
+  wardenChime: false, // opt-in: a sound is easy to find annoying
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -125,6 +131,8 @@ export function readConfig(options: PluginOptions): Config {
     modelAdvisor: bool('modelAdvisor'),
     topicShiftHint: bool('topicShiftHint'),
     measureHoldout: bool('measureHoldout'),
+    warden: bool('warden'),
+    wardenChime: bool('wardenChime'),
   }
 }
 

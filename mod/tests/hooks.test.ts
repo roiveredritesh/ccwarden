@@ -1,8 +1,14 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import { describe, expect, mock, test as engineTest } from 'claude-code/testing'
+import type { Engine, TestBody, TestOptions } from 'claude-code/testing'
 import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
 import { parseFile } from '../src/metrics'
+
+// F16: the warden's band replaces the status line and spend toasts on the terminal and desktop. The tests written
+// before it check those, so they run with it off; a test that wants it says `warden: true`.
+const test = (name: string, ...rest: readonly [TestBody] | readonly [TestOptions, TestBody]): void => rest.length === 1
+  ? engineTest(name, { options: { warden: false } }, rest[0])
+  : engineTest(name, { ...rest[0], options: { warden: false, ...rest[0].options } }, rest[1])
 
 const SURFACES = ['terminal', 'desktop'] as const
 const BILLINGS = ['metered', 'window'] as const
