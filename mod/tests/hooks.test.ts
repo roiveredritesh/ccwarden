@@ -2117,6 +2117,32 @@ describe('F16 warden', () => {
     expect((await (await line(2000)).find({ type: 'Text' }))?.text).toBe('✻ Baked for 2000ms')
   })
 
+  const OLD_METRICS = '/home/u/.claude/ccwarden/metrics/old.jsonl'
+  const saving = (usd: number) => `${JSON.stringify({ v: 1, at: 1, feature: 'snapshot', action: 'answered', measured: { tokens: 1 }, est: { tokens: 1, usd, formula: 'f', confidence: 'high' } })}\n`
+
+  test('a new rank is announced once in the band', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, {
+      surfaces: ['terminal'], env: { HOME: '/home/u' }, files: { [OLD_METRICS]: saving(5.5) },
+      store: { warden: { savedUsd: 4, rank: 0, counts: { saves: 1, coolHead: 0, leanTeam: 0, cleanReads: 0 } } },
+    })
+    await $.session.start(start('terminal'))
+    await w.clock.advance(0)
+    expect(w.store.get('warden')).toMatchObject({ rank: 1 })
+    const ui = await mountBand($, 'terminal')
+    expect(await textsOf(ui)).toContain('Warden: Promoted to Sergeant. $5.50 saved so far.')
+    await ui.press({ key: 'ok' })
+    await $.turn.complete(turnDone())
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  test('the first count is the starting rank, not a promotion; ranks never go down', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], env: { HOME: '/home/u' }, files: { [OLD_METRICS]: saving(25) } })
+    await $.session.start(start('terminal'))
+    await w.clock.advance(0)
+    expect(w.store.get('warden')).toMatchObject({ rank: 2 })
+    expect((await textsOf(await mountBand($, 'terminal'))).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
   test('no chime with wardenChime off', { options: { billing: 'metered', warden: true } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 }, env: { OS: 'Windows_NT' } })
     await $.session.start(start('terminal'))

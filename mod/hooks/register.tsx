@@ -43,6 +43,8 @@ import { heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '.
 import type { Px } from '../src/sprite'
 import { WARDEN_SVG } from '../src/wardenSvg'
 import { CHIME_ASSET, chimeCommands } from '../src/chime'
+import { addTally, NO_COUNTS, RANKS, rankOf, tally } from '../src/ranks'
+import type { Tally, WardenStore } from '../src/ranks'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
@@ -105,6 +107,8 @@ type Runtime = {
   chimedFor?: number
   isChimeBroken: boolean
   os?: HostOs
+  /** F16: the other sessions' savings and badge counts, read at session start. */
+  wardenBase?: Tally
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -119,6 +123,7 @@ const bandRef = { plugin: 'ccwarden', key: 'band' } as const
 const frameRef = { plugin: 'ccwarden', key: 'wardenFrame' } as const
 const WARDEN_FRAME_MS = 500
 const BILLS_KEPT = 50
+const WARDEN_KEY = 'warden' // $.store: lifetime savings, rank and badge counts (F16)
 const BAND_LABELS: Record<BandButton, string> = { handoff: 'Handoff', clear: 'Clear', send: 'Send anyway', cw: '/cw', ok: 'OK' }
 const BAND_HOTKEYS: Record<BandButton, string> = { handoff: 'h', clear: 'c', send: 's', cw: 'w', ok: 'o' }
 const WEEK_MS = 7 * 24 * 60 * 60_000
@@ -185,6 +190,8 @@ export const register: Register = (on, options) => {
     // Detached, so the question never holds up the session's start.
     $.clock.after(0, () => void askBilling($, config))
     await metricsFile($, config, runtime)
+    // F16: detached, since a first run parses every metrics file once.
+    if (config.warden) $.clock.after(0, () => void refreshWarden($, runtime).catch((err: unknown) => $.ui.log(`ccwarden: rank count failed: ${String(err)}`, { to: 'debug' })))
     await syncCompactWindow($, config, runtime)
     await refreshStatus($, config)
     return result
@@ -485,6 +492,7 @@ export const register: Register = (on, options) => {
     const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
     const note = (await $.state.get(heldNote)).value
     const frame = (await $.state.get(frameRef)).value ?? 0
+    const rank = ((await $.store.get(WARDEN_KEY)) as WardenStore | undefined)?.rank ?? 0
     const now = await $.clock.now()
     const view = bandView({
       ...(band.facts as StatusFacts),
@@ -520,7 +528,7 @@ export const register: Register = (on, options) => {
       )
     }
     const face = isRaster
-      ? <ui.Raster key="warden" {...rasterCells(wardenPixels(m.mood, frame, 0))} />
+      ? <ui.Raster key="warden" {...rasterCells(wardenPixels(m.mood, frame, rank))} />
       : (
         <Box key="warden" flexDirection="row">
           {'Svg' in ui && <ui.Svg key="warden-svg" source={WARDEN_SVG} alt="Warden" width={59} height={40} />}
@@ -682,6 +690,7 @@ export const register: Register = (on, options) => {
     })
     if (pending !== undefined) await spendAlert($, config, runtime, 'session', pending)
     if (config.warden && e.usage !== undefined) await recordBill($, e.durationMs, e.usage)
+    if (config.warden) await updateRank($, runtime)
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
@@ -1192,7 +1201,7 @@ async function readMetrics($: $, dir: string, canParse: boolean): Promise<Record
   for (const f of files) {
     const path = joinPath(dir, f.name)
     const cached = cache[path]
-    if (cached !== undefined && (!canParse || (cached.mtimeMs === f.mtimeMs && cached.size === f.size))) {
+    if (cached !== undefined && cached.summary.counts !== undefined && (!canParse || (cached.mtimeMs === f.mtimeMs && cached.size === f.size))) {
       next[path] = cached
       continue
     }
@@ -1457,6 +1466,32 @@ async function recordBill($: $, durationMs: number, usage: Usage): Promise<void>
     c.bills = Object.fromEntries([...Object.entries(c.bills ?? {}), [String(durationMs), turnBill(usd - c.turnStartUsd, usage)]].slice(-BILLS_KEPT))
     return c
   })
+}
+
+/** F16: the other sessions' savings and badge counts, from the metrics summaries (each parsed once, then cached). */
+async function refreshWarden($: $, runtime: Runtime): Promise<void> {
+  const claude = await claudeDir($)
+  if (claude === undefined) return
+  const self = await $.session.id()
+  const summaries = await readMetrics($, joinPath(claude, METRICS_DIR), true)
+  runtime.wardenBase = Object.values(summaries)
+    .filter(s => s.session !== self)
+    .reduce<Tally>((t, s) => addTally(t, { savedUsd: s.estUsd, counts: s.counts ?? NO_COUNTS }), { savedUsd: 0, counts: NO_COUNTS })
+  await updateRank($, runtime)
+}
+
+/** F16: lifetime savings with this session's events; a new rank is announced in the band once. */
+async function updateRank($: $, runtime: Runtime): Promise<void> {
+  if (runtime.wardenBase === undefined) return
+  const total = addTally(runtime.wardenBase, tally(runtime.metrics?.events ?? []))
+  const before = (await $.store.get(WARDEN_KEY)) as WardenStore | undefined
+  // Ranks never go down: an evicted summary cache or a costly ping shouldn't demote, then promote again.
+  const rank = Math.max(rankOf(total.savedUsd), before?.rank ?? 0)
+  await $.store.set(WARDEN_KEY, { ...total, rank })
+  if (before !== undefined && rank > before.rank) {
+    const text = `Promoted to ${RANKS[rank]!.name}. $${total.savedUsd.toFixed(2)} saved so far.`
+    await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), bandPromotion: text }))
+  }
 }
 
 const tint = (color: string | undefined) => (color === undefined ? {} : { color })
