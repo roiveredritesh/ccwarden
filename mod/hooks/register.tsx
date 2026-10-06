@@ -35,6 +35,14 @@ import { dashboardHtml } from '../src/htmlDashboard'
 import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, parseFile, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, usageUsd } from '../src/metrics'
 import type { MetricEvent, MetricsFile, MetricsSummary, Pending, Pin, Usage } from '../src/metrics'
 import { fmtTokens, formatStatus } from '../src/status'
+import type { Elements } from 'claude-code'
+import type { StatusFacts } from '../src/status'
+import { bandView } from '../src/band'
+import type { BandButton, BandSegment } from '../src/band'
+import { heatColumns, heatPixels, rasterCells, textCells, wardenPixels } from '../src/sprite'
+import type { Px } from '../src/sprite'
+import { WARDEN_SVG } from '../src/wardenSvg'
+import { CHIME_ASSET, chimeCommands } from '../src/chime'
 import { admit, TOASTS_PER_HOUR } from '../src/toasts'
 import type { Priority } from '../src/toasts'
 import { collectFromMessages, collectFromTranscript, lastResponseTime, parseJsonl } from '../src/transcript'
@@ -90,6 +98,13 @@ type Runtime = {
   pending: Pending[]
   /** F15: a topic clear waiting for /clear to land; its saving counts the next conversation (F13). */
   topicCleared?: Pending
+  /** F16: the band shows a moving warden (last minute, cold): the frame ticks at 2 fps, else every 5 s for the countdown. */
+  isAnimated: boolean
+  wardenTicks: number
+  /** F16: the cold spell (its last cache use) the chime played for; a player that failed isn't tried again this session. */
+  chimedFor?: number
+  isChimeBroken: boolean
+  os?: HostOs
 }
 
 const toastTimes = { plugin: 'ccwarden', key: 'toastTimes' } as const
@@ -100,6 +115,11 @@ const conversation = { plugin: 'ccwarden', key: 'conversation' } as const
 const budgetModeRef = { plugin: 'ccwarden', key: 'budgetMode' } as const
 const dashboardRef = { plugin: 'ccwarden', key: 'dashboard' } as const
 const holdoutRef = { plugin: 'ccwarden', key: 'holdout' } as const
+const bandRef = { plugin: 'ccwarden', key: 'band' } as const
+const frameRef = { plugin: 'ccwarden', key: 'wardenFrame' } as const
+const WARDEN_FRAME_MS = 500
+const BAND_LABELS: Record<BandButton, string> = { handoff: 'Handoff', clear: 'Clear', send: 'Send anyway', cw: '/cw', ok: 'OK' }
+const BAND_HOTKEYS: Record<BandButton, string> = { handoff: 'h', clear: 'c', send: 's', cw: 'w', ok: 'o' }
 const WEEK_MS = 7 * 24 * 60 * 60_000
 const DAY_MS = 24 * 60 * 60_000
 const WEEK_MAX_FILES = 20
@@ -129,7 +149,7 @@ const MIN_MS = 60_000
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [] }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [], isAnimated: false, wardenTicks: 0, isChimeBroken: false }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -153,6 +173,12 @@ export const register: Register = (on, options) => {
     await updateBudgetMode($, config, runtime)
     await $.command.register({ name: 'ccwarden-junk', description: "ccwarden: what the junk guard did (or, in observe mode, would have done)" })
     $.clock.every(STATUS_TICK_MS, () => void refreshStatus($, config))
+    // F16: the band's frame. ponytail: one cheap tick always on; it redraws at 2 fps only while the warden moves.
+    if (config.warden) {
+      $.clock.every(WARDEN_FRAME_MS, () => {
+        if (runtime.isAnimated || ++runtime.wardenTicks % 10 === 0) void update($, frameRef, n => (n ?? 0) + 1)
+      })
+    }
     $.clock.every(DASHBOARD_TICK_MS, () => void refreshEfficiency($, config, runtime, true))
     if (config.keepWarm) $.clock.every(TICK_MS, () => void keepWarmTick($, config, runtime))
     // Detached, so the question never holds up the session's start.
@@ -272,8 +298,12 @@ export const register: Register = (on, options) => {
       const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }), lastPromptAt: now }
       if (c.lastResponseAt === undefined && seeded !== undefined) c.lastResponseAt = seeded
       if (saved > 0 && c.keepWarm !== undefined) c.keepWarm = { ...c.keepWarm, savedUsd: c.keepWarm.savedUsd + saved }
+      // F16: a typed prompt answers what waited in the band.
+      delete c.bandAlert
+      delete c.bandPromotion
       return c
     })
+    await $.state.set(heldNote, null)
     if (saved > 0) {
       await recordProject($, { keepWarmSavedUsd: saved, keepWarmSavedTokens: tokens ?? 0 })
       await recordEvent($, config, runtime, { at: now, feature: 'keepwarm', action: 'avoided', measured: { tokens: tokens ?? 0 }, est: { tokens: tokens ?? 0, usd: saved, formula: 'rebuild avoided by a ping: context × cache write price', confidence: 'high' } })
@@ -435,6 +465,71 @@ export const register: Register = (on, options) => {
             await refresh()
           }}>{runtime.isBudget ? 'Budget mode off' : 'Budget mode on'}</Button>
           <Button key="copy" hotkey="y" onPress={press => void $.ui.copy({ text: dashboardText(d), surface: press.surface })}>Copy report</Button>
+        </Box>
+      </Box>
+    )
+  })
+
+  // F16: the band above the prompt (terminal and desktop), in place of the status line.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!config.warden || e.props.hasSurvey) return next(e)
+    const band = (await $.state.get(bandRef)).value
+    if (band === undefined) return next(e)
+    const conv = (await $.state.get(conversation)).value ?? { alerted: 0 }
+    const note = (await $.state.get(heldNote)).value
+    const frame = (await $.state.get(frameRef)).value ?? 0
+    const now = await $.clock.now()
+    const view = bandView({
+      ...(band.facts as StatusFacts),
+      now,
+      cache: cacheView(band.lastCacheUse, (band.facts as StatusFacts).ttl, now),
+      coldMinTokens: config.coldMinTokens,
+      isColdAnswered: conv.coldAskedFor !== undefined && conv.coldAskedFor === conv.lastResponseAt,
+      ...(conv.bandAlert === undefined ? {} : { spendAlert: conv.bandAlert }),
+      ...(conv.bandPromotion === undefined ? {} : { promotion: conv.bandPromotion }),
+      ...(note === null || note === undefined ? {} : { heldNote: note.text }),
+    }, e.props.bodyColumns)
+    const m = view.message
+    runtime.isAnimated = m?.isAnimated === true
+    // ponytail: once per spell per module load; a reload mid-spell chimes again
+    if (m?.row === 1 && config.wardenChime && !runtime.isChimeBroken && runtime.chimedFor !== band.lastCacheUse) {
+      runtime.chimedFor = band.lastCacheUse
+      void playChime($, runtime)
+    }
+
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button } = ui
+    const isRaster = e.surface === 'terminal' && 'Raster' in ui
+    const pixels = (key: string, px: Px) => (isRaster ? <ui.Raster key={key} {...rasterCells(px)} /> : pixelText(ui, key, px))
+    const seg = (s: BandSegment) => <Text key={s.kind} {...tint(s.color)} dimColor={s.isDim} bold={s.isBold} wrap="truncate-end">{s.text}</Text>
+    const [model, ...rest] = view.segments
+    if (m === undefined) {
+      return (
+        <Box flexDirection="row" gap={1}>
+          {seg(model!)}
+          {pixels('heat', heatPixels(view.pct, 12, 2, (band.facts as StatusFacts).compactAt))}
+          {rest.flatMap((s, i) => (i === 0 ? [seg(s)] : [<Text key={`dot-${s.kind}`} dimColor>·</Text>, seg(s)]))}
+        </Box>
+      )
+    }
+    const face = isRaster
+      ? <ui.Raster key="warden" {...rasterCells(wardenPixels(m.mood, frame, 0))} />
+      : (
+        <Box key="warden" flexDirection="row">
+          {'Svg' in ui && <ui.Svg key="warden-svg" source={WARDEN_SVG} alt="Warden" width={59} height={40} />}
+          {m.mood === 'cold' && <Text key="flag" bold color={frame % 2 ? '#7a0000' : '#ff2a2a'}>⚑</Text>}
+        </Box>
+      )
+    return (
+      <Box flexDirection="row" gap={1}>
+        {face}
+        {pixels('heat', heatPixels(view.pct, heatColumns(e.props.bodyColumns), 4, (band.facts as StatusFacts).compactAt))}
+        <Box flexDirection="column">
+          <Text key="said" bold color={m.color} wrap="wrap">{m.text}</Text>
+          <Box flexDirection="row" gap={1}>
+            <Text key="facts" wrap="truncate-end">{m.facts}</Text>
+            {m.buttons.map(b => <Button key={b} hotkey={BAND_HOTKEYS[b]} onPress={() => void pressBand($, config, runtime, m.row, b)}>{BAND_LABELS[b]}</Button>)}
+          </Box>
         </Box>
       </Box>
     )
@@ -823,10 +918,12 @@ async function addOwnSpend($: $, config: Config, runtime: Runtime, usd: number):
   if (usd > 0) await editMetrics($, config, runtime, f => ({ ...f, record: { ...f.record, usd: f.record.usd + usd } }))
 }
 
-/** F15: a spend toast (or one held by R9), counted on the page; it saves nothing by itself. */
+/** F15: a spend alert, counted on the page; it saves nothing by itself. F16: it waits in the band where one is drawn (no toast, none of R9's budget), else a toast under R9. */
 async function spendAlert($: $, config: Config, runtime: Runtime, kind: 'session' | 'subagent' | 'month', text: string): Promise<void> {
-  const shown = await notify($, 'spend', text)
-  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: { kind, shown } })
+  const isBand = await isBandDrawn($, config)
+  if (isBand) await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), bandAlert: text }))
+  const shown = isBand || (await notify($, 'spend', text))
+  await recordEvent($, config, runtime, { feature: 'alert', action: 'sent', measured: isBand ? { kind, shown, band: true } : { kind, shown } })
 }
 
 /** F15: a conversation ended: the file is written; after /clear the next event starts a new part. */
@@ -1103,12 +1200,29 @@ async function readRecentEvents($: $, runtime: Runtime, dir: string, now: number
   return out.sort((a, b) => b.at - a.at).slice(0, RECENT_EVENTS)
 }
 
+/** The host OS: `OS=Windows_NT` (Q19), else `uname -s`. */
+async function hostOs($: $): Promise<HostOs> {
+  if ((await $.env.get('OS')) === 'Windows_NT') return 'windows'
+  return (await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin' ? 'mac' : 'linux'
+}
+
+/** F16: the cold-cache chime; a failure is logged once and not retried this session. */
+async function playChime($: $, runtime: Runtime): Promise<void> {
+  runtime.os ??= await hostOs($)
+  if (runtime.os === 'mac') {
+    if (await $.audio.play({ asset: CHIME_ASSET }).then(() => true, () => false)) return
+  } else {
+    for (const argv of chimeCommands(runtime.os, `${$.plugin.root}/${CHIME_ASSET}`)) {
+      if ((await $.process.run(argv, { timeoutMs: 5_000 }).catch(() => undefined))?.exitCode === 0) return
+    }
+  }
+  runtime.isChimeBroken = true
+  $.ui.log('ccwarden: the cold-cache chime could not play here; no more tries this session.', { to: 'debug' })
+}
+
 /** F14: opens the page in the default browser; when that fails, says where it is. */
 async function openInBrowser($: $, path: string): Promise<void> {
-  let os: HostOs = 'linux'
-  if ((await $.env.get('OS')) === 'Windows_NT') os = 'windows'
-  else if ((await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined))?.stdout.trim() === 'Darwin') os = 'mac'
-  const ran = await $.process.run(openerArgv(os, path), { timeoutMs: 10_000 }).catch(() => undefined)
+  const ran = await $.process.run(openerArgv(await hostOs($), path), { timeoutMs: 10_000 }).catch(() => undefined)
   $.ui.log(ran?.exitCode === 0 ? `ccwarden: dashboard opened in your browser (${path}).` : `ccwarden: dashboard written to ${path}; open it in a browser.`)
 }
 
@@ -1241,10 +1355,11 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
   const model = await $.session.model()
   const now = await $.clock.now()
   const { ttl } = inferTtl({ observed: conv.observedTtl, override: await ttlOverride($), billing: config.billing })
-  const cache = cacheView(lastCacheUse(conv), ttl, now)
+  const lastUse = lastCacheUse(conv)
+  const cache = cacheView(lastUse, ttl, now)
   const tokens = usage.context.tokens
   const isBudget = (await $.state.get(budgetModeRef)).value === true
-  $.ui.status(formatStatus({
+  const facts: StatusFacts = {
     billing: config.billing,
     model,
     tokens,
@@ -1252,7 +1367,8 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
     compactAt: (isBudget ? budgetConfig(config) : config).compactAt,
     cache,
     ttl,
-    rebuildUsd: cache.kind === 'cold' && tokens !== undefined ? rebuildUsd(tokens, model, ttl) : undefined,
+    // The band's last-minute row shows the rebuild before the cache goes cold; the status line only once cold.
+    rebuildUsd: tokens !== undefined ? rebuildUsd(tokens, model, ttl) : undefined,
     usd: usage.cost?.usd,
     chatPct: conv.window?.chatPct,
     fiveHour: fiveHour(usage.rateLimits),
@@ -1267,7 +1383,59 @@ async function refreshStatus($: $, config: Config, known?: CcwardenConversation)
       running: runningCount(await $.agent.list()),
       usd: Object.values(conv.agents?.byId ?? {}).reduce((sum, v) => sum + v, 0),
     },
-  }))
+  }
+  // F16: the band draws these where it can; the status line stays everywhere else.
+  if (await isBandDrawn($, config)) await $.state.set(bandRef, lastUse === undefined ? { facts } : { facts, lastCacheUse: lastUse })
+  else $.ui.status(formatStatus(facts))
+}
+
+/** F16: AbovePrompt is raised on the terminal and desktop only; elsewhere (-p, VS Code, mobile) the status line stays. */
+async function isBandDrawn($: $, config: Config): Promise<boolean> {
+  return config.warden && (await $.session.surfaces()).some(s => s === 'terminal' || s === 'desktop')
+}
+
+/** F16: a band button. The cold row's three answer the spell, so F2 doesn't ask about it again. */
+async function pressBand($: $, config: Config, runtime: Runtime, row: number, b: BandButton): Promise<void> {
+  if (row === 1) {
+    await update($, conversation, prev => {
+      const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+      if (c.lastResponseAt !== undefined) c.coldAskedFor = c.lastResponseAt
+      return c
+    })
+    if (b === 'handoff') await writeHandoff($, config, runtime, 'quick') // no model call over a cold cache
+    if (b === 'clear') await $.command.run({ command: 'clear' })
+    return
+  }
+  if (b === 'cw') {
+    await $.state.set(dashboardRef, await buildDashboard($, config, runtime))
+    await $.ui.open({ id: PANE_ID, title: 'ccwarden' })
+  }
+  if (row === 7) {
+    await $.state.set(heldNote, null)
+    return
+  }
+  await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    if (row === 2) delete c.bandAlert
+    if (row === 6) delete c.bandPromotion
+    return c
+  })
+}
+
+const tint = (color: string | undefined) => (color === undefined ? {} : { color })
+
+/** F16: pixels as coloured ▀ text, where there is no Raster (desktop): Text redraws there, a changed Svg doesn't (Q27). */
+function pixelText(ui: { Box: Elements['desktop']['Box']; Text: Elements['desktop']['Text'] }, key: string, px: Px) {
+  const { Box, Text } = ui
+  return (
+    <Box key={key} flexDirection="column">
+      {textCells(px).map((row, r) => (
+        <Text key={`${key}-${r}`}>
+          {row.map((cell, c) => <Text key={`${key}-${r}-${c}`} {...tint(cell.color)} {...(cell.backgroundColor === undefined ? {} : { backgroundColor: cell.backgroundColor })}>{cell.char}</Text>)}
+        </Text>
+      ))}
+    </Box>
+  )
 }
 
 /**

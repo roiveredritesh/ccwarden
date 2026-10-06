@@ -204,6 +204,18 @@
       "title": "Proof mode (holdout)",
       "description": "About 1 in 10 new sessions run with ccwarden's guards off, to measure what it saves: /cw open shows protected vs holdout cost per prompt. Those sessions get no protection; the status line says holdout.",
       "default": false
+    },
+    "warden": {
+      "type": "boolean",
+      "title": "Warden band",
+      "description": "Terminal and Desktop: a coloured band above the prompt with a context heatmap, in place of the status line; the warden speaks up when the cache or context needs you; spend alerts wait there instead of toasts; the turn's $ in the spinner and on the turn line; ranks in /cw. Off: the plain status line and toasts.",
+      "default": true
+    },
+    "wardenChime": {
+      "type": "boolean",
+      "title": "Cold-cache chime",
+      "description": "A short chime when the warden says the cache went cold, once per cold spell.",
+      "default": false
     }
   }
 }

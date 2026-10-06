@@ -4,3 +4,6 @@ node_modules/
 .DS_Store
 mod/tsconfig.json
 probe/tsconfig.json
+
+# Brainstorm mockups (superpowers visual companion)
+.superpowers/

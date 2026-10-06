@@ -42,32 +42,40 @@ export type StatusFacts = {
   agents?: { running: number; usd: number }
 }
 
-export function formatStatus(f: StatusFacts): string {
+export type SegmentKind = 'model' | 'ctx' | 'compact' | 'cache' | 'miss' | 'chat' | 'fiveHour' | 'budget' | 'holdout' | 'background' | 'keepWarm' | 'agents'
+export type Segment = { kind: SegmentKind; text: string }
+
+/** The status line's facts, one segment each, in order; the F16 band colours them. */
+export function statusSegments(f: StatusFacts): Segment[] {
   const family = familyOf(f.model)
-  const parts = [family === undefined ? f.model : family[0]!.toUpperCase() + family.slice(1)]
-  parts.push(ctxSegment(f.tokens, f.limit))
-  if (f.compactAt !== undefined && f.tokens !== undefined && f.limit > 0 && (f.tokens / f.limit) * 100 >= f.compactAt) parts.push('/compact at a break')
-  parts.push(cacheSegment(f))
-  if (f.miss !== undefined) parts.push(`miss: ${f.miss.cause}, re-cached ${fmtTokens(f.miss.tokens)}`)
+  const parts: Segment[] = [{ kind: 'model', text: family === undefined ? f.model : family[0]!.toUpperCase() + family.slice(1) }]
+  parts.push({ kind: 'ctx', text: ctxSegment(f.tokens, f.limit) })
+  if (f.compactAt !== undefined && f.tokens !== undefined && f.limit > 0 && (f.tokens / f.limit) * 100 >= f.compactAt) parts.push({ kind: 'compact', text: '/compact at a break' })
+  parts.push({ kind: 'cache', text: cacheSegment(f) })
+  if (f.miss !== undefined) parts.push({ kind: 'miss', text: `miss: ${f.miss.cause}, re-cached ${fmtTokens(f.miss.tokens)}` })
 
   const flag = f.isAlerted ? ' ⚠' : ''
   if (f.billing === 'window' && f.fiveHour !== undefined) {
-    parts.push(`this chat ${f.chatPct ?? 0}% of 5h${flag}`)
+    parts.push({ kind: 'chat', text: `this chat ${f.chatPct ?? 0}% of 5h${flag}` })
     const resetsIn = f.fiveHour.resetsAt === undefined ? NaN : Date.parse(f.fiveHour.resetsAt) - f.now
-    parts.push(`5h ${f.fiveHour.percentUsed}%${Number.isFinite(resetsIn) && resetsIn > 0 ? ` (resets ${fmtDuration(resetsIn)})` : ''}`)
+    parts.push({ kind: 'fiveHour', text: `5h ${f.fiveHour.percentUsed}%${Number.isFinite(resetsIn) && resetsIn > 0 ? ` (resets ${fmtDuration(resetsIn)})` : ''}` })
   } else if (f.usd !== undefined) {
-    parts.push(`this chat $${f.usd.toFixed(2)}${flag}`)
+    parts.push({ kind: 'chat', text: `this chat $${f.usd.toFixed(2)}${flag}` })
   }
-  if (f.isBudget === true) parts.push('budget mode')
-  if (f.isHoldout === true) parts.push('holdout')
-  if (f.backgroundUsd !== undefined && f.backgroundUsd > 0) parts.push(`background $${f.backgroundUsd.toFixed(2)}`)
+  if (f.isBudget === true) parts.push({ kind: 'budget', text: 'budget mode' })
+  if (f.isHoldout === true) parts.push({ kind: 'holdout', text: 'holdout' })
+  if (f.backgroundUsd !== undefined && f.backgroundUsd > 0) parts.push({ kind: 'background', text: `background $${f.backgroundUsd.toFixed(2)}` })
   if (f.keepWarm !== undefined && f.keepWarm.pings > 0) {
-    parts.push(`keep-warm $${f.keepWarm.spentUsd.toFixed(2)} · saved $${f.keepWarm.savedUsd.toFixed(2)}`)
+    parts.push({ kind: 'keepWarm', text: `keep-warm $${f.keepWarm.spentUsd.toFixed(2)} · saved $${f.keepWarm.savedUsd.toFixed(2)}` })
   }
   if (f.agents !== undefined && (f.agents.running > 0 || f.agents.usd > 0)) {
-    parts.push(`agents ${f.agents.running} running · $${f.agents.usd.toFixed(2)}`)
+    parts.push({ kind: 'agents', text: `agents ${f.agents.running} running · $${f.agents.usd.toFixed(2)}` })
   }
-  return parts.join(' · ')
+  return parts
+}
+
+export function formatStatus(f: StatusFacts): string {
+  return statusSegments(f).map(s => s.text).join(' · ')
 }
 
 /** `ctx ▓▓▓▓▓░░░░░ 47% 140k/300k`: plain Unicode, because `$.ui.status` shows ANSI escapes raw (Q15). */

@@ -1,8 +1,14 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import { describe, expect, mock, test as engineTest } from 'claude-code/testing'
+import type { Engine, TestBody, TestOptions } from 'claude-code/testing'
 import type { ConfigRow, On, RenderSurface, SessionMessage, SessionRateLimit } from 'claude-code'
 import { BILLING_OPTIONS, BILLING_QUESTION } from '../src/billing'
 import { parseFile } from '../src/metrics'
+
+// F16: the warden's band replaces the status line and spend toasts on the terminal and desktop. The tests written
+// before it check those, so they run with it off; a test that wants it says `warden: true`.
+const test = (name: string, ...rest: readonly [TestBody] | readonly [TestOptions, TestBody]): void => rest.length === 1
+  ? engineTest(name, { options: { warden: false } }, rest[0])
+  : engineTest(name, { ...rest[0], options: { warden: false, ...rest[0].options } }, rest[1])
 
 const SURFACES = ['terminal', 'desktop'] as const
 const BILLINGS = ['metered', 'window'] as const
@@ -157,6 +163,7 @@ function world(on: On, opts: {
     shown.runs.push([...e.argv])
     const done = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (e.argv[0] === 'uname') return done(0, `${opts.uname ?? 'Linux'}\n`)
+    if (e.argv[0] === 'powershell') return done(0) // F16: the Windows chime player
     if (['cmd', 'open', 'xdg-open'].includes(e.argv[0]!)) return done(shown.openerExit)
     const out = e.argv.includes('rev-parse') ? opts.git?.branch : e.argv.includes('--numstat') ? opts.git?.numstat : undefined
     return done(out === undefined ? 128 : 0, out ?? '')
@@ -1907,5 +1914,182 @@ describe('F15 metrics log', () => {
     await $.session.start(start('terminal'))
     await $.agent.spawn(spawn('Explore'))
     expect(w.spawned[0]!.model).toBe('haiku')
+  })
+})
+
+describe('F16 warden', () => {
+  const BAND = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 140, scroll: { offset: 0, bodyRows: 20 }, view: {} }
+  const mountBand = ($: Engine, surface: RenderSurface, bodyColumns = 140) =>
+    $.ui.mount({ plugin: 'ccwarden', surface, component: 'AbovePrompt', props: { ...BAND, bodyColumns } })
+  const textsOf = async (ui: Awaited<ReturnType<typeof mountBand>>) => (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`one row in place of the status line (${surface}, ${billing})`, { options: { billing, warden: true } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], usage: { tokens: 60_000, usd: 1.25, rateLimits: [fiveHour(30)] } })
+        await $.session.start(start(surface))
+        expect(w.status).toEqual([])
+        const ui = await mountBand($, surface)
+        const texts = await textsOf(ui)
+        expect(texts).toContain('Sonnet')
+        expect(texts).toContain('ctx 20% 60k/300k')
+        expect(texts).toContain(billing === 'window' ? 'this chat 0% of 5h' : 'this chat $1.25')
+        expect(texts.some(t => t.startsWith('Warden:'))).toBe(false)
+        expect((await ui.find({ type: 'Raster' })) !== undefined).toBe(surface === 'terminal')
+      })
+
+      test(`cold cache: the warden's row; Send anyway answers the spell, so F2 doesn't ask (${surface}, ${billing})`, { options: { billing, warden: true } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], answer: 'Cancel', usage: { tokens: 180_000 } })
+        await $.session.start(start(surface))
+        await $.turn.complete(turnDone())
+        await w.clock.advance(billing === 'window' ? 65 * MIN : 17 * MIN)
+        const ui = await mountBand($, surface)
+        expect(await textsOf(ui)).toContain(billing === 'window'
+          ? 'Warden: The cache is cold. Your next prompt re-reads 180k tokens (≈ $0.72).'
+          : 'Warden: The cache is cold. Your next prompt re-reads 180k tokens (≈ $0.45).')
+        await ui.press({ key: 'send' })
+        expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+        await $.prompt.submit(typed('continue'))
+        expect(w.asks).toEqual([])
+        expect(w.sent).toEqual(['continue'])
+      })
+    }
+  }
+
+  test('the band warns, F2 still guards: unanswered, the cold prompt is asked about once', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], answer: 'Cancel', usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    const ui = await mountBand($, 'terminal')
+    await $.prompt.submit(typed('continue'))
+    expect(w.asks).toHaveLength(1)
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden: The cache is cold'))).toBe(false)
+  })
+
+  test('desktop cold row: the still warden, a blinking flag; Handoff writes a quick handoff', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['desktop'], usage: { tokens: 180_000 } })
+    await $.session.start(start('desktop'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    const ui = await mountBand($, 'desktop')
+    expect(await ui.find({ type: 'Svg' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⚑' })).toBeDefined()
+    await ui.press({ key: 'handoff' })
+    expect(w.writes.some(f => f.path.startsWith('/p/.claude/handoffs/'))).toBe(true)
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  test('Clear runs /clear', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await (await mountBand($, 'terminal')).press({ key: 'clear' })
+    expect(w.commandsRun).toContain('clear')
+  })
+
+  test('a narrow terminal drops 5h, then this chat; the band stays one row', { options: { billing: 'window', warden: true } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 60_000, rateLimits: [fiveHour(30)] } })
+    await $.session.start(start('terminal'))
+    const at = async (cols: number) => {
+      const ui = await mountBand($, 'terminal', cols)
+      const texts = await textsOf(ui)
+      await ui.unmount()
+      return texts
+    }
+    expect((await at(140)).some(t => t.startsWith('5h 30%'))).toBe(true)
+    expect((await at(80)).some(t => t.startsWith('5h '))).toBe(false)
+    expect(await at(80)).toContain('this chat 0% of 5h')
+    expect((await at(60)).some(t => t.startsWith('this chat'))).toBe(false)
+  })
+
+  test('no surface to draw on: the status line, as before', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: [], usage: { tokens: 60_000 } })
+    await $.session.start(start(null))
+    expect(w.status.at(-1)).toMatch(/^Sonnet · ctx /)
+  })
+
+  for (const surface of SURFACES) {
+    test(`a spend alert waits in the band, not a toast; OK takes it down (${surface})`, { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+      const w = world(on, { surfaces: [surface], usage: { tokens: 10_000 } })
+      await $.session.start(start(surface))
+      w.usage.usd = 6
+      await $.session.measure(measure(w))
+      expect(w.toasts).toEqual([])
+      const ui = await mountBand($, surface)
+      expect(await textsOf(ui)).toContain("Warden: You've spent $6.00 in this conversation (est.). Continuing.")
+      await ui.press({ key: 'ok' })
+      expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+    })
+  }
+
+  test('with no band (headless) the alert is a toast, as before', { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+    const w = world(on, { surfaces: [], usage: { tokens: 10_000 } })
+    await $.session.start(start(null))
+    w.usage.usd = 6
+    await $.session.measure(measure(w))
+    expect(w.toasts).toEqual(["⚠ You've spent $6.00 in this conversation (est.). Continuing."])
+  })
+
+  test('the next prompt, or /clear, takes a waiting alert down', { options: { billing: 'metered', warden: true, sessionAlertUsd: 5 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    const ui = await mountBand($, 'terminal')
+    const hasAlert = async () => (await textsOf(ui)).some(t => t.startsWith("Warden: You've spent"))
+    w.usage.usd = 6
+    await $.session.measure(measure(w))
+    expect(await hasAlert()).toBe(true)
+    await $.prompt.submit(typed('next'))
+    expect(await hasAlert()).toBe(false)
+    w.usage.usd = 11
+    await $.session.measure(measure(w))
+    expect(await hasAlert()).toBe(true)
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await w.clock.advance(0)
+    expect(await hasAlert()).toBe(false)
+  })
+
+  test('a note R9 held back shows in the band until OK', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    // Two kinds of background turn: advisor toasts get one slot an hour (R9), so the second is held.
+    const bgTurn = { ...turnDone(), usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' } }
+    for (const kind of ['scheduled-trigger', 'peer']) {
+      await $.prompt.submit({ text: 'tick', wait: false, origin: { kind } as never })
+      await $.turn.start({ text: 'tick', turnId: 'b' })
+      await $.turn.complete(bgTurn)
+    }
+    expect(w.toasts).toHaveLength(1)
+    const ui = await mountBand($, 'terminal')
+    expect((await textsOf(ui)).some(t => t.startsWith("Warden: a turn started by another Claude session's message cost ~$0.20 (est.)."))).toBe(true)
+    await ui.press({ key: 'ok' })
+    expect((await textsOf(ui)).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  test('the chime plays once per cold spell, and only when switched on', { options: { billing: 'metered', warden: true, wardenChime: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 }, env: { OS: 'Windows_NT' } })
+    const chimes = () => w.runs.filter(a => a[0] === 'powershell')
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await mountBand($, 'terminal')
+    await w.clock.advance(5_000) // the band redraws
+    expect(chimes()).toHaveLength(1)
+    expect(chimes()[0]!.at(-1)).toMatch(/^\(New-Object Media\.SoundPlayer '.*sounds\/chime\.wav'\)\.PlaySync\(\)$/)
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    expect(chimes()).toHaveLength(2) // a new spell
+  })
+
+  test('no chime with wardenChime off', { options: { billing: 'metered', warden: true } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 180_000 }, env: { OS: 'Windows_NT' } })
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await mountBand($, 'terminal')
+    await w.clock.advance(5_000)
+    expect(w.runs.filter(a => a[0] === 'powershell')).toEqual([])
   })
 })
