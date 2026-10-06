@@ -150,7 +150,7 @@ function world(on: On, opts: {
   on('tool.call', { tool: 'Bash' }, () => opts.bashError !== undefined ? { isError: true, result: opts.bashError, text: opts.bashError } : ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
-  on('agent.list', () => ({ value: shown.agents }))
+  on('agent.list', () => ({ value: shown.agents as never }))
   on('prompt.submit', (_$, e) => { shown.sent.push(e.text); return { text: e.text } })
   on('prompt.fill', (_$, e) => { shown.fills.push(e.text); return { isFilled: true } })
   on('agent.spawn', (_$, e) => {
