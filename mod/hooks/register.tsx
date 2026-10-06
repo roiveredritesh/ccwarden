@@ -34,7 +34,7 @@ import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCa
 import { dashboardHtml } from '../src/htmlDashboard'
 import { addEvent, addTurn, addUsage, coldEstimate, emptyFile, METRICS_DIR, newRecord, nextPart, parseFile, pendingOutcome, pinEstimate, putOutcome, resume, serialize, summarizeMetrics, usageUsd } from '../src/metrics'
 import type { MetricEvent, MetricsFile, MetricsSummary, Pending, Pin, Usage } from '../src/metrics'
-import { fmtTokens, formatStatus } from '../src/status'
+import { fmtTokens, fmtTurnSeconds, formatStatus, turnBill } from '../src/status'
 import type { Elements } from 'claude-code'
 import type { StatusFacts } from '../src/status'
 import { bandView } from '../src/band'
@@ -118,6 +118,7 @@ const holdoutRef = { plugin: 'ccwarden', key: 'holdout' } as const
 const bandRef = { plugin: 'ccwarden', key: 'band' } as const
 const frameRef = { plugin: 'ccwarden', key: 'wardenFrame' } as const
 const WARDEN_FRAME_MS = 500
+const BILLS_KEPT = 50
 const BAND_LABELS: Record<BandButton, string> = { handoff: 'Handoff', clear: 'Clear', send: 'Send anyway', cw: '/cw', ok: 'OK' }
 const BAND_HOTKEYS: Record<BandButton, string> = { handoff: 'h', clear: 'c', send: 's', cw: 'w', ok: 'o' }
 const WEEK_MS = 7 * 24 * 60 * 60_000
@@ -233,6 +234,7 @@ export const register: Register = (on, options) => {
 
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
+    if (config.warden && e.changed.includes('cost')) $.ui.invalidate('ui.render') // F16: the spinner's $
     const reading = fiveHour(e.rateLimits)
     let due: string | undefined
     let spent = 0
@@ -278,6 +280,11 @@ export const register: Register = (on, options) => {
     // F8: a prompt the user didn't type, starting a turn of its own.
     const source = backgroundSource(e.origin)
     if (e.turnId === undefined) runtime.queued = [...runtime.queued, { text: e.text, source }].slice(-20)
+    // F16: the turn's spend counts from here (spinner, turn bill).
+    if (config.warden && e.turnId === undefined) {
+      const startUsd = (await $.session.usage()).cost?.usd
+      if (startUsd !== undefined) await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), turnStartUsd: startUsd }))
+    }
     if (source !== undefined) return next(e)
     if (e.origin.kind !== 'composer' || e.turnId !== undefined) return next(e)
     const now = await $.clock.now()
@@ -535,6 +542,24 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // F16: the spinner carries the turn's spend so far; the engine's word stays.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if (!config.warden) return next(e)
+    const startUsd = (await $.state.get(conversation)).value?.turnStartUsd
+    const usd = (await $.session.usage()).cost?.usd
+    if (startUsd === undefined || usd === undefined) return next(e)
+    return next({ ...e, props: { ...e.props, suffix: `… · $${(usd - startUsd).toFixed(2)}` } })
+  })
+
+  // F16 (terminal): the line that closes a turn carries its bill; a line with no bill is the engine's.
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    if (!config.warden) return next(e)
+    const bill = (await $.state.get(conversation)).value?.bills?.[String(e.props.durationMs)]
+    if (bill === undefined) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor>✻ {e.props.word} for {fmtTurnSeconds(e.props.durationMs)} · {bill}</Text>
+  })
+
   on('command.run', { command: 'ccwarden-junk' }, async ($) => {
     const log = ((await $.store.get(JUNK_LOG_KEY)) as JunkEvent[] | undefined) ?? []
     $.ui.log(`ccwarden junk guard (${config.junkGuard}): ${log.length} event${log.length === 1 ? '' : 's'}, ${junkSavedText(config.junkGuard, junkTokens(log))} (est.). Latest ${Math.min(log.length, JUNK_SHOWN)}:`)
@@ -656,6 +681,7 @@ export const register: Register = (on, options) => {
       return c
     })
     if (pending !== undefined) await spendAlert($, config, runtime, 'session', pending)
+    if (config.warden && e.usage !== undefined) await recordBill($, e.durationMs, e.usage)
     if (conv.ttlCheckedAt === undefined || now - conv.ttlCheckedAt >= TTL_RECHECK_MS) await observeTtl($, config, now)
     else await refreshStatus($, config, conv)
 
@@ -1418,6 +1444,17 @@ async function pressBand($: $, config: Config, runtime: Runtime, row: number, b:
     const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
     if (row === 2) delete c.bandAlert
     if (row === 6) delete c.bandPromotion
+    return c
+  })
+}
+
+/** F16: the turn's bill, keyed by its duration; none when the turn's start cost isn't known. */
+async function recordBill($: $, durationMs: number, usage: Usage): Promise<void> {
+  const usd = (await $.session.usage()).cost?.usd
+  await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    if (usd === undefined || c.turnStartUsd === undefined) return c
+    c.bills = Object.fromEntries([...Object.entries(c.bills ?? {}), [String(durationMs), turnBill(usd - c.turnStartUsd, usage)]].slice(-BILLS_KEPT))
     return c
   })
 }
