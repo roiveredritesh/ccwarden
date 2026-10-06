@@ -150,7 +150,7 @@ function world(on: On, opts: {
   on('tool.call', { tool: 'Bash' }, () => opts.bashError !== undefined ? { isError: true, result: opts.bashError, text: opts.bashError } : ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
-  on('agent.list', () => ({ value: shown.agents }))
+  on('agent.list', () => ({ value: shown.agents as never }))
   on('prompt.submit', (_$, e) => { shown.sent.push(e.text); return { text: e.text } })
   on('prompt.fill', (_$, e) => { shown.fills.push(e.text); return { isFilled: true } })
   on('agent.spawn', (_$, e) => {
@@ -2141,6 +2141,41 @@ describe('F16 warden', () => {
     await w.clock.advance(0)
     expect(w.store.get('warden')).toMatchObject({ rank: 2 })
     expect((await textsOf(await mountBand($, 'terminal'))).some(t => t.startsWith('Warden:'))).toBe(false)
+  })
+
+  const PANE = { title: 'ccwarden', isFocused: true, bodyColumns: 100, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 60 }, view: {} }
+
+  for (const surface of SURFACES) {
+    test(`/cw: rank, badges, today's patrol log and the receipt (${surface})`, { options: { billing: 'metered', warden: true } }, async ($, on) => {
+      const NOW = Date.parse('2026-10-05T12:00:00Z')
+      const line = (e: Record<string, unknown>) => JSON.stringify({ v: 1, measured: {}, ...e })
+      const old = [
+        line({ at: NOW - 60 * MIN, feature: 'subagent', action: 'pinned', ref: 's1', measured: { type: 'Explore', asked: 'opus', ran: 'haiku' } }),
+        line({ at: NOW - 59 * MIN, feature: 'subagent', action: 'outcome', ref: 's1', est: { tokens: 0, usd: 12.4, formula: 'f', confidence: 'high' } }),
+      ].join('\n')
+      const w = world(on, { surfaces: [surface], env: { HOME: '/home/u' }, files: { [OLD_METRICS]: `${old}\n` }, mtimes: { [OLD_METRICS]: NOW } })
+      await w.clock.advance(NOW)
+      await $.session.start(start(surface))
+      await w.clock.advance(0)
+      await $.command.run({ command: 'cw', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+      const pane = await $.ui.mount({ plugin: 'ccwarden', surface, component: 'Pane', props: PANE, requestId: 'ccwarden-cw' })
+      const texts = (await pane.findAll({ type: 'Text' })).map(t => t.text)
+      expect(texts).toContain('▶ Sergeant')
+      expect(texts.some(t => t.endsWith('Sergeant · $12.40 saved · $7.60 to Inspector'))).toBe(true)
+      expect(texts).toContain('  [✓] First save')
+      expect(texts).toContain('  [ ] Lean team 1/25')
+      expect(texts).toContain('  11:00  Pinned an Explore subagent from Opus to Haiku · saved ~$12.40')
+      await pane.press({ key: 'receipt-copy' })
+      expect(w.copied.at(-1)!.text).toMatch(/^CCWARDEN · SESSION RECEIPT\n/)
+    })
+  }
+
+  test('/cw with the warden off: no warden sections', { options: { billing: 'metered', warden: false } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], env: { HOME: '/home/u' } })
+    await $.session.start(start('terminal'))
+    await $.command.run({ command: 'cw', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    const pane = await $.ui.mount({ plugin: 'ccwarden', surface: 'terminal', component: 'Pane', props: PANE, requestId: 'ccwarden-cw' })
+    expect((await pane.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('Rank')
   })
 
   test('no chime with wardenChime off', { options: { billing: 'metered', warden: true } }, async ($, on) => {

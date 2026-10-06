@@ -69,8 +69,9 @@ On the first start, the plugin asks once how this machine is billed: **metered**
 
 | Feature | What you get |
 |---|---|
-| **Status line** | Model, context against its limit, cache warm/cold (time left and rebuild cost), and this conversation's spend ($ or % of the 5h window). A cache miss names its likely cause. |
-| **Spend alerts** | A toast every $5 (metered) or 20% of the window. Alerts never block. |
+| **Warden band** | Above the prompt (terminal and Desktop): model, a context heatmap against its limit, cache warm/cold (time left and rebuild cost), and this conversation's spend ($ or % of the 5h window), in colour. The warden speaks up when the cache goes cold (hand off, clear, or send anyway), the context fills, or a spend alert is due; an optional chime when the cache goes cold. Elsewhere, and with `warden` off, it is a plain status line. A cache miss names its likely cause. |
+| **Spend alerts** | Every $5 (metered) or 20% of the window, in the band (a toast where there is no band). Alerts never block. |
+| **Turn bill** | The spinner shows the turn's spend so far; on the terminal the line that closes a turn shows its cost and how much was cached. |
 | **Snapshot compaction** | Per-model limits (Haiku 120K, others 300K). Past the limit, the plugin builds the compacted conversation itself, so no summary tokens are spent. |
 | **Cold-cache guard** | Before a big prompt goes out over an expired cache, you choose: continue, hand off, or cancel. |
 | **Junk guard** | Oversized `Read`s go to `Grep` or a ranged read. Long Bash output is trimmed, and the full output is saved to a file Claude can grep. Ships in `observe` mode. |
@@ -79,7 +80,7 @@ On the first start, the plugin asks once how this machine is billed: **metered**
 | **Background watcher** | Names turns you didn't type (scheduled tasks, `/loop`, channels) with their cost and the setting that stops them. |
 | **Model advice** | At a fresh start, when switching is still free, it suggests a cheaper model. It never switches for you. |
 | **Month tracking** | Month-to-date estimate, budget toasts at 50/80/100%, and a stricter budget mode. |
-| **`/cw` dashboard** | This session, guard savings, month to date, context hogs and a 7-day cache report. |
+| **`/cw` dashboard** | The warden's rank and badges, today's patrol log, this conversation's receipt, then this session, guard savings, month to date, context hogs and a 7-day cache report. |
 | **Efficiency dashboard** | `/cw open`: what ccwarden saved (est.), a measured before/after per project, and spend over time, in your browser. Nothing leaves the machine. |
 | **Keep-warm** *(experimental, off)* | Before the active session's cache expires, one tiny fork keeps it warm, within a $ cap. |
 

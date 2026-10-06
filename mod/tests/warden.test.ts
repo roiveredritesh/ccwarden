@@ -9,7 +9,9 @@ import type { BandFacts } from '../src/band'
 import { CHIME_ASSET, chimeCommands } from '../src/chime'
 import { addTally, NO_COUNTS, rankBar, rankLine, rankOf, tally } from '../src/ranks'
 import { summarizeMetrics } from '../src/metrics'
-import type { MetricEvent } from '../src/metrics'
+import type { MetricEvent, SessionRecord } from '../src/metrics'
+import { patrolLines } from '../src/patrol'
+import { receiptText } from '../src/receipt'
 
 describe('F16 config', () => {
   test('warden is on and its chime off by default; both can be switched', () => {
@@ -206,5 +208,70 @@ describe('F16 ranks and badges', () => {
     expect(rankLine(60)).toBe('Chief Warden · $60.00 saved')
     expect(rankBar(12.5)).toBe('████████░░░░░░░░')
     expect(rankBar(60)).toBe('█'.repeat(16))
+  })
+})
+
+describe('F16 patrol log and receipt', () => {
+  const est = (tokens: number, usd: number) => ({ tokens, usd, formula: 'f', confidence: 'high' as const })
+  const AT = Date.parse('2026-10-05T10:42:00Z')
+  const NOW = Date.parse('2026-10-05T18:00:00Z')
+  const m = (min: number) => AT - min * 60_000
+
+  test("today's actions, newest first, each with the saving its outcome settled", () => {
+    const events: MetricEvent[] = [
+      { v: 1, at: AT, feature: 'junk', action: 'kept-out', ref: 'j1', measured: { tool: 'Read', target: '/p/cw-enforce.txt', size: 2500, chars: 70_000 } },
+      { v: 1, at: AT + 1, feature: 'junk', action: 'outcome', ref: 'j1', measured: {}, est: est(17_000, 0.02) },
+      { v: 1, at: m(11), feature: 'subagent', action: 'pinned', ref: 's1', measured: { type: 'general-purpose', asked: 'opus', ran: 'haiku' } },
+      { v: 1, at: m(10), feature: 'subagent', action: 'outcome', ref: 's1', measured: {}, est: est(0, 0.12) },
+      { v: 1, at: m(44), feature: 'cold', action: 'asked', ref: 'c1', measured: { tokens: 60_000, minutesCold: 9, rebuildUsd: 0.2 } },
+      { v: 1, at: m(44), feature: 'cold', action: 'outcome', ref: 'c1', measured: { choice: 'handoff' }, est: est(60_000, 0.12) },
+      { v: 1, at: m(60), feature: 'junk', action: 'would-keep-out', would: true, measured: { tool: 'Bash', target: 'npm test', size: 41_000, chars: 41_000 } },
+      { v: 1, at: m(24 * 60), feature: 'handoff', action: 'written', measured: { route: 'quick' } },
+    ]
+    expect(patrolLines(events, NOW)).toEqual([
+      '10:42  Blocked a whole Read of cw-enforce.txt (2,500 lines) · kept ~17k tokens out ($0.02)',
+      '10:31  Pinned a general-purpose subagent from Opus to Haiku · saved ~$0.12',
+      '09:58  Asked before a prompt on a cold cache (60k) · you chose handoff · saved ~$0.12',
+      '09:42  Trimmed Bash output (41,000 characters) (observe)',
+    ])
+  })
+
+  test('every action the log records has its own line, and at most 8 lines', () => {
+    const actions: [MetricEvent['feature'], string][] = [
+      ['alert', 'sent'], ['cold', 'asked'], ['cold', 'would-ask'], ['compact', 'summarised'], ['handoff', 'written'],
+      ['keepwarm', 'avoided'], ['keepwarm', 'ping'], ['limit', 'compact-hint'], ['limit', 'would-hint'],
+      ['snapshot', 'answered'], ['snapshot', 'would-answer'], ['subagent', 'denied'], ['subagent', 'would-deny'],
+      ['subagent', 'pinned'], ['subagent', 'capped'], ['topic', 'cleared'], ['topic', 'would-ask'],
+      ['junk', 'kept-out'], ['junk', 'would-keep-out'],
+    ]
+    for (const [feature, action] of actions) {
+      const [line] = patrolLines([{ v: 1, at: AT, feature, action, measured: { type: 'Explore', asked: 'opus', ran: 'haiku', tool: 'Read', target: 'a', size: 1, tokens: 1, limit: 2, route: 'quick', kind: 'session' } }], NOW)
+      expect(line).not.toContain(`${feature} ${action}`)
+    }
+    const many = Array.from({ length: 12 }, (_, i): MetricEvent => ({ v: 1, at: m(i), feature: 'handoff', action: 'written', measured: { route: 'quick' } }))
+    expect(patrolLines(many, NOW)).toHaveLength(8)
+    expect(patrolLines([{ v: 1, at: AT, feature: 'subagent', action: 'pinned', measured: { type: 'Explore', asked: 'opus', ran: 'haiku' } }], NOW)[0]).toContain('Pinned an Explore subagent')
+  })
+
+  test('the receipt: this conversation part, its spend, and what the warden saved by feature', () => {
+    const rec: SessionRecord = {
+      v: 1, record: 'session', session: 's', part: 1, project: 'p', startedAt: 100, lastAt: 200, measuring: false, holdout: false,
+      familyTurns: {}, prompts: 23, requests: 61, tokens: { input: 0, read: 1_240_000, write: 0, output: 0 }, usd: 4.18, subagentUsd: 0.31, events: 4, truncated: false,
+    }
+    const text = receiptText(rec, [
+      { v: 1, at: 150, feature: 'junk', action: 'outcome', measured: {}, est: est(27_000, 0.41) },
+      { v: 1, at: 150, feature: 'subagent', action: 'outcome', measured: {}, est: est(0, 0.55) },
+      { v: 1, at: 150, feature: 'snapshot', action: 'would-answer', would: true, measured: {}, est: est(0, 5) },
+      { v: 1, at: 50, feature: 'junk', action: 'outcome', measured: {}, est: est(0, 1) }, // an earlier part
+    ], 'Sergeant · $12.40 saved · $7.60 to Inspector')
+    const lines = text.split('\n')
+    const RULE = '-'.repeat(34)
+    expect(lines.map(l => l.trim().split(/ {2,}/))).toEqual([
+      ['CCWARDEN · SESSION RECEIPT'], [RULE],
+      ['Prompts', '23'], ['Requests', '61'], ['Cache reads', '1.2M tok'], ['Subagents', '$0.31'], ['Spent (est.)', '$4.18'], [RULE],
+      ['Warden saved', '$0.96'], ['subagent', '$0.55'], ['junk', '$0.41'], [RULE],
+      ['Sergeant · $12.40 saved · $7.60 to Inspector'],
+    ])
+    expect(lines.filter(l => / {2,}\S+$/.test(l)).every(l => l.length === 34)).toBe(true)
   })
 })
