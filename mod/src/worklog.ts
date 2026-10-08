@@ -70,14 +70,14 @@ export function digest(messages: readonly SessionMessage[], maxChars = DIGEST_MA
   }
   const note = dropped > 0 ? `(${dropped} earlier turn${dropped === 1 ? '' : 's'} left out)\n` : ''
   const text = note + kept.flat().map(i => (i.result === undefined ? i.line : `${i.line}${RESULT_MARK}${i.result}`)).join('\n')
-  return text.length <= maxChars ? text : text.slice(text.length - maxChars)
+  return text.length <= maxChars ? text : overflow(note, kept.at(-1)!, text, maxChars)
 }
 
 /** A result cut to what matters for its tool: the end of a command, the matches of a search, the change of an edit. */
 export function cutResult(use: ToolUseSummary): string {
-  if (EDIT_TOOLS.has(use.tool)) return changeOf(use.input)
   const text = use.text ?? ''
   if (use.isError === true) return headTail(text, FAILED_CHARS / 4, (FAILED_CHARS * 3) / 4)
+  if (EDIT_TOOLS.has(use.tool)) return changeOf(use.input)
   switch (use.tool) {
     case 'Bash': case 'PowerShell': return headTail(text, 300, 900)
     case 'Grep': case 'Glob': return headLines(text, 1_200)
@@ -106,7 +106,18 @@ export function loopAction(count: number, max: number): 'none' | 'warn' | 'stop'
 }
 
 function fullResult(use: ToolUseSummary): string {
-  return EDIT_TOOLS.has(use.tool) ? changeOf(use.input) : use.text ?? ''
+  return use.isError !== true && EDIT_TOOLS.has(use.tool) ? changeOf(use.input) : use.text ?? ''
+}
+
+// Even the last turn alone is over budget: its prompt, a marker, then the end of the digest, cut at a line.
+function overflow(note: string, turn: Item[], text: string, maxChars: number): string {
+  const first = turn[0]?.line ?? ''
+  const head = `${note}${first.startsWith('User: ') ? `${first}\n` : ''}…[earlier steps of this turn cut]…\n`
+  const room = maxChars - head.length
+  if (room <= 0) return head.slice(0, maxChars)
+  const tail = text.slice(text.length - room)
+  const nl = tail.indexOf('\n')
+  return head + (nl < 0 ? tail : tail.slice(nl + 1))
 }
 
 function changeOf(input: Record<string, unknown>): string {

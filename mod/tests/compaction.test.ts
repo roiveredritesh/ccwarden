@@ -195,4 +195,19 @@ describe('F3b work log', () => {
     expect(loopAction(3, 3)).toBe('stop')
     expect(loopAction(9, 0)).toBe('warn')
   })
+
+  test('a failed edit shows its error, not the change it did not make', () => {
+    const failed = [msg('assistant', '', { toolUses: [use('e1', 'Edit', { file_path: '/p/a.ts', new_string: 'const x = 1' }, 'old_string not found', true)] })]
+    expect(digest(failed)).toBe('→ Edit(/p/a.ts) (failed)\n  ⎿ old_string not found')
+    expect(cutResult(use('e1', 'Edit', { file_path: '/p/a.ts', new_string: 'const x = 1' }, 'old_string not found', true))).toBe('old_string not found')
+  })
+
+  test('a turn bigger than the budget keeps its prompt and the end of its calls', () => {
+    const turn = [msg('user', 'Refactor the parser'), msg('assistant', '', { toolUses: Array.from({ length: 2_000 }, (_, i) => use(`c${i}`, 'Bash', { command: `step ${i}` }, 'ok')) })]
+    const d = digest(turn, 5_000)
+    expect(d.length).toBeLessThanOrEqual(5_000)
+    expect(d).toMatch(/^User: Refactor the parser\n/)
+    expect(d).toContain('[earlier steps of this turn cut]')
+    expect(d.endsWith('→ Bash(step 1999)')).toBe(true)
+  })
 })
