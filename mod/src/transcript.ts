@@ -1,9 +1,10 @@
 import type { SessionMessage } from 'claude-code'
 import { slashed } from './paths'
-import { SNAPSHOT_TAG } from './snapshot'
+import { readsOf, SNAPSHOT_TAG } from './turns'
+import type { FileRead } from './turns'
 
 // Session facts for the snapshot (F3) and handoffs (F7): the user's verbatim
-// asks, the files edited, and the latest TodoWrite list. Ported from
+// asks, the files edited and read, and the latest TodoWrite list. Ported from
 // hooks-edition/lib.js and hooks/session-start.js.
 //
 // Two sources: the transcript JSONL (complete: it keeps the history across
@@ -20,6 +21,8 @@ export type SessionFacts = {
   files: string[]
   /** The latest TodoWrite list, or null when there was none. */
   todos: Todo[] | null
+  /** Files Read this session, with ranges, newest first, each once. */
+  reads: FileRead[]
 }
 
 export const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -126,6 +129,7 @@ class FactsBuilder {
   private asks: string[] = []
   private edited = new Map<string, number>() // path -> order of its last edit
   private todos: Todo[] | null = null
+  private reads: { tool: string; input: Record<string, unknown> }[] = [] // the Read calls, oldest first
   private order = 0
 
   ask(text: string | null): void {
@@ -138,12 +142,14 @@ class FactsBuilder {
       if (typeof file === 'string') this.edited.set(slashed(file), this.order++)
     } else if (name === 'TodoWrite' && Array.isArray(input.todos)) {
       this.todos = (input.todos as unknown[]).filter(isTodo)
+    } else if (name === 'Read') {
+      this.reads.push({ tool: name, input })
     }
   }
 
   done(): SessionFacts {
     const files = [...this.edited.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f)
-    return { asks: this.asks, files, todos: this.todos }
+    return { asks: this.asks, files, todos: this.todos, reads: readsOf(this.reads) }
   }
 }
 

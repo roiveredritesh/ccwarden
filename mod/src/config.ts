@@ -16,7 +16,12 @@ export type Config = {
   coldMinTokens: number
   limitHaiku: number
   limitOther: number
-  compactMode: 'snapshot' | 'summary'
+  compactMode: 'worklog' | 'snapshot' | 'summary'
+  /** F3b: the model that writes the work log, and its $ cap per conversation. */
+  worklogModel: string
+  worklogCapUsd: number
+  /** F3b: the compaction in one task (no typed prompt between) that stops the turn; 0 never stops. */
+  compactLoopMax: number
   compactAt: number
   junkGuard: 'observe' | 'enforce' | 'off'
   readMaxLines: number
@@ -53,7 +58,10 @@ export const DEFAULTS: Config = {
   coldMinTokens: 50_000,
   limitHaiku: 120_000,
   limitOther: 300_000,
-  compactMode: 'snapshot',
+  compactMode: 'worklog',
+  worklogModel: 'haiku',
+  worklogCapUsd: 0.5,
+  compactLoopMax: 3,
   compactAt: 55,
   junkGuard: 'observe',
   readMaxLines: 2_000,
@@ -106,7 +114,10 @@ export function readConfig(options: PluginOptions): Config {
     coldMinTokens: num('coldMinTokens'),
     limitHaiku: pos('limitHaiku'),
     limitOther: pos('limitOther'),
-    compactMode: pick('compactMode', ['snapshot', 'summary'], DEFAULTS.compactMode),
+    compactMode: pick('compactMode', ['worklog', 'snapshot', 'summary'], DEFAULTS.compactMode),
+    worklogModel: typeof options.worklogModel === 'string' && options.worklogModel.trim() !== '' ? options.worklogModel.trim() : DEFAULTS.worklogModel,
+    worklogCapUsd: num('worklogCapUsd'),
+    compactLoopMax: loopMax(Math.floor(num('compactLoopMax'))),
     compactAt: num('compactAt'),
     junkGuard: pick('junkGuard', ['observe', 'enforce', 'off'], DEFAULTS.junkGuard),
     readMaxLines: pos('readMaxLines'),
@@ -134,6 +145,11 @@ export function readConfig(options: PluginOptions): Config {
     warden: bool('warden'),
     wardenChime: bool('wardenChime'),
   }
+}
+
+/** 0 never stops; 1 would stop the first compaction, so the least is 2. */
+function loopMax(n: number): number {
+  return n === 0 ? 0 : Math.max(2, n)
 }
 
 /** The per-model context limit (F3): Haiku's, or the one for every other family. */

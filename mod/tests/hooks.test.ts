@@ -90,6 +90,11 @@ function world(on: On, opts: {
     refuseWrites: false,
     messages: [] as SessionMessage[],
     forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
+    // F3b: the work log's Haiku calls; `worklogReply` undefined answers an API error, null rejects (a refused model), 'aborted' is a call cut by its timeout.
+    completions: [] as { model: string; prompt: string; system?: string; maxTokens?: number; effort?: string; timeoutMs?: number }[],
+    worklogReply: '## Done\n- Edited src/auth.ts\n## In progress\n- none\n## Pending\n- none\n## Key findings\n- the timeout is in src/auth.ts:42\n## Next step\n- run npm test' as string | null | undefined | 'aborted',
+    // F3b: turns the mod stopped.
+    aborts: [] as string[],
   }
   on('ui.toast', (_$, e) => { shown.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$, e) => { shown.status.push(e.text); return { value: undefined } })
@@ -138,6 +143,14 @@ function world(on: On, opts: {
     return { value: { isAnswered: true, text: e.prompt.startsWith('Write the second half') ? shown.forkHandoff : 'OK', usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: shown.forkCacheRead, cache_creation_input_tokens: 10 } } }
   })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('model.complete', (_$, e) => {
+    shown.completions.push({ model: e.model, prompt: e.prompt, system: e.system, maxTokens: e.maxTokens, effort: e.effort as string | undefined, timeoutMs: e.timeoutMs })
+    if (shown.worklogReply === null) return Promise.reject(new Error('model not allowed'))
+    const usage = { input_tokens: 20_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    if (shown.worklogReply === 'aborted') return { value: { isAnswered: false, reason: 'aborted', usage } as never }
+    return { value: (shown.worklogReply === undefined ? { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage } : { isAnswered: true, text: shown.worklogReply, usage }) as never }
+  })
+  on('turn.abort', (_$, e) => { shown.aborts.push(e.turnId); return { value: undefined } as never })
   // Core's Read: the range asked for, or its default first page of 2000 lines.
   on('tool.call', { tool: 'Read' }, (_$, e) => {
     shown.reads.push(e.file_path)
@@ -150,7 +163,7 @@ function world(on: On, opts: {
   on('tool.call', { tool: 'Bash' }, () => opts.bashError !== undefined ? { isError: true, result: opts.bashError, text: opts.bashError } : ({ result: { stdout: opts.bashOut?.stdout ?? 'ok', stderr: '', interrupted: false, ...(opts.bashOut?.persistedOutputPath === undefined ? {} : { persistedOutputPath: opts.bashOut.persistedOutputPath }) } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('session.cwd', () => ({ value: '/p' }))
-  on('agent.list', () => ({ value: shown.agents }))
+  on('agent.list', () => ({ value: shown.agents as never }))
   on('prompt.submit', (_$, e) => { shown.sent.push(e.text); return { text: e.text } })
   on('prompt.fill', (_$, e) => { shown.fills.push(e.text); return { isFilled: true } })
   on('agent.spawn', (_$, e) => {
@@ -526,6 +539,179 @@ describe('F3 per-model limits and snapshot compaction', () => {
     msg('user', 'fix that test'),
     msg('assistant', 'Fixed.'),
   ]
+  // history(), then a turn still running: a prompt, a failed command, its result.
+  const midTurn = (): SessionMessage[] => [
+    ...history(),
+    msg('user', 'now run the e2e suite'),
+    msg('assistant', 'Running.', { toolUses: [{ tool_use_id: 'b2', tool: 'Bash', input: { command: 'npm run e2e' }, text: '2 failing', isError: true }] }),
+    msg('user', '', { toolResults: [{ tool_use_id: 'b2', text: '2 failing', isError: true }] as never }),
+  ]
+  const typedPrompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+  for (const surface of SURFACES) {
+    for (const billing of BILLINGS) {
+      test(`work-log compaction: Haiku's state of work, the facts, the Resume block last (${surface}, ${billing})`, { options: { billing } }, async ($, on) => {
+        const w = world(on, { surfaces: [surface], usage: { tokens: 10_000 }, git: { branch: 'fix/login', numstat: '12\t3\tsrc/auth.ts\n' } })
+        await $.session.start(start(surface))
+        const out = await $.session.compact({ trigger: 'auto', messages: history() })
+
+        expect(w.completions).toHaveLength(1)
+        expect(w.completions[0]).toMatchObject({ model: 'haiku', maxTokens: 1_500, effort: 'low', timeoutMs: 30_000 })
+        expect(w.completions[0]!.system).toContain('## Next step')
+        expect(w.completions[0]!.prompt).toContain('User: Fix the login timeout bug')
+        expect(w.completions[0]!.prompt).toContain('→ Edit(/p/src/auth.ts)')
+        const snap = out.messages![0]!.text
+        expect(snap).toContain('## State of work (written by Haiku from the transcript; verify before relying on it)\n### Done\n- Edited src/auth.ts')
+        expect(snap).toContain('User: "also keep the old cookie name"')
+        expect(snap.endsWith("## Resume\nAll requests above are answered and done; work only on the user's message that follows.")).toBe(true)
+        expect(w.coreCompactions).toEqual([])
+        expect(w.logs.at(-1)).toMatch(/^ccwarden: work-log compaction \(auto\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; Haiku \$0\.025; no summary request\.$/)
+      })
+    }
+  }
+
+  test('a mid-turn compaction resumes the running task: the task, what is done, the next step', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    const out = await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    const snap = out.messages![0]!.text
+    expect(snap).toContain('## Resume: you were in the middle of this task\nCurrent task (the user\'s request, verbatim):\n  "now run the e2e suite"')
+    expect(snap).toContain('  - Ran: npm run e2e → failed')
+    expect(snap).toContain("Next step (Haiku's reading of the transcript): run npm test")
+    expect(snap).toContain("Don't ask the user whether to continue.")
+    expect(snap).toContain('4. User: "now run the e2e suite"\n   Claude (in progress): "Running."') // history() has three turns before it
+  })
+
+  test('a compaction right after a typed prompt says that prompt is not answered yet', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    const out = await $.session.compact({ trigger: 'auto', messages: [...history(), msg('user', 'now run the e2e suite')] })
+    const snap = out.messages![0]!.text
+    expect(snap).toContain('except the last one, which isn\'t answered yet:\n  "now run the e2e suite"\nAnswer it now; don\'t redo the done requests.')
+    expect(snap).not.toContain('All requests above are answered and done')
+  })
+
+  // compactLoopMax 0: these compactions have no typed prompt between them, and a stop would log after them.
+  test('no work log: an API error, a refused model, the cap, nothing to read', { options: { billing: 'metered', worklogCapUsd: 0.03, compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    w.worklogReply = undefined
+    const failed = await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(failed.messages![0]!.text).not.toContain('## State of work')
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: api-error; no summary request.')
+    w.worklogReply = null
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: refused (')
+    w.worklogReply = '## Next step\n- x'
+    await $.session.compact({ trigger: 'auto', messages: history() }) // $0.025 more: past the $0.03 cap
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(3)
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: cap reached; no summary request.')
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } }) // /clear: the cap starts over
+    await $.session.compact({ trigger: 'auto', messages: [msg('user', '[ccwarden snapshot] only facts')] })
+    expect(w.completions).toHaveLength(3) // nothing to read: no call
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: nothing to read; no summary request.')
+  })
+
+  test('the work-log cap counts an unknown model at Opus rates, so it still trips', { options: { billing: 'metered', worklogModel: 'claude-mystery-1', worklogCapUsd: 0.05, compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() }) // 20k in, 1k out: $0.10 at Opus rates
+    expect(w.logs.at(-1)).toContain('$0.100')
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(1)
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: cap reached; no summary request.')
+  })
+
+  test('/clear starts the work-log cap over', { options: { billing: 'metered', worklogCapUsd: 0.03, compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() }) // $0.025
+    await $.session.compact({ trigger: 'auto', messages: history() }) // $0.05 in all: past the cap
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(2)
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: cap reached; no summary request.')
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(3)
+    expect(w.logs.at(-1)).toMatch(/Haiku \$0\.025/)
+  })
+
+  test('a work-log call cut by its timeout is a plain snapshot, timed out', { options: { billing: 'metered', compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    w.worklogReply = 'aborted'
+    const out = await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(out.messages![0]!.text).not.toContain('## State of work')
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: timed out; no summary request.')
+  })
+
+  test('a whitespace-only work-log reply is a plain snapshot, empty-reply', { options: { billing: 'metered', compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    w.worklogReply = '   '
+    const out = await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(out.messages![0]!.text).not.toContain('## State of work')
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: empty-reply; no summary request.')
+  })
+
+  test('compactMode snapshot makes no model call and logs as before',{ options: { billing: 'metered', compactMode: 'snapshot' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toEqual([])
+    expect(w.logs.at(-1)).toMatch(/^ccwarden: snapshot compaction \(auto\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; no summary request\.$/)
+  })
+
+  test('a task compacted again with no typed prompt is warned, then stopped at compactLoopMax; a typed prompt starts over', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.prompt.submit(typedPrompt('now run the e2e suite'))
+    await $.turn.start({ text: 'now run the e2e suite', turnId: 't9' })
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    // The second compaction kept only the end of the turn: no prompt left, the task is carried.
+    const again = [msg('user', '[ccwarden snapshot] facts'), msg('assistant', 'Reading.', { toolUses: [{ tool_use_id: 'r5', tool: 'Read', input: { file_path: '/p/e2e/login.spec.ts' }, text: 'spec' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'r5', text: 'spec' }] as never })]
+    const second = (await $.session.compact({ trigger: 'auto', messages: again })).messages![0]!.text
+    expect(second).toContain('  "now run the e2e suite"')
+    expect(second).toContain('  - Ran: npm run e2e → failed\n  - Read e2e/login.spec.ts')
+    expect(second).toContain('This task was compacted 2 times')
+    expect(w.aborts).toEqual([])
+    await $.session.compact({ trigger: 'auto', messages: again })
+    await w.clock.advance(0)
+    expect(w.aborts).toEqual(['t9'])
+    expect(w.logs).toContain('ccwarden: compacted 3 times in one task with no new prompt; stopped the turn so it doesn\'t keep spending. Split the task, or type "continue" to go on.')
+    expect(w.toasts.some(t => t.includes('compacted 3 times'))).toBe(true)
+
+    await $.prompt.submit(typedPrompt('continue'))
+    await $.turn.start({ text: 'continue', turnId: 't10' })
+    const fresh = (await $.session.compact({ trigger: 'auto', messages: again })).messages![0]!.text
+    expect(fresh).not.toContain('compacted 2 times')
+    expect(fresh).toContain('(not in the kept messages; see Recent turns)') // the task was reset by the typed prompt
+    await w.clock.advance(0)
+    expect(w.aborts).toEqual(['t9'])
+  })
+
+  test('with no turn running, a loop stop says it could not stop the turn, and aborts nothing', { options: { billing: 'metered', compactLoopMax: 2 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await w.clock.advance(0)
+    expect(w.logs.at(-1)).toContain('ccwarden: compacted 2 times in one task with no new prompt; couldn\'t stop the turn (none running is known). Split the task, or press Esc.')
+    expect(w.toasts.some(t => t.includes("couldn't stop the turn"))).toBe(true)
+    expect(w.aborts).toEqual([])
+  })
+
+  test('/clear starts the loop count over',{ options: { billing: 'metered', compactLoopMax: 2 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await w.clock.advance(0)
+    expect(w.aborts).toEqual([])
+  })
 
   for (const surface of SURFACES) {
     for (const billing of BILLINGS) {
@@ -539,7 +725,7 @@ describe('F3 per-model limits and snapshot compaction', () => {
         await $.session.compact({ trigger: 'manual', messages: history() }) // what core's /compact raises
         expect(w.coreCompactions).toEqual([]) // answered in core's place
         expect(w.logs).toContain('ccwarden: 125k tokens is past the 120k limit for claude-haiku-4-5-20251001. Type /compact: it keeps a snapshot, no summary request.')
-        expect(w.logs.at(-1)).toMatch(/^ccwarden: snapshot compaction \(manual\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; no summary request\.$/)
+        expect(w.logs.at(-1)).toMatch(/^ccwarden: work-log compaction \(manual\): 10 messages → a \d+-character snapshot \+ 2 turn\(s\) kept; Haiku \$0\.025; no summary request\.$/)
       })
     }
   }
@@ -598,7 +784,7 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(snap!.handle).toBeUndefined()
     expect(snap!.text).toContain('[ccwarden snapshot]')
     expect(snap!.text).toContain('## Goal (first request)\nFix the login timeout bug')
-    expect(snap!.text).toContain('1. also keep the old cookie name')
+    expect(snap!.text).toContain('User: "also keep the old cookie name"')
     expect(snap!.text).toContain('- src/auth.ts (+12 -3)')
     expect(snap!.text).toContain('## Branch\nfix/login')
     expect(snap!.text).toContain('## Last error\nBash: 1 failing')
@@ -612,6 +798,25 @@ describe('F3 per-model limits and snapshot compaction', () => {
     const after = [msg('user', 'now the docs'), msg('assistant', 'Done.')]
     const out = await $.session.compact({ trigger: 'auto', messages: after })
     expect(out.messages?.[0]?.text).toContain('## Goal (first request)\nFix the login timeout bug')
+  })
+
+  test('a later compaction keeps the earlier snapshot for Haiku, and the files Read before it from the transcript', { options: { billing: 'metered' } }, async ($, on) => {
+    const line = (o: unknown) => JSON.stringify(o)
+    const transcript = [
+      line({ type: 'user', message: { role: 'user', content: 'Fix the login timeout bug' } }),
+      line({ type: 'assistant', message: { id: 'a1', content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/p/src/old.ts' } }] } }),
+      line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'code' }] } }),
+      line({ type: 'assistant', message: { id: 'a2', content: [{ type: 'text', text: 'Read it.' }] } }),
+    ].join('\n')
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 }, transcript })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl' })
+    await $.session.start(start('terminal'))
+    // The second compaction: its messages start with the first one's snapshot, which kept no Read of old.ts.
+    const earlier = msg('user', '[ccwarden snapshot] facts\n\n## State of work (written by Haiku from the transcript; verify before relying on it)\n### Pending\n- write the regression test')
+    const out = await $.session.compact({ trigger: 'auto', messages: [earlier, msg('user', 'fix that test'), msg('assistant', 'Fixed.')] })
+    expect(w.completions[0]!.prompt).toContain('Earlier ccwarden snapshot')
+    expect(w.completions[0]!.prompt).toContain('### Pending\n- write the regression test')
+    expect(out.messages![0]!.text).toContain('## Files read (most recent first; re-read only the range you need)\n- src/old.ts')
   })
 
   test('precompute is vetoed in snapshot mode', { options: { billing: 'metered' } }, async ($, on) => {
@@ -1555,7 +1760,7 @@ describe('F14 efficiency dashboard: live figures', () => {
     })
   }
 
-  test('a snapshot compaction records what a summary would have cost', { options: { billing: 'metered' } }, async ($, on) => {
+  test('a snapshot compaction records what a summary would have cost', { options: { billing: 'metered', compactMode: 'snapshot' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000 } })
     await w.clock.advance(DAY)
     await $.session.start(start('terminal'))

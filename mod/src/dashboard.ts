@@ -31,7 +31,7 @@ export function dashboardSections(d: CcwardenDashboard): DashboardSection[] {
     title: 'Guard savings (est.)',
     lines: [
       `junk guard (${v.junkMode}): ${v.junkEvents} event${v.junkEvents === 1 ? '' : 's'} this month, ${junkSavedText(v.junkMode, v.junkTokens)}`,
-      `snapshot compactions ${v.snapshots} (no summary tokens) · keep-warm spent $${v.keepWarmSpent.toFixed(2)}, saved $${v.keepWarmSaved.toFixed(2)}`,
+      `snapshot compactions ${v.snapshots} (no summary tokens; work log ${v.worklogCalls} call${v.worklogCalls === 1 ? '' : 's'}, $${v.worklogUsd.toFixed(2)}) · keep-warm spent $${v.keepWarmSpent.toFixed(2)}, saved $${v.keepWarmSaved.toFixed(2)}`,
     ],
   })
 

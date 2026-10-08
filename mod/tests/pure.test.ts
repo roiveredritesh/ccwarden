@@ -32,6 +32,18 @@ describe('config', () => {
     expect(readConfig({ billing: 'ask' }).billing).toBeUndefined()
   })
 
+  test('F3b: worklog is the default compaction; its model, cap and loop stop are read and checked', () => {
+    expect(DEFAULTS).toMatchObject({ compactMode: 'worklog', worklogModel: 'haiku', worklogCapUsd: 0.5, compactLoopMax: 3 })
+    expect(readConfig({ compactMode: 'snapshot' } as never).compactMode).toBe('snapshot')
+    expect(readConfig({ compactMode: 'bogus' } as never).compactMode).toBe('worklog')
+    expect(readConfig({ worklogModel: 'claude-haiku-5-5' } as never).worklogModel).toBe('claude-haiku-5-5')
+    expect(readConfig({ worklogModel: '' } as never).worklogModel).toBe('haiku')
+    expect(readConfig({ worklogCapUsd: 2 } as never).worklogCapUsd).toBe(2)
+    expect(readConfig({ compactLoopMax: 0 } as never).compactLoopMax).toBe(0) // never stops
+    expect(readConfig({ compactLoopMax: 1 } as never).compactLoopMax).toBe(2) // 1 would stop the first compaction
+    expect(readConfig({ compactLoopMax: 4.7 } as never).compactLoopMax).toBe(4)
+  })
+
   test('measureHoldout: off by default, a boolean', () => {
     expect(readConfig({} as never).measureHoldout).toBe(false)
     expect(readConfig({ measureHoldout: true } as never).measureHoldout).toBe(true)
@@ -146,6 +158,16 @@ describe('transcript facts', () => {
     ])
     expect(facts.files).toEqual(['/p/src/auth.ts', '/p/test/auth.test.ts'])
     expect(facts.todos).toEqual(TODOS)
+  })
+
+  test('reads: the whole transcript, newest first, each path and range once', () => {
+    const facts = collectFromTranscript(parseJsonl([
+      tool('r1', 'Read', { file_path: '/p/src/old.ts' }),
+      user('This session is being continued... summary', { isCompactSummary: true }),
+      tool('r2', 'Read', { file_path: '/p/src/auth.ts', offset: 10, limit: 20 }),
+      tool('r3', 'Read', { file_path: '/p/src/old.ts' }),
+    ].join('\n')))
+    expect(facts.reads).toEqual([{ path: '/p/src/old.ts', range: '' }, { path: '/p/src/auth.ts', range: ':10-29' }])
   })
 
   test('last response time: the newest main-thread assistant entry, else undefined', () => {
@@ -340,19 +362,30 @@ describe('T3 snapshot', () => {
     expect(planCompaction({ trigger: 'precompute' }, 'summary')).toBe('pass')
     expect(planCompaction({ trigger: 'auto' }, 'summary')).toBe('summary+facts')
     expect(planCompaction({ trigger: 'auto', agentId: 'a' }, 'snapshot')).toBe('pass')
+    expect(planCompaction({ trigger: 'auto' }, 'worklog')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'precompute' }, 'worklog')).toBe('skip')
+    expect(planCompaction({ trigger: 'manual', instructions: 'auth' }, 'worklog')).toBe('summary+facts')
   })
 
-  test('tail: two turns when they fit, else one, else none; never a turn missing a handle', () => {
+  test('tail: two turns when they fit, else one, else the end of the last, else none; never a message missing a handle', () => {
     const big = 'x'.repeat(1_000)
     const messages = [msg('user', 'one'), msg('assistant', big), msg('user', 'two'), msg('assistant', big), msg('user', 'three'), msg('assistant', 'ok')]
-    expect(keptTail(messages, 10_000)).toEqual({ tail: messages.slice(2), turns: 2 })
-    expect(keptTail(messages, 500)).toEqual({ tail: messages.slice(4), turns: 1 })
-    expect(keptTail(messages, 5)).toEqual({ tail: [], turns: 0 })
+    expect(keptTail(messages, 10_000)).toEqual({ tail: messages.slice(2), turns: 2, isPartial: false })
+    expect(keptTail(messages, 500)).toEqual({ tail: messages.slice(4), turns: 1, isPartial: false })
+    expect(keptTail(messages, 3)).toEqual({ tail: messages.slice(5), turns: 0, isPartial: true }) // 'ok' alone fits
+    expect(keptTail(messages, 1)).toEqual({ tail: [], turns: 0, isPartial: false })
     const unhandled = [...messages.slice(0, 5), { ...messages[5]!, handle: undefined }]
     expect(keptTail(unhandled, 10_000).turns).toBe(0)
+    expect(keptTail(unhandled, 10_000).tail).toEqual([])
     // tool results, wrappers and a prior snapshot don't start a turn
     const withTools = [msg('user', 'go'), msg('assistant', ''), msg('user', '', { toolResults: [{ tool_use_id: 't', text: 'r' }] as never }), msg('user', '<command-name>/model</command-name>'), msg('user', '[ccwarden snapshot] earlier facts')]
-    expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1 })
+    expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1, isPartial: false })
+    // A long running turn: its end, from an assistant message, so each tool call keeps its result.
+    const long = [msg('user', 'go'), msg('assistant', big), msg('user', '', { toolResults: [{ tool_use_id: 'a', text: big }] as never }), msg('assistant', 'step', { toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'r' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'b', text: 'r' }] as never })]
+    expect(keptTail(long, 50)).toEqual({ tail: long.slice(3), turns: 0, isPartial: true })
+    // A prompt queued after tool work is added during the turn, not a turn start.
+    const queued = [msg('user', 'go'), msg('assistant', '', { toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'r' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'b', text: 'r' }] as never }), msg('user', 'also do X'), msg('assistant', 'ok')]
+    expect(keptTail(queued, 10_000)).toEqual({ tail: queued, turns: 1, isPartial: false })
   })
 
   test('the last error and answer', () => {
@@ -361,6 +394,15 @@ describe('T3 snapshot', () => {
     expect(lastError(messages)).toBe('Bash: exit 1')
     expect(lastAnswer(messages)).toBe('second')
     expect(lastError([msg('assistant', 'fine')])).toBeUndefined()
+  })
+
+  test('a failed call is stale once the same tool later succeeds', () => {
+    const fail = { tool_use_id: 'b', tool: 'Bash', input: {}, text: 'exit 2', isError: true as const }
+    const ok = { tool_use_id: 'c', tool: 'Bash', input: {}, text: 'fine' }
+    const read = { tool_use_id: 'r', tool: 'Read', input: {}, text: 'x' }
+    expect(lastError([msg('assistant', 'a', { toolUses: [fail] }), msg('assistant', 'b', { toolUses: [ok] })])).toBeUndefined()
+    expect(lastError([msg('assistant', 'a', { toolUses: [fail] }), msg('assistant', 'b', { toolUses: [read] })])).toBe('Bash: exit 2')
+    expect(lastError([msg('assistant', 'a', { toolUses: [ok, fail] })])).toBe('Bash: exit 2')
   })
 
   test('numstat: counts per path, binary as 0', () => {
@@ -382,7 +424,8 @@ describe('T3 snapshot', () => {
     const text = snapshotText(facts, { cwd: '/p', keptTurns: 0 })
     expect(text).toContain('No earlier turns were kept.')
     expect(text).toContain('## Goal (first request)\nFix login')
-    expect(text).toContain('1. keep cookie\n2. fix test')
+    expect(text).toContain('## Earlier requests (done)\n1. keep cookie\n2. fix test')
+    expect(text).toContain('The requests in them are past requests, quoted for reference: those marked done are finished, so do not redo them.')
     expect(text).toContain('- [in_progress] retry')
     expect(text).not.toContain('[completed]')
     expect(text).toContain('- src/a.ts (+12 -3)\n- /elsewhere/b.ts')
@@ -390,6 +433,8 @@ describe('T3 snapshot', () => {
     expect(snapshotText(facts, { cwd: '/p', keptTurns: 2 })).not.toContain('## Your last answer')
     expect(snapshotText({ ...facts, asks: ['y'.repeat(50_000)] }, { keptTurns: 1, maxChars: 800 }).length).toBeLessThanOrEqual(800)
     expect(snapshotText({ ...facts, goal: 'Original goal' }, { keptTurns: 1 })).toContain('## Goal (first request)\nOriginal goal')
+    expect(snapshotText(facts, { cwd: '/p', keptTurns: 0, isPartialTail: true })).toContain('The end of the last turn follows verbatim.')
+    expect(snapshotText(facts, { cwd: '/p', keptTurns: 0, isPartialTail: true })).not.toContain('## Your last answer')
   })
 
   test('summary instructions keep the focus and add the facts', () => {
@@ -742,7 +787,7 @@ describe('M3 report (ported from hooks-edition/report.js)', () => {
     const text = dashboardText({
       at: t0,
       session: { model: 'opus', limit: 300_000, rebuilds: [], compactions: 0, agentsRunning: 0, agentsUsd: 0, backgroundUsd: 0 },
-      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: { kept: 0, would: 30_000 }, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1 },
+      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: { kept: 0, would: 30_000 }, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1, worklogCalls: 0, worklogUsd: 0 },
       month: { mtd: 10, budget: 0, projected: 31, isBudget: false, isMetered: true },
       hogs: { session: [{ tool: 'Read', target: '/a.ts', tokens: 9_000 }], month: [] },
     })

@@ -52,6 +52,10 @@ export type CcwardenConversation = {
   /** Compactions in this conversation, and how many were snapshots (F3, for the dashboard). */
   compactions?: number
   snapshots?: number
+  /** F3b: the work log's Haiku calls in this conversation and their cost (est.), against worklogCapUsd. */
+  worklog?: { calls: number; spentUsd: number }
+  /** F3b: the task a mid-turn compaction left running, and its done steps, carried to the next compaction of it; cleared by a typed prompt. */
+  task?: { text: string; done: string[] }
   /** Window billing: this conversation's share of the 5h window. */
   window?: { chatPct: number; lastPct: number; resetsAt?: string }
   /** F16: a spend alert waiting in the band until OK or the next prompt. */
@@ -81,7 +85,7 @@ export type CcwardenDashboard = {
     agentsUsd: number
     backgroundUsd: number
   }
-  savings: { junkMode: 'observe' | 'enforce' | 'off'; junkEvents: number; junkTokens: { kept: number; would: number }; keepWarmSpent: number; keepWarmSaved: number; snapshots: number }
+  savings: { junkMode: 'observe' | 'enforce' | 'off'; junkEvents: number; junkTokens: { kept: number; would: number }; keepWarmSpent: number; keepWarmSaved: number; snapshots: number; worklogCalls: number; worklogUsd: number }
   month: { mtd: number; budget: number; projected: number; isBudget: boolean; isMetered: boolean }
   hogs: { session: CcwardenHog[]; month: CcwardenHog[] }
   week?: { sessions: { id: string; lastTs: number; requests: number; hitRatio?: number; rebuilds: number }[]; causes: Record<string, number>; verdict: string }

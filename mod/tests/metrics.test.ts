@@ -123,4 +123,11 @@ describe('F15 file summary', () => {
     expect(s.days['2026-10-03']!.junk!.would).toEqual({ count: 1, tokens: 4, usd: 0.1 })
     expect([s.project, s.records.length, s.estUsd, s.wouldUsd, s.skipped]).toEqual(['/p', 1, 0.5, 0.1, 0])
   })
+  test('loop warnings and stops are not counted as summary compactions', () => {
+    let f = emptyFile(newRecord({ session: 's', project: '/p', now: DAY, measuring: true }))
+    f = addEvent(f, ev({ at: DAY, feature: 'compact', action: 'summarised' }))
+    f = addEvent(f, ev({ at: DAY, feature: 'compact', action: 'loop-warned' }))
+    f = addEvent(f, ev({ at: DAY, feature: 'compact', action: 'loop-stopped' }))
+    expect(summarizeMetrics(serialize(f), 's').days['2026-10-03']!.compact!.done.count).toBe(1)
+  })
 })

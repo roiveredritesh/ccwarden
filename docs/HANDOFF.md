@@ -24,6 +24,16 @@ Written 2026-10-02 at the end of the design session that produced this repo, and
 - **F13 live data (not changed, maintainer's call):** `topicLog` has 9 hints and no Clear (8 Send, 1 dismissed), at overlaps 0.00–0.15. The keyword test isn't telling new work from old in this Hinglish workflow; turn `topicShiftHint` off, or tighten it.
 - `tsc --noEmit` is clean again (4 errors in `src/transcript.ts` and the tests, from before). `plugin validate` and `plugin test` don't type-check, and CI can't run `tsc`: the `tsconfig.json` and types it needs are written by the engine only when the mod loads in a session. Run it locally (CLAUDE.md, Commands).
 
+**Cache clock per request (2026-10-08, PR #53):** live, the status kept saying "cold" after a prompt over a cold cache until the turn ended: the anchor (`lastResponseAt`) moved only at `turn.complete`. It now moves at every main-loop `turn.step` with usage; subagent steps leave it alone.
+
+**Work-log compaction built (2026-10-08, F3b):** `docs/superpowers/specs/2026-10-08-worklog-compaction-design.md`; SPEC F3 "As built" has the rules and §9 Q35–Q38 the unverified points. Live, the snapshot made Claude redo work or stop and ask: of 93 auto snapshot compactions in the transcripts, 60% were loops (no typed prompt between two compactions; one ran 20+ times in 14 minutes, ~$5–6) and 91% came mid-turn, and the re-reading after one big compaction cost ~$1 against ~$0.25 for a summary. The mod now keeps the snapshot (turns with reply and status, a Resume block naming the current task and what is done, a partial tail), adds a Haiku work log (≈ $0.03, `worklogCapUsd`), and stops a turn compacted 3 times. Live checks still open:
+
+1. `/config` → `limitOther` 100000; work past it mid-task. The log shows `ccwarden: work-log compaction (auto)`; the next request resumes the task at its next step, without restarting it, re-reading the listed files or asking.
+2. `/cw` shows the work-log spend.
+3. After a week, re-run the transcript measure from the design (cache writes from compaction to the next typed prompt; compactions with no typed prompt between them) against the baseline in its §1: ~$1 re-discovery per big compaction, 60% loops.
+
+The §3 "Compaction" decision has changed. After these: F2 "Compact & send", then §5d.
+
 **First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
 
 - the billing format, `/ccwarden-junk` wording, Windows paths (#17–#19)
@@ -49,7 +59,7 @@ Not built: the full §3 advisor (break-even rule, task-done detection, its butto
 | Piece | State |
 |---|---|
 | `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
-| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). T7 done: keep-warm (ships off until Q2). M2–M5 since (§1). It validates, type-checks (`tsc --noEmit`, locally), and passes 320 tests on terminal and desktop × metered and window; CI runs them. It has run live on the maintainer's Windows machine (terminal + Desktop) since 2026-10-02; the open live checks are in §1. |
+| `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). T7 done: keep-warm (ships off until Q2). M2–M5 since (§1). It validates, type-checks (`tsc --noEmit`, locally), and passes 407 tests on terminal and desktop × metered and window; CI runs them. It has run live on the maintainer's Windows machine (terminal + Desktop) since 2026-10-02; the open live checks are in §1. |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. Run on the window machine (Q5, Q6, Q13 answered); still to run on the metered one (Q2). |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F15, milestones, open questions. §9 now records what the types answer. |
 
@@ -73,7 +83,7 @@ The mod must work on both machines from one codebase; the per-machine `billing` 
 |---|---|---|
 | Status line | Shows **this conversation's** spend ($, or % of the 5h window), not month totals | What the user can act on right now |
 | Spend alert | Toast every $5 (metered) or 20% of the 5h window (window); never blocks | Awareness without interrupting work |
-| Compaction | **Snapshot compaction**: the mod answers `session.compact` itself, so no summary tokens are spent. A manual `/compact <focus>` still uses the engine summary. | Summaries are output tokens (5x input); the snapshot costs nothing |
+| Compaction | **Work-log compaction:** the mod answers `session.compact` with a snapshot plus a Haiku work log (≈ $0.03, capped), never the main model's summary. A manual `/compact <focus>` still uses the engine summary. | The snapshot alone made Claude redo or stall (60% of compactions looped), and re-reading after it cost more than any summary |
 | Limits | Per model family (Haiku 120K, others 300K), enforced by the mod at turn end, plus the engine window (300K) as a safety net | The engine has only one global window |
 | Junk guard | Deny with a pointer to `Grep` / ranged `Read`; trimmed Bash output saved to a file Claude can grep. Ships in `observe` mode first. | Redirecting to Grep avoids retries |
 | Subagents | Pinned to Haiku via `agent.spawn`, report capped (~300 words), parallel cap | The report lands in the parent's context at the parent model's price |
@@ -284,6 +294,21 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 
 - A pane with: this session (context, cache hits, rebuilds and their cause, compactions, subagents), guard savings, month-to-date, top hogs, and the 7-day transcript report (`report.js` logic, ported).
 - Buttons: [Compact] [Handoff] [Budget mode] [Copy report].
+
+## 5d. Next sub-project: delegate straightforward jobs to Haiku (not designed yet)
+
+Agreed with the maintainer 2026-10-08, to brainstorm after work-log compaction. The main session's 14-day cost (list-price est., ~$836) was 67% cache reads, 22% cache writes, 11% output: every tool result that enters the main context is re-read on each request until compaction. Tool output in the main context by characters: Read 32%, Bash 23%, browser tools ~38% (base64 screenshots, so overstated), Grep 2%, Edit 1%. Subagents cost $18 in the same period.
+
+The idea: the main model gives Haiku subagents clear, straightforward jobs, and keeps reasoning, planning, edits and verification. Not blindly: only where the job's output is big or takes several steps.
+
+| Delegate (Haiku) | Keep in the main session |
+|---|---|
+| Exploration: "where is X", multi-file Grep, getting to know a codebase | The Read of a file about to be edited (the Edit tool needs it read in this conversation) |
+| Long test/build runs: back with pass/fail and the failures | The edits |
+| Browser automation (screenshots) | Reasoning, planning, verification |
+| Docs and web lookups | One-call jobs (one grep, one `git status`): a subagent's own setup (~15–25k tokens, ~$0.03–0.05 on Haiku, 5m TTL) costs more than they do |
+
+Risks to design around: a report that drops or misreads a detail makes the main model act wrong or re-read to check; the main model decides when to delegate, so the mod can only guide (a `tool.call` nudge like F4's, observe first; F5 already pins subagents to Haiku); a model switch such as `opusplan` re-caches the context on each switch. Estimate, unmeasured: 25–40% off the main session's reads and writes; prove it with the F15 holdout.
 
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 
