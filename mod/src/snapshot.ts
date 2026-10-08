@@ -202,10 +202,14 @@ function fitFrom(messages: readonly SessionMessage[], budget: number): number {
   return first
 }
 
+/** The newest failed tool call, unless a later call of the same tool succeeded (the error is then stale). */
 export function lastError(messages: readonly SessionMessage[]): string | undefined {
+  const succeeded = new Set<string>()
   for (let i = messages.length - 1; i >= 0; i--) {
-    const failed = [...messages[i]!.toolUses].reverse().find(u => u.isError)
-    if (failed !== undefined) return `${failed.tool}: ${failed.text ?? ''}`.trim()
+    for (const u of [...messages[i]!.toolUses].reverse()) {
+      if (!u.isError) succeeded.add(u.tool)
+      else if (!succeeded.has(u.tool)) return `${u.tool}: ${u.text ?? ''}`.trim()
+    }
   }
   return undefined
 }

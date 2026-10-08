@@ -396,6 +396,15 @@ describe('T3 snapshot', () => {
     expect(lastError([msg('assistant', 'fine')])).toBeUndefined()
   })
 
+  test('a failed call is stale once the same tool later succeeds', () => {
+    const fail = { tool_use_id: 'b', tool: 'Bash', input: {}, text: 'exit 2', isError: true as const }
+    const ok = { tool_use_id: 'c', tool: 'Bash', input: {}, text: 'fine' }
+    const read = { tool_use_id: 'r', tool: 'Read', input: {}, text: 'x' }
+    expect(lastError([msg('assistant', 'a', { toolUses: [fail] }), msg('assistant', 'b', { toolUses: [ok] })])).toBeUndefined()
+    expect(lastError([msg('assistant', 'a', { toolUses: [fail] }), msg('assistant', 'b', { toolUses: [read] })])).toBe('Bash: exit 2')
+    expect(lastError([msg('assistant', 'a', { toolUses: [ok, fail] })])).toBe('Bash: exit 2')
+  })
+
   test('numstat: counts per path, binary as 0', () => {
     const stats = parseNumstat('12\t3\tsrc/a.ts\n-\t-\timg.png\n\n')
     expect(stats.get('src/a.ts')).toEqual({ added: 12, removed: 3 })
