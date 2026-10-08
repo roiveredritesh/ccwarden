@@ -373,6 +373,9 @@ describe('T3 snapshot', () => {
     // A long running turn: its end, from an assistant message, so each tool call keeps its result.
     const long = [msg('user', 'go'), msg('assistant', big), msg('user', '', { toolResults: [{ tool_use_id: 'a', text: big }] as never }), msg('assistant', 'step', { toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'r' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'b', text: 'r' }] as never })]
     expect(keptTail(long, 50)).toEqual({ tail: long.slice(3), turns: 0, isPartial: true })
+    // A prompt queued after tool work is added during the turn, not a turn start.
+    const queued = [msg('user', 'go'), msg('assistant', '', { toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'r' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'b', text: 'r' }] as never }), msg('user', 'also do X'), msg('assistant', 'ok')]
+    expect(keptTail(queued, 10_000)).toEqual({ tail: queued, turns: 1, isPartial: false })
   })
 
   test('the last error and answer', () => {

@@ -170,17 +170,31 @@ export function resumeText(r: Resume): string {
  */
 export function keptTail(messages: readonly SessionMessage[], budgetChars: number): { tail: SessionMessage[]; turns: number; isPartial: boolean } {
   const starts = turnStarts(messages)
+  const first = fitFrom(messages, budgetChars)
+  // A suffix that fits makes every later one fit too, so a turn fits when it starts at or after `first`.
   for (const turns of [2, 1]) {
     if (starts.length < turns) continue
-    const tail = messages.slice(starts[starts.length - turns])
-    if (tail.every(m => m.handle !== undefined) && size(tail) <= budgetChars) return { tail, turns, isPartial: false }
+    const s = starts[starts.length - turns]!
+    if (s >= first) return { tail: messages.slice(s), turns, isPartial: false }
   }
-  for (let i = (starts.at(-1) ?? -1) + 1; i < messages.length; i++) {
-    if (messages[i]!.role !== 'assistant') continue
-    const tail = messages.slice(i)
-    if (tail.every(m => m.handle !== undefined) && size(tail) <= budgetChars) return { tail, turns: 0, isPartial: true }
+  // The longest suffix that starts at an assistant message and fits: the first one at or after `first`.
+  for (let i = Math.max(first, (starts.at(-1) ?? -1) + 1); i < messages.length; i++) {
+    if (messages[i]!.role === 'assistant') return { tail: messages.slice(i), turns: 0, isPartial: true }
   }
   return { tail: [], turns: 0, isPartial: false }
+}
+
+/** The smallest index from which the messages to the end all have handles and fit `budget` together; `messages.length` when none do. One backward scan, stopped at the first unhandled message or once over budget. */
+function fitFrom(messages: readonly SessionMessage[], budget: number): number {
+  let first = messages.length
+  let chars = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    chars += sizeOf(m)
+    if (m.handle === undefined || chars > budget) break
+    first = i
+  }
+  return first
 }
 
 export function lastError(messages: readonly SessionMessage[]): string | undefined {
@@ -216,13 +230,10 @@ export function summaryInstructions(instructions: string | undefined, text: stri
   return `${focus === '' ? '' : `${focus}\n\n`}Keep these facts from the session verbatim in the summary:\n${text}`
 }
 
-function size(messages: readonly SessionMessage[]): number {
-  let chars = 0
-  for (const m of messages) {
-    chars += m.text.length
-    for (const u of m.toolUses) chars += JSON.stringify(u.input).length + (u.text?.length ?? 0)
-    for (const r of m.toolResults ?? []) chars += r.text?.length ?? 0
-  }
+function sizeOf(m: SessionMessage): number {
+  let chars = m.text.length
+  for (const u of m.toolUses) chars += JSON.stringify(u.input).length + (u.text?.length ?? 0)
+  for (const r of m.toolResults ?? []) chars += r.text?.length ?? 0
   return chars
 }
 
