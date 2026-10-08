@@ -90,9 +90,9 @@ function world(on: On, opts: {
     refuseWrites: false,
     messages: [] as SessionMessage[],
     forkHandoff: '## Decisions and why\nKept the cookie.\n## Current state\nTests green.\n## Next step\nShip it.\n## Verify first\nRun npm test.',
-    // F3b: the work log's Haiku calls; `worklogReply` undefined answers an API error, null rejects (a refused model).
+    // F3b: the work log's Haiku calls; `worklogReply` undefined answers an API error, null rejects (a refused model), 'aborted' is a call cut by its timeout.
     completions: [] as { model: string; prompt: string; system?: string; maxTokens?: number; effort?: string; timeoutMs?: number }[],
-    worklogReply: '## Done\n- Edited src/auth.ts\n## In progress\n- none\n## Pending\n- none\n## Key findings\n- the timeout is in src/auth.ts:42\n## Next step\n- run npm test' as string | null | undefined,
+    worklogReply: '## Done\n- Edited src/auth.ts\n## In progress\n- none\n## Pending\n- none\n## Key findings\n- the timeout is in src/auth.ts:42\n## Next step\n- run npm test' as string | null | undefined | 'aborted',
     // F3b: turns the mod stopped.
     aborts: [] as string[],
   }
@@ -147,6 +147,7 @@ function world(on: On, opts: {
     shown.completions.push({ model: e.model, prompt: e.prompt, system: e.system, maxTokens: e.maxTokens, effort: e.effort as string | undefined, timeoutMs: e.timeoutMs })
     if (shown.worklogReply === null) return Promise.reject(new Error('model not allowed'))
     const usage = { input_tokens: 20_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    if (shown.worklogReply === 'aborted') return { value: { isAnswered: false, reason: 'aborted', usage } as never }
     return { value: (shown.worklogReply === undefined ? { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage } : { isAnswered: true, text: shown.worklogReply, usage }) as never }
   })
   on('turn.abort', (_$, e) => { shown.aborts.push(e.turnId); return { value: undefined } as never })
@@ -603,7 +604,49 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(w.logs.at(-1)).toContain('kept; plain snapshot: nothing to read; no summary request.')
   })
 
-  test('compactMode snapshot makes no model call and logs as before', { options: { billing: 'metered', compactMode: 'snapshot' } }, async ($, on) => {
+  test('the work-log cap counts an unknown model at Opus rates, so it still trips', { options: { billing: 'metered', worklogModel: 'claude-mystery-1', worklogCapUsd: 0.05, compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() }) // 20k in, 1k out: $0.10 at Opus rates
+    expect(w.logs.at(-1)).toContain('$0.100')
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(1)
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: cap reached; no summary request.')
+  })
+
+  test('/clear starts the work-log cap over', { options: { billing: 'metered', worklogCapUsd: 0.03, compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: history() }) // $0.025
+    await $.session.compact({ trigger: 'auto', messages: history() }) // $0.05 in all: past the cap
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(2)
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: cap reached; no summary request.')
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(w.completions).toHaveLength(3)
+    expect(w.logs.at(-1)).toMatch(/Haiku \$0\.025/)
+  })
+
+  test('a work-log call cut by its timeout is a plain snapshot, timed out', { options: { billing: 'metered', compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    w.worklogReply = 'aborted'
+    const out = await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(out.messages![0]!.text).not.toContain('## State of work')
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: timed out; no summary request.')
+  })
+
+  test('a whitespace-only work-log reply is a plain snapshot, empty-reply', { options: { billing: 'metered', compactLoopMax: 0 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    w.worklogReply = '   '
+    const out = await $.session.compact({ trigger: 'auto', messages: history() })
+    expect(out.messages![0]!.text).not.toContain('## State of work')
+    expect(w.logs.at(-1)).toContain('kept; plain snapshot: empty-reply; no summary request.')
+  })
+
+  test('compactMode snapshot makes no model call and logs as before',{ options: { billing: 'metered', compactMode: 'snapshot' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
     await $.session.start(start('terminal'))
     await $.session.compact({ trigger: 'auto', messages: history() })
@@ -639,7 +682,18 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(w.aborts).toEqual(['t9'])
   })
 
-  test('/clear starts the loop count over', { options: { billing: 'metered', compactLoopMax: 2 } }, async ($, on) => {
+  test('with no turn running, a loop stop says it could not stop the turn, and aborts nothing', { options: { billing: 'metered', compactLoopMax: 2 } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await $.session.compact({ trigger: 'auto', messages: midTurn() })
+    await w.clock.advance(0)
+    expect(w.logs.at(-1)).toContain('ccwarden: compacted 2 times in one task with no new prompt; couldn\'t stop the turn (none running is known). Split the task, or press Esc.')
+    expect(w.toasts.some(t => t.includes("couldn't stop the turn"))).toBe(true)
+    expect(w.aborts).toEqual([])
+  })
+
+  test('/clear starts the loop count over',{ options: { billing: 'metered', compactLoopMax: 2 } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
     await $.session.start(start('terminal'))
     await $.turn.start({ text: 'go', turnId: 't1' })

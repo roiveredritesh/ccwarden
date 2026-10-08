@@ -890,7 +890,8 @@ async function writeWorklog($: $, config: Config, messages: readonly SessionMess
   const r = await $.model.complete({ model: config.worklogModel, system: WORKLOG_SYSTEM, prompt, maxTokens: WORKLOG_MAX_TOKENS, effort: 'low', timeoutMs: WORKLOG_TIMEOUT_MS })
     .catch((err: unknown) => `refused (${String(err)})`)
   if (typeof r === 'string') return { usd: 0, status: r }
-  const usd = usageUsd({ model: config.worklogModel, ...r.usage }) ?? 0
+  // An unknown model is priced at Opus, the dearest family: the cap must not fail open.
+  const usd = usageUsd({ model: config.worklogModel, ...r.usage }, familyOf(config.worklogModel) ?? 'opus') ?? 0
   await update($, conversation, prev => {
     const w = prev?.worklog ?? { calls: 0, spentUsd: 0 }
     return { ...(prev ?? { alerted: 0 }), worklog: { calls: w.calls + 1, spentUsd: w.spentUsd + usd } }
@@ -937,14 +938,16 @@ async function loopGuard($: $, config: Config, runtime: Runtime, action: 'warn' 
     await notify($, 'advisor', `ccwarden: this task was compacted ${n} times with no new prompt; Claude is told to re-read less.`)
     return
   }
-  const text = `ccwarden: compacted ${n} times in one task with no new prompt; stopped the turn so it doesn't keep spending. Split the task, or type "continue" to go on.`
+  const turnId = runtime.turnId
+  const text = turnId === undefined
+    ? `ccwarden: compacted ${n} times in one task with no new prompt; couldn't stop the turn (none running is known). Split the task, or press Esc.`
+    : `ccwarden: compacted ${n} times in one task with no new prompt; stopped the turn so it doesn't keep spending. Split the task, or type "continue" to go on.`
   $.ui.log(text)
   // A stop is a spend guard: the advisor's one slot an hour may already be the warning's.
   await notify($, 'spend', text)
-  const turnId = runtime.turnId
   if (turnId === undefined) return
   // After this compaction stands (SPEC §9 Q35).
-  $.clock.after(0, () => void $.turn.abort({ turnId }).catch((err: unknown) => $.ui.log(`ccwarden: could not stop the turn: ${String(err)}`, { to: 'debug' })))
+  $.clock.after(0, () => void $.turn.abort({ turnId }).catch((err: unknown) => $.ui.log(`ccwarden: couldn't stop the turn: ${String(err)}`)))
 }
 
 /** M3: adds spend to today's line of this machine's ledger; resolves the ledger after. */
