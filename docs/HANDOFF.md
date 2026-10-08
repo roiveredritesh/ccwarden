@@ -24,6 +24,10 @@ Written 2026-10-02 at the end of the design session that produced this repo, and
 - **F13 live data (not changed, maintainer's call):** `topicLog` has 9 hints and no Clear (8 Send, 1 dismissed), at overlaps 0.00–0.15. The keyword test isn't telling new work from old in this Hinglish workflow; turn `topicShiftHint` off, or tighten it.
 - `tsc --noEmit` is clean again (4 errors in `src/transcript.ts` and the tests, from before). `plugin validate` and `plugin test` don't type-check, and CI can't run `tsc`: the `tsconfig.json` and types it needs are written by the engine only when the mod loads in a session. Run it locally (CLAUDE.md, Commands).
 
+**Cache clock per request (2026-10-08, PR #53):** live, the status kept saying "cold" after a prompt over a cold cache until the turn ended: the anchor (`lastResponseAt`) moved only at `turn.complete`. It now moves at every main-loop `turn.step` with usage; subagent steps leave it alone.
+
+**Work-log compaction designed (2026-10-08), not built:** `docs/superpowers/specs/2026-10-08-worklog-compaction-design.md`. Live, the snapshot made Claude redo work or stop and ask: of 93 auto snapshot compactions in the transcripts, 60% were loops (no typed prompt between two compactions; one ran 20+ times in 14 minutes, ~$5–6) and 91% came mid-turn, and the re-reading after one big compaction cost ~$1 against ~$0.25 for a summary. The design keeps the snapshot (fixed: turns with reply and status, a Resume block naming the current task and what is done, a partial tail), adds a Haiku work log (≈ $0.03, `worklogCapUsd`), and stops a turn compacted 3 times. Next: the maintainer reviews the spec, then the plan. It changes the §3 "Compaction" decision once built. After it: F2 "Compact & send", then §5d.
+
 **First live test done (2026-10-02, window machine, terminal + Desktop).** The run log is `~/.claude/ccwarden-live-test.md` on the maintainer's machine; the answers are in SPEC §9. Fixed from it (PRs #16–#28):
 
 - the billing format, `/ccwarden-junk` wording, Windows paths (#17–#19)
@@ -284,6 +288,21 @@ Same rules as M1: a branch and a PR per task, tests on `['terminal', 'desktop']`
 
 - A pane with: this session (context, cache hits, rebuilds and their cause, compactions, subagents), guard savings, month-to-date, top hogs, and the 7-day transcript report (`report.js` logic, ported).
 - Buttons: [Compact] [Handoff] [Budget mode] [Copy report].
+
+## 5d. Next sub-project: delegate straightforward jobs to Haiku (not designed yet)
+
+Agreed with the maintainer 2026-10-08, to brainstorm after work-log compaction. The main session's 14-day cost (list-price est., ~$836) was 67% cache reads, 22% cache writes, 11% output: every tool result that enters the main context is re-read on each request until compaction. Tool output in the main context by characters: Read 32%, Bash 23%, browser tools ~38% (base64 screenshots, so overstated), Grep 2%, Edit 1%. Subagents cost $18 in the same period.
+
+The idea: the main model gives Haiku subagents clear, straightforward jobs, and keeps reasoning, planning, edits and verification. Not blindly: only where the job's output is big or takes several steps.
+
+| Delegate (Haiku) | Keep in the main session |
+|---|---|
+| Exploration: "where is X", multi-file Grep, getting to know a codebase | The Read of a file about to be edited (the Edit tool needs it read in this conversation) |
+| Long test/build runs: back with pass/fail and the failures | The edits |
+| Browser automation (screenshots) | Reasoning, planning, verification |
+| Docs and web lookups | One-call jobs (one grep, one `git status`): a subagent's own setup (~15–25k tokens, ~$0.03–0.05 on Haiku, 5m TTL) costs more than they do |
+
+Risks to design around: a report that drops or misreads a detail makes the main model act wrong or re-read to check; the main model decides when to delegate, so the mod can only guide (a `tool.call` nudge like F4's, observe first; F5 already pins subagents to Haiku); a model switch such as `opusplan` re-caches the context on each switch. Estimate, unmeasured: 25–40% off the main session's reads and writes; prove it with the F15 holdout.
 
 ## 6. Day-one checks (fill in the answers in SPEC §9)
 
