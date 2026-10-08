@@ -613,13 +613,18 @@ export const register: Register = (on, options) => {
 
   // F1: a turn's first request that re-cached the conversation is named in
   // the status, with its likely cause. Watches the step's usage only; the
-  // request and the response pass through unchanged.
+  // request and the response pass through unchanged. Each main-loop request
+  // also keeps the cache clock at its latest response, not just the turn's end.
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)
     if (e.agentId === undefined && r.usage !== null) await countRequest($, config, runtime)
-    if (e.agentId !== undefined || e.index !== 0 || r.usage === null) return r
+    if (e.agentId !== undefined || r.usage === null) return r
     const usage = r.usage
     const now = await $.clock.now()
+    if (e.index !== 0) {
+      await update($, conversation, prev => ({ ...(prev ?? { alerted: 0 }), lastResponseAt: now }))
+      return r
+    }
     const override = await ttlOverride($)
     let miss: ReturnType<typeof cacheMiss>
     const conv = await update($, conversation, prev => {
@@ -633,6 +638,7 @@ export const register: Register = (on, options) => {
       c.lastMiss = miss
       c.lastStepModel = usage.model
       c.compactionsSeen = c.compactions ?? 0
+      c.lastResponseAt = now // after the miss, which reads the old anchor
       return c
     })
     if (miss !== undefined) $.ui.log(`ccwarden: the cache missed (${miss.cause}); this request re-cached ${fmtTokens(miss.tokens)} tokens.`)
