@@ -53,6 +53,10 @@ describe('F3b turns', () => {
     expect(turnsOf(convo().slice(0, 4), 'boundary').every(t => t.status === 'done')).toBe(true)
   })
 
+  test('a prompt typed after the last reply is in progress, even at a boundary', () => {
+    expect(turnsOf([msg('user', 'a'), msg('assistant', 'done a'), msg('user', 'b')], 'boundary').map(t => t.status)).toEqual(['done', 'in progress'])
+  })
+
   test('the running turn: its prompt, prompts added during it, its messages', () => {
     const r = runningTurn(convo())
     expect(r.task).toBe('now run the e2e suite')
@@ -278,5 +282,16 @@ describe('F3b snapshot', () => {
     expect(resumeText({ ...midTurn, next: undefined })).not.toContain('Next step')
     expect(resumeText({ shape: 'boundary', added: [], done: [], loopCount: 0 })).toBe("## Resume\nAll requests above are answered and done; work only on the user's message that follows.")
     expect(resumeText({ ...midTurn, loopCount: 2 })).toMatch(/instead of redoing it\.\nThis task was compacted 2 times; the context refills because of re-reading\. Read only the ranges you need, prefer Grep, and don't re-read the files listed above\.$/)
+  })
+
+  test('a boundary after a typed prompt: that prompt is not answered yet; without it, all is done', () => {
+    expect(resumeText({ shape: 'boundary', pending: 'fix the e2e config', added: [], done: [], loopCount: 0 })).toBe([
+      '## Resume',
+      "The requests above are answered and done, except the last one, which isn't answered yet:",
+      '  "fix the e2e config"',
+      "Answer it now; don't redo the done requests.",
+    ].join('\n'))
+    expect(resumeText({ shape: 'boundary', pending: 'fix it', added: [], done: [], loopCount: 2 })).toMatch(/don't redo the done requests\.\nThis task was compacted 2 times/)
+    expect(resumeText({ shape: 'boundary', added: [], done: [], loopCount: 0 })).toContain("All requests above are answered and done")
   })
 })

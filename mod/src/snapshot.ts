@@ -143,6 +143,8 @@ export type Resume = {
   added: readonly string[]
   done: readonly string[]
   next?: { text: string; isHaiku: boolean }
+  /** At a boundary, the last typed prompt when it has no reply yet, verbatim. */
+  pending?: string
   /** This task's compactions when 2 or more (the loop warning), else 0. */
   loopCount: number
 }
@@ -152,6 +154,9 @@ export function resumeText(r: Resume): string {
   const warn = r.loopCount >= 2
     ? `\nThis task was compacted ${r.loopCount} times; the context refills because of re-reading. Read only the ranges you need, prefer Grep, and don't re-read the files listed above.`
     : ''
+  if (r.shape === 'boundary' && r.pending !== undefined) {
+    return `## Resume\nThe requests above are answered and done, except the last one, which isn't answered yet:\n  "${cut(r.pending, 2_000)}"\nAnswer it now; don't redo the done requests.${warn}`
+  }
   if (r.shape === 'boundary') return `## Resume\nAll requests above are answered and done; work only on the user's message that follows.${warn}`
   const task = r.task === undefined || r.task === '' ? '(not in the kept messages; see Recent turns)' : cut(r.task, 2_000)
   const lines = ['## Resume: you were in the middle of this task', "Current task (the user's request, verbatim):", `  "${task}"`]

@@ -582,6 +582,15 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(snap).toContain('4. User: "now run the e2e suite"\n   Claude (in progress): "Running."') // history() has three turns before it
   })
 
+  test('a compaction right after a typed prompt says that prompt is not answered yet', { options: { billing: 'metered' } }, async ($, on) => {
+    world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })
+    await $.session.start(start('terminal'))
+    const out = await $.session.compact({ trigger: 'auto', messages: [...history(), msg('user', 'now run the e2e suite')] })
+    const snap = out.messages![0]!.text
+    expect(snap).toContain('except the last one, which isn\'t answered yet:\n  "now run the e2e suite"\nAnswer it now; don\'t redo the done requests.')
+    expect(snap).not.toContain('All requests above are answered and done')
+  })
+
   // compactLoopMax 0: these compactions have no typed prompt between them, and a stop would log after them.
   test('no work log: an API error, a refused model, the cap, nothing to read', { options: { billing: 'metered', worklogCapUsd: 0.03, compactLoopMax: 0 } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 } })

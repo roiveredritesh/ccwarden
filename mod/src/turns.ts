@@ -57,7 +57,8 @@ export function turnsOf(messages: readonly SessionMessage[], shape: Shape): Turn
       ask,
       ...(reply === undefined ? {} : { reply }),
       ...(isShort && question !== undefined ? { question } : {}),
-      status: k === starts.length - 1 && shape === 'mid-turn' ? 'in progress' : 'done',
+      // A prompt with no reply after it is still running, at a boundary too.
+      status: k === starts.length - 1 && (shape === 'mid-turn' || s === messages.length - 1) ? 'in progress' : 'done',
     }
   })
 }

@@ -29,7 +29,7 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, resumeText, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
-import { doneSteps, filesRead, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf } from '../src/turns'
+import { doneSteps, filesRead, isPrompt, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf } from '../src/turns'
 import { cleanWorklog, digest, loopAction, nextStepOf, WORKLOG_MAX_TOKENS, WORKLOG_SYSTEM, WORKLOG_TIMEOUT_MS } from '../src/worklog'
 import { addProjectDay, claudeDirOf, efficiencyData, fitCache, RECENT_EVENTS, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
 import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCache, TranscriptSummary } from '../src/efficiency'
@@ -920,12 +920,16 @@ async function resumeFor($: $, messages: readonly SessionMessage[], cwd: string,
   const haikuNext = worklog === undefined ? undefined : nextStepOf(worklog)
   const lastCall = lastCallOf(running.body)
   const next = haikuNext !== undefined ? { text: haikuNext, isHaiku: true } : lastCall !== undefined ? { text: lastCall, isHaiku: false } : undefined
+  const last = messages.at(-1)
+  // A typed prompt with no reply after it: the boundary must not call it done.
+  const pending = shape === 'boundary' && last !== undefined && isPrompt(last) ? last.text.trim() : undefined
   return resumeText({
     shape,
     ...(conv.task?.text ? { task: conv.task.text } : {}),
     added: running.added,
     done: conv.task?.done ?? [],
     ...(next === undefined ? {} : { next }),
+    ...(pending === undefined ? {} : { pending }),
     loopCount,
   })
 }
