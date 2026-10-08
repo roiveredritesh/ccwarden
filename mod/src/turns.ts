@@ -108,7 +108,10 @@ export function doneSteps(body: readonly SessionMessage[], cwd?: string): string
 
 /** Steps carried from an earlier compaction of the same task, then this one's. */
 export function mergeSteps(earlier: readonly string[], later: readonly string[]): string[] {
-  return capSteps([...earlier.filter(s => !later.includes(s) && !s.startsWith('…and ')), ...later])
+  const marker = /^…and (\d+) earlier steps$/.exec(earlier[0] ?? '')
+  const omitted = marker === null ? 0 : Number(marker[1])
+  const kept = earlier.slice(marker === null ? 0 : 1).filter(s => !later.includes(s))
+  return capSteps([...kept, ...later], omitted)
 }
 
 /** The running turn's last tool call and the start of its result: where to pick up without Haiku. */
@@ -168,6 +171,9 @@ function stepOf(u: ToolUseSummary, cwd?: string): string | undefined {
   }
 }
 
-function capSteps(steps: string[]): string[] {
-  return steps.length <= DONE_MAX ? steps : [`…and ${steps.length - DONE_MAX + 1} earlier steps`, ...steps.slice(-(DONE_MAX - 1))]
+/** The newest steps, under a marker counting every step left out: `omitted` from before, plus those cut here. */
+function capSteps(steps: string[], omitted = 0): string[] {
+  if (omitted === 0 && steps.length <= DONE_MAX) return steps
+  const kept = steps.slice(-(DONE_MAX - 1))
+  return [`…and ${omitted + steps.length - kept.length} earlier steps`, ...kept]
 }

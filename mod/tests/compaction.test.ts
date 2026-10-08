@@ -23,8 +23,14 @@ const convo = (): SessionMessage[] => [
 ]
 
 describe('F3b turns', () => {
-  test('a prompt after a tool call or a tool result is added during a turn, not a new turn', () => {
+  test('a prompt after a tool result, or after a call with no result yet, is added during a turn', () => {
     expect(turnStarts(convo())).toEqual([0, 2, 4])
+    // (a) in flight: the call has no text and no isError yet
+    const inFlight = [msg('user', 'ask'), msg('assistant', '', { toolUses: [use('w1', 'Write', { file_path: '/p/x.ts' })] }), msg('user', 'queued')]
+    expect(turnStarts(inFlight)).toEqual([0])
+    // (b) right after a user tool-result message
+    const answered = [msg('user', 'ask'), msg('assistant', '', { toolUses: [use('r1', 'Read', { file_path: '/p/a.ts' }, 'x')] }), results('r1', 'x'), msg('user', 'queued')]
+    expect(turnStarts(answered)).toEqual([0])
     expect(isPrompt(msg('user', '[ccwarden snapshot] facts'))).toBe(false)
     expect(isPrompt(msg('user', '<command-name>/model</command-name>'))).toBe(false)
   })
@@ -81,6 +87,12 @@ describe('F3b turns', () => {
     expect(steps[0]).toBe('…and 6 earlier steps')
     expect(steps.at(-1)).toBe('Ran: step 29 → ok')
     expect(mergeSteps(['A', 'B'], ['B', 'C'])).toEqual(['A', 'B', 'C'])
+    // A capped list merged with new steps: the marker counts the 6 dropped before and the 3 this merge pushes out.
+    const merged = mergeSteps(steps, ['new 1', 'new 2', 'new 3'])
+    expect(merged).toHaveLength(25)
+    expect(merged[0]).toBe('…and 9 earlier steps')
+    expect(merged[1]).toBe('Ran: step 9 → ok')
+    expect(merged.at(-1)).toBe('new 3')
   })
 
   test('the last call, and files read newest first', () => {
