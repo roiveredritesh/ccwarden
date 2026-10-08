@@ -768,7 +768,7 @@ describe('M3 report (ported from hooks-edition/report.js)', () => {
     const text = dashboardText({
       at: t0,
       session: { model: 'opus', limit: 300_000, rebuilds: [], compactions: 0, agentsRunning: 0, agentsUsd: 0, backgroundUsd: 0 },
-      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: { kept: 0, would: 30_000 }, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1 },
+      savings: { junkMode: 'observe', junkEvents: 2, junkTokens: { kept: 0, would: 30_000 }, keepWarmSpent: 0, keepWarmSaved: 0, snapshots: 1, worklogCalls: 0, worklogUsd: 0 },
       month: { mtd: 10, budget: 0, projected: 31, isBudget: false, isMetered: true },
       hogs: { session: [{ tool: 'Read', target: '/a.ts', tokens: 9_000 }], month: [] },
     })

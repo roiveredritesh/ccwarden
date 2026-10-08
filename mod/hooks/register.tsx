@@ -27,8 +27,10 @@ import type { BudgetSwitch } from '../src/budget'
 import type { Ledger } from '../src/ledger'
 import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '../src/hogs'
 import type { HogDays } from '../src/hogs'
-import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, snapshotText, summaryInstructions } from '../src/snapshot'
+import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, resumeText, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
+import { doneSteps, filesRead, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf } from '../src/turns'
+import { cleanWorklog, digest, loopAction, nextStepOf, WORKLOG_MAX_TOKENS, WORKLOG_SYSTEM, WORKLOG_TIMEOUT_MS } from '../src/worklog'
 import { addProjectDay, claudeDirOf, efficiencyData, fitCache, RECENT_EVENTS, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
 import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCache, TranscriptSummary } from '../src/efficiency'
 import { dashboardHtml } from '../src/htmlDashboard'
@@ -76,6 +78,10 @@ type Runtime = {
   queued: { text: string; source?: BackgroundSource }[]
   /** F8: what started the running turn, when the user didn't. */
   turnSource?: BackgroundSource
+  /** F3b: the running turn's id (turn.start), for the loop guard's stop. */
+  turnId?: string
+  /** F3b: compactions since the last typed prompt. */
+  compactsInTask: number
   /** Budget mode (SPEC §3), as last worked out. */
   isBudget: boolean
   /** F15: this session's metrics file as held in memory (loaded on first use), and whether it changed since the last write. */
@@ -150,7 +156,7 @@ const MIN_MS = 60_000
 export const register: Register = (on, options) => {
   const config = readConfig(options)
   const junkAllowlist = parseGlobs(config.junkAllowlist)
-  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [], isAnimated: false, wardenTicks: 0, isChimeBroken: false }
+  const runtime: Runtime = { isCompactAdvised: false, isTurnRunning: false, isPinging: false, queued: [], isBudget: false, isMetricsDirty: false, isMetricsWarned: false, isMetricsUnread: false, refs: 0, recentEvents: new Map(), isNewPart: false, pins: {}, pending: [], isAnimated: false, wardenTicks: 0, isChimeBroken: false, compactsInTask: 0 }
   // The config as budget mode has it (stricter junk guard, earlier window alerts).
   const eff = (): Config => (runtime.isBudget ? budgetConfig(config) : config)
 
@@ -287,6 +293,8 @@ export const register: Register = (on, options) => {
     }
     if (source !== undefined) return next(e)
     if (e.origin.kind !== 'composer' || e.turnId !== undefined) return next(e)
+    // F3b: a typed prompt starts a new task: the loop count and the carried task start over.
+    runtime.compactsInTask = 0
     const now = await $.clock.now()
     const usage = await $.session.usage()
     const model = await $.session.model()
@@ -308,6 +316,7 @@ export const register: Register = (on, options) => {
       // F16: a typed prompt answers what waited in the band.
       delete c.bandAlert
       delete c.bandPromotion
+      delete c.task
       return c
     })
     await $.state.set(heldNote, null)
@@ -600,6 +609,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     runtime.isTurnRunning = true
+    runtime.turnId = e.turnId
     // F3: before the turn's first request, so a model picked with /model
     // compacts at its own limit from that request on (SPEC §9 Q25).
     await syncCompactWindow($, config, runtime)
@@ -649,7 +659,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.usage !== undefined) await addTurnMetrics($, config, runtime, e.usage, e.agentId)
-    if (e.agentId === undefined) runtime.isTurnRunning = false
+    if (e.agentId === undefined) {
+      runtime.isTurnRunning = false
+      runtime.turnId = undefined
+    }
     if (e.agentId !== undefined) {
       // A subagent's turn: its cost, and one toast if it passes AGENT_WARN_USD.
       // Its requests don't touch the main cache.
@@ -747,20 +760,32 @@ export const register: Register = (on, options) => {
       return next({ ...e, instructions: summaryInstructions(e.instructions, text) })
     }
 
+    const cwd = await $.session.cwd()
     const usage = await $.session.usage()
-    const limit = await limitOf($, await $.session.model(), config, usage.context.window)
-    const { tail, turns } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
-    const text = snapshotText(facts, { cwd: await $.session.cwd(), keptTurns: turns })
-    const saving = snapshotSaving(usage.context.tokens ?? 0, await $.session.model())
-    await recordProject($, { snapshots: 1, ...(saving === undefined ? {} : { snapshotSavedUsd: saving.usd, snapshotSavedTokens: saving.tokens }) })
-    if (saving !== undefined) await recordEvent($, config, runtime, { feature: 'snapshot', action: 'answered', measured: { tokens: usage.context.tokens ?? 0, trigger: e.trigger }, est: { tokens: saving.tokens, usd: saving.usd, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output`, confidence: 'low' } })
-    $.ui.log(`ccwarden: snapshot compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${turns} turn(s) kept; no summary request.`)
+    const model = await $.session.model()
+    const limit = await limitOf($, model, config, usage.context.window)
+    const { tail, turns, isPartial } = keptTail(e.messages, limit * TAIL_SHARE * CHARS_PER_TOKEN)
+    runtime.compactsInTask++
+    const loop = loopAction(runtime.compactsInTask, config.compactLoopMax)
+    const worklog = config.compactMode === 'worklog' ? await writeWorklog($, config, e.messages) : undefined
+    const resume = await resumeFor($, e.messages, cwd, worklog?.text, loop === 'none' ? 0 : runtime.compactsInTask)
+    const text = snapshotText(facts, { cwd, keptTurns: turns, isPartialTail: isPartial, worklog: worklog?.text, resume })
+    const spent = worklog?.usd ?? 0
+    const saving = snapshotSaving(usage.context.tokens ?? 0, model)
+    const net = saving === undefined ? undefined : { tokens: saving.tokens, usd: saving.usd - spent }
+    await recordProject($, { snapshots: 1, ...(net === undefined ? {} : { snapshotSavedUsd: net.usd, snapshotSavedTokens: net.tokens }) })
+    if (net !== undefined) await recordEvent($, config, runtime, { feature: 'snapshot', action: 'answered', measured: { tokens: usage.context.tokens ?? 0, trigger: e.trigger, worklog: worklog?.status ?? 'off', worklogUsd: spent }, est: { tokens: net.tokens, usd: net.usd, formula: `context × read + ${SUMMARY_OUTPUT_TOKENS} × output${worklog === undefined ? '' : ' − work log'}`, confidence: 'low' } })
+    const kept = isPartial ? 'the end of the last turn' : `${turns} turn(s)`
+    const how = worklog === undefined ? '' : worklog.text === undefined ? `; plain snapshot: ${worklog.status}` : `; Haiku $${spent.toFixed(3)}`
+    $.ui.log(`ccwarden: ${worklog === undefined ? 'snapshot' : 'work-log'} compaction (${e.trigger}): ${e.messages.length} messages → a ${text.length}-character snapshot + ${kept} kept${how}; no summary request.`)
+    if (loop !== 'none') await loopGuard($, config, runtime, loop)
     return { messages: [{ role: 'user', text, toolUses: [] }, ...tail] }
   })
 }
 
 /** /clear: the conversation's figures start over, a held alert is dropped, and the window share is measured from here. */
 async function startOver($: $, config: Config, runtime: Runtime): Promise<void> {
+  runtime.compactsInTask = 0
   if (runtime.topicCleared !== undefined) {
     runtime.pending = [...runtime.pending.filter(p => p.ref !== runtime.topicCleared!.ref), runtime.topicCleared]
     runtime.topicCleared = undefined
@@ -851,7 +876,75 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
     branch: branch === undefined || branch === '' ? undefined : branch,
     lastError: lastError(messages),
     lastAnswer: lastAnswer(messages),
+    turns: turnsOf(messages, shapeOf(messages)),
+    reads: filesRead(messages),
   }
+}
+
+/** F3b: Haiku's state of work from the digest, within worklogCapUsd; why there is none otherwise. */
+async function writeWorklog($: $, config: Config, messages: readonly SessionMessage[]): Promise<{ text?: string; usd: number; status: string }> {
+  const prompt = digest(messages)
+  if (prompt.trim() === '') return { usd: 0, status: 'nothing to read' }
+  const conv = (await $.state.get(conversation)).value
+  if ((conv?.worklog?.spentUsd ?? 0) >= config.worklogCapUsd) return { usd: 0, status: 'cap reached' }
+  const r = await $.model.complete({ model: config.worklogModel, system: WORKLOG_SYSTEM, prompt, maxTokens: WORKLOG_MAX_TOKENS, effort: 'low', timeoutMs: WORKLOG_TIMEOUT_MS })
+    .catch((err: unknown) => `refused (${String(err)})`)
+  if (typeof r === 'string') return { usd: 0, status: r }
+  const usd = usageUsd({ model: config.worklogModel, ...r.usage }) ?? 0
+  await update($, conversation, prev => {
+    const w = prev?.worklog ?? { calls: 0, spentUsd: 0 }
+    return { ...(prev ?? { alerted: 0 }), worklog: { calls: w.calls + 1, spentUsd: w.spentUsd + usd } }
+  })
+  if (!r.isAnswered) return { usd, status: r.reason === 'aborted' ? 'timed out' : r.reason }
+  const text = cleanWorklog(r.text)
+  return text === '' ? { usd, status: 'empty-reply' } : { text, usd, status: 'written' }
+}
+
+/**
+ * F3b: the Resume block. Mid-turn, the running task and its done steps are
+ * kept in $.state, so a compaction that kept only the end of the turn (no
+ * prompt left) still names the task and what was done before.
+ */
+async function resumeFor($: $, messages: readonly SessionMessage[], cwd: string, worklog: string | undefined, loopCount: number): Promise<string> {
+  const shape = shapeOf(messages)
+  const running = runningTurn(messages)
+  const steps = doneSteps(running.body, cwd)
+  const conv = await update($, conversation, prev => {
+    const c: CcwardenConversation = { ...(prev ?? { alerted: 0 }) }
+    if (shape === 'boundary') delete c.task
+    else if (running.task !== undefined) c.task = { text: running.task, done: steps }
+    else c.task = { text: c.task?.text ?? '', done: mergeSteps(c.task?.done ?? [], steps) }
+    return c
+  })
+  const haikuNext = worklog === undefined ? undefined : nextStepOf(worklog)
+  const lastCall = lastCallOf(running.body)
+  const next = haikuNext !== undefined ? { text: haikuNext, isHaiku: true } : lastCall !== undefined ? { text: lastCall, isHaiku: false } : undefined
+  return resumeText({
+    shape,
+    ...(conv.task?.text ? { task: conv.task.text } : {}),
+    added: running.added,
+    done: conv.task?.done ?? [],
+    ...(next === undefined ? {} : { next }),
+    loopCount,
+  })
+}
+
+/** F3b: a task compacted again with no typed prompt: say so; at compactLoopMax, stop the turn. */
+async function loopGuard($: $, config: Config, runtime: Runtime, action: 'warn' | 'stop'): Promise<void> {
+  const n = runtime.compactsInTask
+  await recordEvent($, config, runtime, { feature: 'compact', action: action === 'stop' ? 'loop-stopped' : 'loop-warned', measured: { compactions: n } })
+  if (action === 'warn') {
+    await notify($, 'advisor', `ccwarden: this task was compacted ${n} times with no new prompt; Claude is told to re-read less.`)
+    return
+  }
+  const text = `ccwarden: compacted ${n} times in one task with no new prompt; stopped the turn so it doesn't keep spending. Split the task, or type "continue" to go on.`
+  $.ui.log(text)
+  // A stop is a spend guard: the advisor's one slot an hour may already be the warning's.
+  await notify($, 'spend', text)
+  const turnId = runtime.turnId
+  if (turnId === undefined) return
+  // After this compaction stands (SPEC §9 Q35).
+  $.clock.after(0, () => void $.turn.abort({ turnId }).catch((err: unknown) => $.ui.log(`ccwarden: could not stop the turn: ${String(err)}`, { to: 'debug' })))
 }
 
 /** M3: adds spend to today's line of this machine's ledger; resolves the ledger after. */
@@ -1083,6 +1176,8 @@ async function buildDashboard($: $, config: Config, runtime: Runtime): Promise<C
       keepWarmSpent: conv.keepWarm?.spentUsd ?? 0,
       keepWarmSaved: conv.keepWarm?.savedUsd ?? 0,
       snapshots: conv.snapshots ?? 0,
+      worklogCalls: conv.worklog?.calls ?? 0,
+      worklogUsd: conv.worklog?.spentUsd ?? 0,
     },
     month: { mtd, budget: config.monthlyBudgetUsd, projected: projectMonth(mtd, now), isBudget: runtime.isBudget, isMetered: config.billing !== 'window' },
     hogs: { session: conv.hogs ?? [], month: hogsOver((await $.store.get(HOG_DAYS_KEY)) as HogDays | undefined, month) },
