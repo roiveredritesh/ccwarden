@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { SessionMessage } from 'claude-code'
 import { callLine, doneSteps, filesRead, isPrompt, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf, turnStarts } from '../src/turns'
+import { cleanWorklog, cutResult, digest, loopAction, nextStepOf, WORKLOG_SYSTEM } from '../src/worklog'
 
 const msg = (role: 'user' | 'assistant', text: string, extra: Partial<SessionMessage> = {}): SessionMessage =>
   ({ role, text, toolUses: [], handle: `h-${role}-${text}`, ...extra })
@@ -119,5 +120,79 @@ describe('F3b turns', () => {
       msg('assistant', '', { toolUses: [use('r3', 'Read', { file_path: '/p/a.ts' }, 'x')] }),
     ])
     expect(reads).toEqual([{ path: '/p/a.ts', range: '' }, { path: '/p/b.ts', range: ':1-80' }])
+  })
+})
+
+describe('F3b work log', () => {
+  const bigLog = Array.from({ length: 2_000 }, (_, i) => `line ${i}`).join('\n') + '\nFAILED: 2 tests'
+
+  test('the digest: prompts, Claude\'s text, one line per call, results under their call', () => {
+    const d = digest(convo())
+    expect(d).toContain('User: Fix the login timeout bug')
+    expect(d).toContain('Claude: Reading the config first.')
+    expect(d).toContain('→ Read(/p/e2e.config.ts:10-49)\n  ⎿ cfg')
+    expect(d).toContain('→ Bash(npm run e2e) (failed)\n  ⎿ 2 failing')
+    expect(d).toContain('User: use the staging URL') // added during the turn
+    expect(d.indexOf('Fix the login')).toBeLessThan(d.indexOf('npm run e2e')) // oldest first
+    expect(digest([])).toBe('')
+    expect(digest([msg('user', '[ccwarden snapshot] facts')])).toBe('')
+  })
+
+  test('results fill newest first: whole while they fit, then cut by tool', () => {
+    const messages = [
+      msg('user', 'go'),
+      msg('assistant', '', { toolUses: [use('b0', 'Bash', { command: 'old' }, bigLog)] }),
+      results('b0', bigLog),
+      msg('assistant', '', { toolUses: [use('b1', 'Bash', { command: 'new' }, bigLog)] }),
+      results('b1', bigLog),
+    ]
+    const d = digest(messages, bigLog.length + 3_000)
+    expect(d).toContain(`→ Bash(new)\n  ⎿ ${bigLog}`) // the newest, whole
+    expect(d).toContain('characters cut]') // the older one, head and tail
+    expect(d).toContain('FAILED: 2 tests\n→ Bash(new)') // the cut keeps the tail
+    expect(d.length).toBeLessThanOrEqual(bigLog.length + 3_000)
+  })
+
+  test('one huge result never takes the digest past its budget', () => {
+    const huge = 'x'.repeat(2_000_000)
+    const d = digest([msg('user', 'read it'), msg('assistant', '', { toolUses: [use('r', 'Read', { file_path: '/p/huge.log' }, huge)] })], 10_000)
+    expect(d.length).toBeLessThanOrEqual(10_000)
+    expect(d).toContain('User: read it')
+  })
+
+  test('the oldest turns go when even the skeleton is too big; the last turn stays', () => {
+    const turns = Array.from({ length: 50 }, (_, i) => [msg('user', `ask ${i} ${'w'.repeat(200)}`), msg('assistant', `answer ${i}`)]).flat()
+    const d = digest(turns, 2_000)
+    expect(d).toMatch(/^\(\d+ earlier turns left out\)/)
+    expect(d).toContain('answer 49')
+    expect(d.length).toBeLessThanOrEqual(2_000)
+  })
+
+  test('cut rules by tool', () => {
+    expect(cutResult(use('a', 'Bash', { command: 'x' }, bigLog))).toMatch(/^line 0[\s\S]*characters cut[\s\S]*FAILED: 2 tests$/)
+    expect(cutResult(use('a', 'Bash', { command: 'x' }, bigLog, true)).length).toBeLessThanOrEqual(2_100)
+    expect(cutResult(use('a', 'Grep', { pattern: 'p' }, bigLog))).toMatch(/^line 0\nline 1[\s\S]*\n…\[more cut\]$/)
+    expect(cutResult(use('a', 'Read', { file_path: '/p/a' }, bigLog))).toBe('')
+    expect(cutResult(use('a', 'Edit', { file_path: '/p/a', new_string: 'const timeout = 30' }, 'ok'))).toBe('changed: const timeout = 30')
+  })
+
+  test('the system prompt names the sections; the reply is demoted under ours and capped', () => {
+    for (const s of ['## Done', '## In progress', '## Pending', '## Key findings', '## Next step']) expect(WORKLOG_SYSTEM).toContain(s)
+    expect(cleanWorklog('\n## Done\n- a\n## Next step\n- b\n')).toBe('### Done\n- a\n### Next step\n- b')
+    expect(cleanWorklog('z'.repeat(10_000)).length).toBeLessThanOrEqual(6_000)
+  })
+
+  test('the next step: its lines without bullets; none or missing is undefined', () => {
+    expect(nextStepOf('### Done\n- a\n### Next step\n- fix the 2 failing tests in src/x.ts\n')).toBe('fix the 2 failing tests in src/x.ts')
+    expect(nextStepOf('### Next step\n- run npm test\n- then commit\n### Notes\n- n')).toBe('run npm test; then commit')
+    expect(nextStepOf('### Next step\n- none')).toBeUndefined()
+    expect(nextStepOf('no headings at all')).toBeUndefined()
+  })
+
+  test('the loop rule: warn from the 2nd compaction, stop at the max, 0 never stops', () => {
+    expect(loopAction(1, 3)).toBe('none')
+    expect(loopAction(2, 3)).toBe('warn')
+    expect(loopAction(3, 3)).toBe('stop')
+    expect(loopAction(9, 0)).toBe('warn')
   })
 })
