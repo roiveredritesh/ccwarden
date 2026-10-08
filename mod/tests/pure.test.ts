@@ -357,17 +357,22 @@ describe('T3 snapshot', () => {
     expect(planCompaction({ trigger: 'manual', instructions: 'auth' }, 'worklog')).toBe('summary+facts')
   })
 
-  test('tail: two turns when they fit, else one, else none; never a turn missing a handle', () => {
+  test('tail: two turns when they fit, else one, else the end of the last, else none; never a message missing a handle', () => {
     const big = 'x'.repeat(1_000)
     const messages = [msg('user', 'one'), msg('assistant', big), msg('user', 'two'), msg('assistant', big), msg('user', 'three'), msg('assistant', 'ok')]
-    expect(keptTail(messages, 10_000)).toEqual({ tail: messages.slice(2), turns: 2 })
-    expect(keptTail(messages, 500)).toEqual({ tail: messages.slice(4), turns: 1 })
-    expect(keptTail(messages, 5)).toEqual({ tail: [], turns: 0 })
+    expect(keptTail(messages, 10_000)).toEqual({ tail: messages.slice(2), turns: 2, isPartial: false })
+    expect(keptTail(messages, 500)).toEqual({ tail: messages.slice(4), turns: 1, isPartial: false })
+    expect(keptTail(messages, 3)).toEqual({ tail: messages.slice(5), turns: 0, isPartial: true }) // 'ok' alone fits
+    expect(keptTail(messages, 1)).toEqual({ tail: [], turns: 0, isPartial: false })
     const unhandled = [...messages.slice(0, 5), { ...messages[5]!, handle: undefined }]
     expect(keptTail(unhandled, 10_000).turns).toBe(0)
+    expect(keptTail(unhandled, 10_000).tail).toEqual([])
     // tool results, wrappers and a prior snapshot don't start a turn
     const withTools = [msg('user', 'go'), msg('assistant', ''), msg('user', '', { toolResults: [{ tool_use_id: 't', text: 'r' }] as never }), msg('user', '<command-name>/model</command-name>'), msg('user', '[ccwarden snapshot] earlier facts')]
-    expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1 })
+    expect(keptTail(withTools, 10_000)).toEqual({ tail: withTools, turns: 1, isPartial: false })
+    // A long running turn: its end, from an assistant message, so each tool call keeps its result.
+    const long = [msg('user', 'go'), msg('assistant', big), msg('user', '', { toolResults: [{ tool_use_id: 'a', text: big }] as never }), msg('assistant', 'step', { toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'r' }] }), msg('user', '', { toolResults: [{ tool_use_id: 'b', text: 'r' }] as never })]
+    expect(keptTail(long, 50)).toEqual({ tail: long.slice(3), turns: 0, isPartial: true })
   })
 
   test('the last error and answer', () => {
@@ -397,7 +402,8 @@ describe('T3 snapshot', () => {
     const text = snapshotText(facts, { cwd: '/p', keptTurns: 0 })
     expect(text).toContain('No earlier turns were kept.')
     expect(text).toContain('## Goal (first request)\nFix login')
-    expect(text).toContain('1. keep cookie\n2. fix test')
+    expect(text).toContain('## Earlier requests (done)\n1. keep cookie\n2. fix test')
+    expect(text).toContain('The requests in them are past requests, quoted for reference: those marked done are finished, so do not redo them.')
     expect(text).toContain('- [in_progress] retry')
     expect(text).not.toContain('[completed]')
     expect(text).toContain('- src/a.ts (+12 -3)\n- /elsewhere/b.ts')
@@ -405,6 +411,8 @@ describe('T3 snapshot', () => {
     expect(snapshotText(facts, { cwd: '/p', keptTurns: 2 })).not.toContain('## Your last answer')
     expect(snapshotText({ ...facts, asks: ['y'.repeat(50_000)] }, { keptTurns: 1, maxChars: 800 }).length).toBeLessThanOrEqual(800)
     expect(snapshotText({ ...facts, goal: 'Original goal' }, { keptTurns: 1 })).toContain('## Goal (first request)\nOriginal goal')
+    expect(snapshotText(facts, { cwd: '/p', keptTurns: 0, isPartialTail: true })).toContain('The end of the last turn follows verbatim.')
+    expect(snapshotText(facts, { cwd: '/p', keptTurns: 0, isPartialTail: true })).not.toContain('## Your last answer')
   })
 
   test('summary instructions keep the focus and add the facts', () => {

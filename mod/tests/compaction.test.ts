@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { SessionMessage } from 'claude-code'
 import { callLine, doneSteps, filesRead, isPrompt, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf, turnStarts } from '../src/turns'
 import { cleanWorklog, cutResult, digest, loopAction, nextStepOf, WORKLOG_SYSTEM } from '../src/worklog'
+import { parseNumstat, resumeText, snapshotText } from '../src/snapshot'
 
 const msg = (role: 'user' | 'assistant', text: string, extra: Partial<SessionMessage> = {}): SessionMessage =>
   ({ role, text, toolUses: [], handle: `h-${role}-${text}`, ...extra })
@@ -209,5 +210,73 @@ describe('F3b work log', () => {
     expect(d).toMatch(/^User: Refactor the parser\n/)
     expect(d).toContain('[earlier steps of this turn cut]')
     expect(d.endsWith('→ Bash(step 1999)')).toBe(true)
+  })
+})
+
+describe('F3b snapshot', () => {
+  const facts = {
+    asks: ['Fix the login timeout bug', 'Ha', 'now run the e2e suite', 'an ask from before the last compaction'],
+    todos: null,
+    files: ['/p/src/auth.ts'],
+    diff: parseNumstat('12\t3\tsrc/auth.ts\n'),
+    turns: turnsOf(convo(), 'mid-turn'),
+    reads: filesRead(convo()),
+  }
+  const midTurn = { shape: 'mid-turn' as const, task: 'now run the e2e suite', added: ['use the staging URL'], done: ['Read e2e.config.ts:10-49', 'Ran: npm run e2e → failed'], next: { text: 'fix the 2 failing e2e tests', isHaiku: true }, loopCount: 0 }
+
+  test('order: header, Haiku\'s state of work, the facts, the Resume block last', () => {
+    const text = snapshotText(facts, { cwd: '/p', keptTurns: 0, isPartialTail: true, worklog: '### Next step\n- fix the 2 failing e2e tests', resume: resumeText(midTurn) })
+    const at = (s: string) => text.indexOf(s)
+    expect(text.startsWith('[ccwarden snapshot]')).toBe(true)
+    expect(at('## State of work (written by Haiku from the transcript; verify before relying on it)')).toBeGreaterThan(0)
+    expect(at('## State of work')).toBeLessThan(at('## Goal (first request)'))
+    expect(at('## Goal (first request)')).toBeLessThan(at('## Resume: you were in the middle of this task'))
+    expect(text.endsWith("check it cheaply (git diff, or the one file range) instead of redoing it.")).toBe(true)
+  })
+
+  test('recent turns: user and Claude with status; the question a short reply answered; earlier asks apart', () => {
+    const text = snapshotText(facts, { cwd: '/p', keptTurns: 1 })
+    expect(text).toContain('## Recent turns (oldest first)\n1. User: "Fix the login timeout bug"\n   Claude (done): "Edited auth.ts. Shall I also keep the old cookie name?"')
+    expect(text).toContain('2. User: "Ha"\n   (answering: "…Edited auth.ts. Shall I also keep the old cookie name?")\n   Claude (done): "Kept it."')
+    expect(text).toContain('3. User: "now run the e2e suite"\n   Claude (in progress): "Reading the config first."')
+    expect(text).toContain('## Earlier requests (done)\n1. an ask from before the last compaction')
+    expect(text).toContain('## Files read (most recent first; re-read only the range you need)\n- e2e.config.ts:10-49')
+  })
+
+  test('recent turns fill from the newest within their share', () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ ask: `ask ${i} ${'w'.repeat(100)}`, reply: 'ok', status: 'done' as const }))
+    const text = snapshotText({ ...facts, turns: many, asks: [] }, { keptTurns: 0 })
+    expect(text).toContain('60. User: "ask 59')
+    expect(text).not.toContain('1. User: "ask 0 ')
+    expect(text.length).toBeLessThanOrEqual(10_000)
+  })
+
+  test('the Resume block: mid-turn names the task, added prompts, done steps and the next step', () => {
+    const r = resumeText(midTurn)
+    expect(r).toBe([
+      '## Resume: you were in the middle of this task',
+      "Current task (the user's request, verbatim):",
+      '  "now run the e2e suite"',
+      'Added by the user during the task:',
+      '  - "use the staging URL"',
+      '',
+      'Already done in this task (from the transcript, not a guess):',
+      '  - Read e2e.config.ts:10-49',
+      '  - Ran: npm run e2e → failed',
+      "Next step (Haiku's reading of the transcript): fix the 2 failing e2e tests",
+      '',
+      "Resume this task now from the next step. Don't start it over, don't redo the steps above, and don't work on any other request. Don't ask the user whether to continue. If unsure whether a step is done, check it cheaply (git diff, or the one file range) instead of redoing it.",
+    ].join('\n'))
+  })
+
+  test('the Resume block without Haiku, without the task, at a boundary, and in a loop', () => {
+    const noHaiku = resumeText({ ...midTurn, task: undefined, added: [], done: [], next: { text: 'Bash(npm run e2e) → 2 failing', isHaiku: false } })
+    expect(noHaiku).toContain('  "(not in the kept messages; see Recent turns)"')
+    expect(noHaiku).toContain('  (none recorded)')
+    expect(noHaiku).toContain('Next step: continue after the last step: Bash(npm run e2e) → 2 failing')
+    expect(noHaiku).not.toContain('Added by the user')
+    expect(resumeText({ ...midTurn, next: undefined })).not.toContain('Next step')
+    expect(resumeText({ shape: 'boundary', added: [], done: [], loopCount: 0 })).toBe("## Resume\nAll requests above are answered and done; work only on the user's message that follows.")
+    expect(resumeText({ ...midTurn, loopCount: 2 })).toMatch(/instead of redoing it\.\nThis task was compacted 2 times; the context refills because of re-reading\. Read only the ranges you need, prefer Grep, and don't re-read the files listed above\.$/)
   })
 })
