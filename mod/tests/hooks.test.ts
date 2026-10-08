@@ -800,6 +800,25 @@ describe('F3 per-model limits and snapshot compaction', () => {
     expect(out.messages?.[0]?.text).toContain('## Goal (first request)\nFix the login timeout bug')
   })
 
+  test('a later compaction keeps the earlier snapshot for Haiku, and the files Read before it from the transcript', { options: { billing: 'metered' } }, async ($, on) => {
+    const line = (o: unknown) => JSON.stringify(o)
+    const transcript = [
+      line({ type: 'user', message: { role: 'user', content: 'Fix the login timeout bug' } }),
+      line({ type: 'assistant', message: { id: 'a1', content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/p/src/old.ts' } }] } }),
+      line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'code' }] } }),
+      line({ type: 'assistant', message: { id: 'a2', content: [{ type: 'text', text: 'Read it.' }] } }),
+    ].join('\n')
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 10_000 }, transcript })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: '/t.jsonl' })
+    await $.session.start(start('terminal'))
+    // The second compaction: its messages start with the first one's snapshot, which kept no Read of old.ts.
+    const earlier = msg('user', '[ccwarden snapshot] facts\n\n## State of work (written by Haiku from the transcript; verify before relying on it)\n### Pending\n- write the regression test')
+    const out = await $.session.compact({ trigger: 'auto', messages: [earlier, msg('user', 'fix that test'), msg('assistant', 'Fixed.')] })
+    expect(w.completions[0]!.prompt).toContain('Earlier ccwarden snapshot')
+    expect(w.completions[0]!.prompt).toContain('### Pending\n- write the regression test')
+    expect(out.messages![0]!.text).toContain('## Files read (most recent first; re-read only the range you need)\n- src/old.ts')
+  })
+
   test('precompute is vetoed in snapshot mode', { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'] })
     await $.session.start(start('terminal'))

@@ -132,17 +132,21 @@ export function lastCallOf(body: readonly SessionMessage[]): string | undefined 
 
 /** Files Read in these messages, with their ranges, newest first, each once. */
 export function filesRead(messages: readonly SessionMessage[]): FileRead[] {
+  return readsOf(messages.flatMap(m => m.toolUses))
+}
+
+/** The Reads among these tool calls (oldest first), with their ranges, newest first, each path and range once. */
+export function readsOf(uses: readonly { tool: string; input: Record<string, unknown> }[]): FileRead[] {
   const seen = new Set<string>()
   const reads: FileRead[] = []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    for (const u of [...messages[i]!.toolUses].reverse()) {
-      if (u.tool !== 'Read' || typeof u.input.file_path !== 'string') continue
-      const read = { path: slashed(u.input.file_path), range: readRange(u.input) }
-      const key = `${read.path}${read.range}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      reads.push(read)
-    }
+  for (let i = uses.length - 1; i >= 0; i--) {
+    const u = uses[i]!
+    if (u.tool !== 'Read' || typeof u.input.file_path !== 'string') continue
+    const read = { path: slashed(u.input.file_path), range: readRange(u.input) }
+    const key = `${read.path}${read.range}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    reads.push(read)
   }
   return reads
 }

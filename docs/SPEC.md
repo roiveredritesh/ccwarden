@@ -199,6 +199,7 @@ It never blocks and adds nothing to context.
   - Done steps come from the running turn's tool calls only, never from Haiku, and are carried in `$.state` `conversation.task`. A last turn over 15% of the limit keeps its end (the partial tail).
   - Loop guard: from the 2nd compaction of a task with no typed prompt, the Resume block warns and an `advisor` toast says so. At `compactLoopMax` (3) the turn is aborted from `$.clock.after(0)`, with a `spend` toast. With no running turn known, the stop says so and aborts nothing.
   - The work log's cost comes off `snapshotSavedUsd`.
+  - A typed prompt after the last reply is "in progress", and a compaction right after it says that prompt is not answered yet. A later compaction's digest leads with the earlier snapshot, and the files Read are taken from the whole transcript.
 - **Done when:**
   - an auto compaction shows no summary request in `/usage`
   - the next turn still knows the goal and recent asks

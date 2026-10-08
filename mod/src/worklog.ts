@@ -1,5 +1,5 @@
 import type { SessionMessage, ToolUseSummary } from 'claude-code'
-import { callLine, isPrompt, turnStarts } from './turns'
+import { callLine, isPrompt, SNAPSHOT_TAG, turnStarts } from './turns'
 
 // F3b work log: the digest of a conversation that Haiku reads at a
 // compaction to write the state of the work, what is done with its reply,
@@ -7,6 +7,7 @@ import { callLine, isPrompt, turnStarts } from './turns'
 // is in hooks/register.tsx.
 
 export const DIGEST_MAX_CHARS = 160_000 // 40k tokens at 4 characters a token
+export const PRIOR_SNAPSHOT_CHARS = 12_000
 export const WORKLOG_MAX_TOKENS = 1_500
 export const WORKLOG_TIMEOUT_MS = 30_000
 export const WORKLOG_MAX_CHARS = 6_000
@@ -27,6 +28,7 @@ export const WORKLOG_SYSTEM = [
   '## Next step',
   'Under each, short bullet points. Use the exact file paths, function names, commands and line numbers from the digest; no generic statements.',
   'Done: requests and steps that were finished. In progress: what was being done when the digest ends, if anything. Pending: what the user asked for that is not done yet.',
+  'If the digest starts with an earlier ccwarden snapshot, carry forward its Key findings and Pending items that still apply.',
   'Key findings: facts learned from tool results that the next steps need (where something is defined, what a failure said, a decision and its reason).',
   'Next step: the single next action. Write nothing the digest does not support; write "none" under an empty section.',
 ].join('\n')
@@ -37,8 +39,16 @@ type Item = { line: string; use?: ToolUseSummary; result?: string }
  * What Haiku reads: prompts, Claude's text and one line per tool call, oldest
  * first, then tool results filled newest first: whole while they fit, else cut
  * by tool, else left out. The oldest turns go first when even that is too big.
+ * The newest earlier snapshot leads, cut, so the work it states is read too.
  */
 export function digest(messages: readonly SessionMessage[], maxChars = DIGEST_MAX_CHARS): string {
+  const prior = messages.filter(m => m.text.trim().startsWith(SNAPSHOT_TAG)).at(-1)?.text.trim()
+  const head = prior === undefined ? '' : `Earlier ccwarden snapshot (from the last compaction; its State of work covers the work before it):\n${cut(prior, PRIOR_SNAPSHOT_CHARS)}\n`
+  const turns = turnsDigest(messages, maxChars - head.length)
+  return turns === '' ? '' : head + turns
+}
+
+function turnsDigest(messages: readonly SessionMessage[], maxChars: number): string {
   const starts = new Set(turnStarts(messages))
   const turns: Item[][] = [[]]
   messages.forEach((m, i) => {

@@ -158,6 +158,18 @@ describe('F3b work log', () => {
     expect(d.length).toBeLessThanOrEqual(bigLog.length + 3_000)
   })
 
+  test('a later compaction: the earlier snapshot leads the digest, cut, and the turns still fit the budget', () => {
+    const earlier = '[ccwarden snapshot] header\n\n## State of work (written by Haiku from the transcript; verify before relying on it)\n### Pending\n- write the regression test\n' + 'y'.repeat(30_000) + 'TAIL MARK'
+    const turns = Array.from({ length: 400 }, (_, i) => [msg('user', `ask ${i}`), msg('assistant', 'x'.repeat(2_000))]).flat()
+    const d = digest([msg('user', earlier), ...turns], 20_000)
+    expect(d.startsWith('Earlier ccwarden snapshot (from the last compaction; its State of work covers the work before it):\n[ccwarden snapshot] header')).toBe(true)
+    expect(d).toContain('### Pending\n- write the regression test')
+    expect(d).not.toContain('TAIL MARK') // cut at 12,000 characters
+    expect(d).toContain('ask 399') // the newest turn still fits
+    expect(d.length).toBeLessThanOrEqual(20_000)
+    expect(WORKLOG_SYSTEM).toContain('carry forward its Key findings and Pending items that still apply')
+  })
+
   test('one huge result never takes the digest past its budget', () => {
     const huge = 'x'.repeat(2_000_000)
     const d = digest([msg('user', 'read it'), msg('assistant', '', { toolUses: [use('r', 'Read', { file_path: '/p/huge.log' }, huge)] })], 10_000)

@@ -205,3 +205,5 @@ Differences from the design above:
 - The Resume block is added in `compactMode: snapshot` too (no Haiku call there) (§6).
 - The loop-stop toast uses notify priority `spend`; the 2nd-compaction warning uses `advisor`. With no known running turn, the stop says it couldn't stop the turn and aborts nothing (§7).
 - An unknown `worklogModel` is priced at Opus rates, so the cap always counts spend (§8).
+- A typed prompt after the last reply is "in progress" even at a boundary, and a compaction right after it says it is not answered yet (`resumeText` `pending`, `mod/src/snapshot.ts`) (§6).
+- A later compaction's digest leads with the newest earlier snapshot (cut to 12000 characters), and the files Read come from the whole transcript (`readsOf`), not only the kept messages (§4.3).

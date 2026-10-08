@@ -160,6 +160,16 @@ describe('transcript facts', () => {
     expect(facts.todos).toEqual(TODOS)
   })
 
+  test('reads: the whole transcript, newest first, each path and range once', () => {
+    const facts = collectFromTranscript(parseJsonl([
+      tool('r1', 'Read', { file_path: '/p/src/old.ts' }),
+      user('This session is being continued... summary', { isCompactSummary: true }),
+      tool('r2', 'Read', { file_path: '/p/src/auth.ts', offset: 10, limit: 20 }),
+      tool('r3', 'Read', { file_path: '/p/src/old.ts' }),
+    ].join('\n')))
+    expect(facts.reads).toEqual([{ path: '/p/src/old.ts', range: '' }, { path: '/p/src/auth.ts', range: ':10-29' }])
+  })
+
   test('last response time: the newest main-thread assistant entry, else undefined', () => {
     const at = (timestamp: string, extra = {}) => line({ type: 'assistant', timestamp, message: { content: [] }, ...extra })
     expect(lastResponseTime(parseJsonl([

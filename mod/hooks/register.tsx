@@ -29,7 +29,7 @@ import { estimateTokens, HOG_MIN_TOKENS, hogTarget, tallyHog, topHogs } from '..
 import type { HogDays } from '../src/hogs'
 import { goalOf, keptTail, lastAnswer, lastError, parseNumstat, planCompaction, resumeText, snapshotText, summaryInstructions } from '../src/snapshot'
 import type { SnapshotFacts } from '../src/snapshot'
-import { doneSteps, filesRead, isPrompt, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf } from '../src/turns'
+import { doneSteps, isPrompt, lastCallOf, mergeSteps, runningTurn, shapeOf, turnsOf } from '../src/turns'
 import { cleanWorklog, digest, loopAction, nextStepOf, WORKLOG_MAX_TOKENS, WORKLOG_SYSTEM, WORKLOG_TIMEOUT_MS } from '../src/worklog'
 import { addProjectDay, claudeDirOf, efficiencyData, fitCache, RECENT_EVENTS, SUMMARY_OUTPUT_TOKENS, isFresh, junkTimesBySession, openerArgv, projectKey, snapshotSaving, summarize } from '../src/efficiency'
 import type { Coverage, DayFigures, HostOs, ProjectDays, SessionEvent, SummaryCache, TranscriptSummary } from '../src/efficiency'
@@ -877,7 +877,7 @@ async function snapshotFacts($: $, messages: readonly SessionMessage[]): Promise
     lastError: lastError(messages),
     lastAnswer: lastAnswer(messages),
     turns: turnsOf(messages, shapeOf(messages)),
-    reads: filesRead(messages),
+    reads: facts.reads,
   }
 }
 
