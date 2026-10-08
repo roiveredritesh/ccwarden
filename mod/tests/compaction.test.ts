@@ -95,6 +95,22 @@ describe('F3b turns', () => {
     expect(merged.at(-1)).toBe('new 3')
   })
 
+  test('merging with a capped later list keeps one marker counting every step left out', () => {
+    const capped = (prefix: string) => doneSteps([msg('assistant', '', { toolUses: Array.from({ length: 30 }, (_, i) => use(`${prefix}${i}`, 'Bash', { command: `${prefix} ${i}` }, 'ok')) })])
+    // A carried list of 2 steps, then this pass capped at 25 with 6 omitted: 6 + the 2 carried steps pushed out.
+    const one = mergeSteps(['A', 'B'], capped('step'))
+    expect(one).toHaveLength(25)
+    expect(one[0]).toBe('…and 8 earlier steps')
+    expect(one[1]).toBe('Ran: step 6 → ok')
+    expect(one.at(-1)).toBe('Ran: step 29 → ok')
+    // Both lists capped: 6 + 6 from before, plus the 24 of the earlier list that this merge pushes out.
+    const both = mergeSteps(capped('old'), capped('new'))
+    expect(both).toHaveLength(25)
+    expect(both[0]).toBe('…and 36 earlier steps')
+    expect(both[1]).toBe('Ran: new 6 → ok')
+    expect(both.at(-1)).toBe('Ran: new 29 → ok')
+  })
+
   test('the last call, and files read newest first', () => {
     expect(lastCallOf(convo())).toBe('Bash(npm run e2e) → 2 failing')
     expect(lastCallOf([msg('assistant', 'no tools')])).toBeUndefined()

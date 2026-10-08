@@ -108,10 +108,16 @@ export function doneSteps(body: readonly SessionMessage[], cwd?: string): string
 
 /** Steps carried from an earlier compaction of the same task, then this one's. */
 export function mergeSteps(earlier: readonly string[], later: readonly string[]): string[] {
-  const marker = /^…and (\d+) earlier steps$/.exec(earlier[0] ?? '')
-  const omitted = marker === null ? 0 : Number(marker[1])
-  const kept = earlier.slice(marker === null ? 0 : 1).filter(s => !later.includes(s))
-  return capSteps([...kept, ...later], omitted)
+  const a = withoutMarker(earlier)
+  const b = withoutMarker(later)
+  const kept = a.steps.filter(s => !b.steps.includes(s))
+  return capSteps([...kept, ...b.steps], a.omitted + b.omitted)
+}
+
+/** A capped list's leading `…and N earlier steps` marker, split off: its N and the steps after it. */
+function withoutMarker(steps: readonly string[]): { omitted: number; steps: string[] } {
+  const marker = /^…and (\d+) earlier steps$/.exec(steps[0] ?? '')
+  return marker === null ? { omitted: 0, steps: [...steps] } : { omitted: Number(marker[1]), steps: steps.slice(1) }
 }
 
 /** The running turn's last tool call and the start of its result: where to pick up without Haiku. */
