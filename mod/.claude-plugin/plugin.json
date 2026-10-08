@@ -57,12 +57,31 @@
     "compactMode": {
       "type": "string",
       "title": "Compaction",
-      "description": "snapshot: the mod builds the compacted conversation, no summary tokens. summary: the engine's summary.",
+      "description": "worklog: the mod builds the compacted conversation (a snapshot) and Haiku writes the state of work, about $0.03, no main-model summary. snapshot: the same without Haiku. summary: the engine's summary.",
       "options": [
+        "worklog",
         "snapshot",
         "summary"
       ],
-      "default": "snapshot"
+      "default": "worklog"
+    },
+    "worklogModel": {
+      "type": "string",
+      "title": "Work log: model",
+      "description": "The model that writes the work log at a compaction (an alias such as haiku, or a full id).",
+      "default": "haiku"
+    },
+    "worklogCapUsd": {
+      "type": "number",
+      "title": "Work log: max spend per conversation ($)",
+      "description": "Past this estimate, compactions use the plain snapshot. Starts over on /clear.",
+      "default": 0.5
+    },
+    "compactLoopMax": {
+      "type": "number",
+      "title": "Stop a task after this many compactions",
+      "description": "Compactions in one task with no new typed prompt between them; at this one the turn is stopped so it doesn't keep spending. 0: never stop.",
+      "default": 3
     },
     "compactAt": {
       "type": "number",

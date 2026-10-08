@@ -32,6 +32,18 @@ describe('config', () => {
     expect(readConfig({ billing: 'ask' }).billing).toBeUndefined()
   })
 
+  test('F3b: worklog is the default compaction; its model, cap and loop stop are read and checked', () => {
+    expect(DEFAULTS).toMatchObject({ compactMode: 'worklog', worklogModel: 'haiku', worklogCapUsd: 0.5, compactLoopMax: 3 })
+    expect(readConfig({ compactMode: 'snapshot' } as never).compactMode).toBe('snapshot')
+    expect(readConfig({ compactMode: 'bogus' } as never).compactMode).toBe('worklog')
+    expect(readConfig({ worklogModel: 'claude-haiku-5-5' } as never).worklogModel).toBe('claude-haiku-5-5')
+    expect(readConfig({ worklogModel: '' } as never).worklogModel).toBe('haiku')
+    expect(readConfig({ worklogCapUsd: 2 } as never).worklogCapUsd).toBe(2)
+    expect(readConfig({ compactLoopMax: 0 } as never).compactLoopMax).toBe(0) // never stops
+    expect(readConfig({ compactLoopMax: 1 } as never).compactLoopMax).toBe(2) // 1 would stop the first compaction
+    expect(readConfig({ compactLoopMax: 4.7 } as never).compactLoopMax).toBe(4)
+  })
+
   test('measureHoldout: off by default, a boolean', () => {
     expect(readConfig({} as never).measureHoldout).toBe(false)
     expect(readConfig({ measureHoldout: true } as never).measureHoldout).toBe(true)
@@ -340,6 +352,9 @@ describe('T3 snapshot', () => {
     expect(planCompaction({ trigger: 'precompute' }, 'summary')).toBe('pass')
     expect(planCompaction({ trigger: 'auto' }, 'summary')).toBe('summary+facts')
     expect(planCompaction({ trigger: 'auto', agentId: 'a' }, 'snapshot')).toBe('pass')
+    expect(planCompaction({ trigger: 'auto' }, 'worklog')).toBe('snapshot')
+    expect(planCompaction({ trigger: 'precompute' }, 'worklog')).toBe('skip')
+    expect(planCompaction({ trigger: 'manual', instructions: 'auth' }, 'worklog')).toBe('summary+facts')
   })
 
   test('tail: two turns when they fit, else one, else none; never a turn missing a handle', () => {

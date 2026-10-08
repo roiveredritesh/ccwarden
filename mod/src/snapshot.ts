@@ -32,9 +32,9 @@ const MAX_FILES = 40
 /** How to answer a compaction (SPEC F3). */
 export type CompactPlan = 'pass' | 'skip' | 'snapshot' | 'summary+facts'
 
-export function planCompaction(e: { trigger: SessionCompactTrigger; instructions?: string; agentId?: string }, mode: 'snapshot' | 'summary'): CompactPlan {
+export function planCompaction(e: { trigger: SessionCompactTrigger; instructions?: string; agentId?: string }, mode: 'worklog' | 'snapshot' | 'summary'): CompactPlan {
   if (e.agentId !== undefined) return 'pass' // subagent loops: T4
-  if (e.trigger === 'precompute') return mode === 'snapshot' ? 'skip' : 'pass'
+  if (e.trigger === 'precompute') return mode === 'summary' ? 'pass' : 'skip'
   if (mode === 'summary') return 'summary+facts'
   // A manual `/compact <focus>` asks for a summary on that focus.
   if (e.trigger === 'manual' && (e.instructions ?? '').trim() !== '') return 'summary+facts'
