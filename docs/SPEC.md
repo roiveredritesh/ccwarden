@@ -150,7 +150,7 @@ window:   Haiku · ctx 64k/120k · cache ● 1h 41m · this chat 9% of 5h · 5h 
 - **The figure:** in `metered`, this chat's $ is the engine's own per-session total (`session.measure` `cost`, the same as `/usage`). It resets on `/clear`; compaction doesn't reset it.
 - **Window share:** the rise in `five_hour` `percentUsed` since the conversation started (a window reset counts from 0). Other sessions on the same account move that window too, so with several running at once it is an upper bound. Until the first `five_hour` reading, the status falls back to $.
 - **ctx:** the last response's input tokens against `min(model limit, model window)`.
-- **Cache:** warm for the TTL after the main loop's last response (subagent turns don't count). No event carries the TTL, so it is inferred, best source first:
+- **Cache:** warm for the TTL after the main loop's last request (subagent turns don't count). The clock moves at every main-loop `turn.step` with usage, not only at the turn's end, so a prompt sent over a cold cache shows warm from its first request, and a long turn never looks cold. No event carries the TTL, so it is inferred, best source first:
   1. the 5m/1h split of the latest cache write in the transcript, re-read at most every 10 min and only while the file is ≤ 4 MiB (one `$.fs.read`)
   2. `CLAUDE_CODE_PROMPT_CACHE_TTL` or the `promptCacheTtl` setting
   3. the billing default: `window` 1h, `metered` 5m

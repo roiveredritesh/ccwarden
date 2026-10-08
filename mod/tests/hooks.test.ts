@@ -270,6 +270,54 @@ describe('F1 status line', () => {
     expect(w.status.at(-1)).not.toContain('miss')
   })
 
+  test('a request keeps the cache warm: the clock runs from the latest step, not the turn end', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 140_000 } })
+    const step = (index: number, read: number, write: number) => ({
+      turnId: 't', index, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const,
+      usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: read, cache_creation_input_tokens: write, model: 'claude-sonnet-5-5' },
+    })
+    let next = step(0, 0, 140_000)
+    on('turn.step', async function* () { return next })
+    const run = async (index: number, read: number, write: number, agentId?: string) => {
+      next = step(index, read, write)
+      const s = $.turn.step({ turnId: 't', index, model: 'claude-sonnet-5-5', messageCount: 2, ...(agentId ? { agentId } : {}) })
+      for await (const _ of s);
+      return s.result
+    }
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    expect(w.status.at(-1)).toContain('cache ○ cold')
+
+    await run(0, 0, 140_000) // the prompt's first request re-caches; the clock starts now
+    expect(w.status.at(-1)).toContain('cache ●')
+
+    await w.clock.advance(4 * MIN)
+    await run(1, 140_000, 500)
+    await w.clock.advance(3 * MIN) // 7m after the first request, 3m after the second
+    expect(w.status.at(-1)).toContain('cache ●')
+  })
+
+  test('a subagent request leaves the main cache clock alone', { options: { billing: 'metered' } }, async ($, on) => {
+    const w = world(on, { surfaces: ['terminal'], usage: { tokens: 140_000 } })
+    const next = {
+      turnId: 't', index: 0, answer: 'ok', toolUses: [], stopReason: 'end_turn' as const,
+      usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 500, model: 'claude-sonnet-5-5' },
+    }
+    on('turn.step', async function* () { return next })
+    const run = async (index: number, agentId?: string) => {
+      const s = $.turn.step({ turnId: 't', index, model: 'claude-sonnet-5-5', messageCount: 2, ...(agentId ? { agentId } : {}) })
+      for await (const _ of s);
+      return s.result
+    }
+    await $.session.start(start('terminal'))
+    await $.turn.complete(turnDone())
+    await w.clock.advance(17 * MIN)
+    await run(0, 'a1')
+    await w.clock.advance(MIN)
+    expect(w.status.at(-1)).toContain('cache ○ cold')
+  })
+
   test("the engine's auto-compact window follows the model's limit, so the engine compacts there", { options: { billing: 'metered' } }, async ($, on) => {
     const w = world(on, { surfaces: ['terminal'], usage: { tokens: 100_000, window: 1_000_000 }, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
     await $.session.start(start('terminal'))
