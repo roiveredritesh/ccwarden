@@ -1,6 +1,6 @@
 # F3b: work-log compaction (design)
 
-Status: design approved in chat, 2026-10-08; not built. Replaces the plain snapshot (SPEC §4 F3) as the default way the mod answers `session.compact`, and changes the HANDOFF §3 "Compaction" decision.
+Status: built 2026-10-08 (PR link added at merge). The design was approved in chat the same day. Replaces the plain snapshot (SPEC §4 F3) as the default way the mod answers `session.compact`, and changes the HANDOFF §3 "Compaction" decision.
 
 ## 1. Why
 
@@ -192,3 +192,16 @@ Live (HANDOFF §1):
 ## 12. Decision changed
 
 HANDOFF §3 "Compaction" was "Snapshot compaction: no summary tokens are spent". It becomes: "**Work-log compaction:** the mod answers `session.compact` with a snapshot plus a Haiku work log (≈ $0.03, capped), never the main model's summary; a manual `/compact <focus>` still uses the engine summary." Why: the snapshot alone made Claude redo or stall, and the re-discovery after it cost more than any summary (§1).
+
+## 13. As built
+
+Differences from the design above:
+
+- Loop events are feature `compact`, actions `loop-warned` (the 2nd compaction) and `loop-stopped`. No new feature name (§7, §9).
+- The fallback reason is in the compaction's own log line (`…; plain snapshot: <reason>; …`), not a separate line (§4.6).
+- The work log's cost comes off `snapshotSavedUsd`; no new day figure (§9).
+- A turn starts at a typed prompt, except a prompt that follows a tool result or an open tool call: that one is a prompt added during the running turn (`turnStarts` in `mod/src/turns.ts`). Recent turns and the kept tail both use it (§5).
+- A failed tool call shows its error text in the digest. An over-budget last turn keeps its prompt line (§4.3).
+- The Resume block is added in `compactMode: snapshot` too (no Haiku call there) (§6).
+- The loop-stop toast uses notify priority `spend`; the 2nd-compaction warning uses `advisor`. With no known running turn, the stop says it couldn't stop the turn and aborts nothing (§7).
+- An unknown `worklogModel` is priced at Opus rates, so the cap always counts spend (§8).

@@ -191,6 +191,14 @@ It never blocks and adds nothing to context.
   - The `precompute` trigger (background pre-summarisation) is vetoed with `{ skip }` while snapshot mode is on, so it spends nothing.
 - **Auto-compaction (as built):** the engine re-reads `CLAUDE_CODE_AUTO_COMPACT_WINDOW` live (Q5), so the mod sets it with `$.env.set` to the model's limit (within its real window, kept to 100k–1M) at session start, at the start of every main turn (so a model picked with `/model` compacts at its own limit from the next request on, §9 Q25), and after every main turn. The engine then compacts at the limit by itself, and that compaction, being the engine's own (not a mod-run one, Q13), reaches the `session.compact` hook and is a snapshot. A value set by hand is overwritten: the per-model limits are `limitHaiku`/`limitOther`. The installer's 300000 covers the start, before the mod runs. Unverified live: that the engine's `auto` trigger reaches the hook (the types say only a plugin's own call skips it).
 - **Model-switch warning:** each model has its own cache, so a switch re-reads the whole context uncached. When context exceeds the new model's limit it also compacts, and above the model's real window (more than 200K → Haiku) it must compact first. The toast shows the cost and the cheaper route, e.g. "Switch re-reads 180K on Haiku (≈ $0.23) and then compacts. Cheaper: /handoff → new Haiku session (≈ $0.02)." It shows before the switch if a mod can hook `PreModelSwitch` (Q9), otherwise right after. As built: a log line from `PreModelSwitch`, with the event's `estimated_cache_write_usd`. Live, that hook also fires when the picker is then cancelled ("Kept model"), so the note says "If you switch".
+- **Work log (F3b, as built 2026-10-08):** the rules are in `docs/superpowers/specs/2026-10-08-worklog-compaction-design.md` §4–§7.
+  - `compactMode` `worklog` (default) adds a Haiku work log to the snapshot; `snapshot` makes no model call; `summary` uses the engine's summary.
+  - The digest (`src/worklog.ts`) is ≤ 160000 characters, newest tool results first, cut by tool (a failed call keeps its error text, up to 2000 characters; Bash its head and tail; Grep and Glob their matching lines). The last turn is never cut.
+  - One `$.model.complete` on `worklogModel` (`effort: 'low'`, 1500 tokens, 30 s), priced at Opus rates when the model is unknown, capped by `worklogCapUsd` per conversation (reset on `/clear`). Past the cap, or on any failure, the plain snapshot is used and the log says why.
+  - The message: header, `State of work` (Haiku's sections), the snapshot facts, then the Resume block last. Mid-turn or boundary is read from the last message. A turn starts at a typed prompt; a prompt that follows a tool result or an open tool call is added during the turn.
+  - Done steps come from the running turn's tool calls only, never from Haiku, and are carried in `$.state` `conversation.task`. A last turn over 15% of the limit keeps its end (the partial tail).
+  - Loop guard: from the 2nd compaction of a task with no typed prompt, the Resume block warns and an `advisor` toast says so. At `compactLoopMax` (3) the turn is aborted from `$.clock.after(0)`, with a `spend` toast. With no running turn known, the stop says so and aborts nothing.
+  - The work log's cost comes off `snapshotSavedUsd`.
 - **Done when:**
   - an auto compaction shows no summary request in `/usage`
   - the next turn still knows the goal and recent asks
@@ -385,12 +393,13 @@ It never blocks and adds nothing to context.
   | F2 cold-cache guard | `asked`, then `outcome` with the choice | context × cache write price, when the prompt was not sent | medium |
   | F13 unrelated-prompt hint | `cleared`, then `outcome` | dropped context × read × requests in the next conversation | medium |
   | F4 junk guard | `kept-out` / `would-keep-out`, then `outcome` | tokens × (write5m + read × requests after, to the session end or next compaction) | medium |
-  | F3 snapshot compaction | `answered` | context × read + 2000 × output | low |
+  | F3 snapshot compaction | `answered` (measures `worklog`, its status, and `worklogUsd`) | context × read + 2000 × output, less the work log's cost | low |
   | F6 keep-warm | `avoided`, `ping` (negative $) | rebuilds avoided − pings spent | high |
   | F3 limit hint | `compact-hint` | count only | — |
   | F7 handoff | `written` (quick or full) | count only | — |
   | F1b / F11 spend alerts | `alert` / `sent` (`kind`: session, subagent or month; `shown`: false when R9 held it) | count only | — |
   | F3 summary compaction | `compact` / `summarised` (`/compact <focus>` or `compactMode` summary: the engine's summary ran) | count only | — |
+  | F3 loop guard | `compact` / `loop-warned` (2nd compaction), `loop-stopped` (`compactLoopMax`); count only | count only | — |
 
   After the first logged day, the page takes F4, F3 and F6 from the log instead of `junkLog` and `projectDays`, so nothing counts twice. On the first logged day those two stores keep the features they record (they ran all day; the log started partway through it), and the log adds only what they lack: subagent pins, limit hints and holdout events. That day, cold asks and topic clears show as counts without $.
   - **Holdout:** a part is a holdout when `measureHoldout` was on when it started and `fnv1a(session id) % 10 === 0` (FNV-1a 32-bit over UTF-16 code units; session ids are ASCII). Decided once per session id and kept in `$.state` `holdout`. A holdout session never blocks or rewrites: the junk guard runs in `observe`, the subagent guard pins and denies nothing, F2 and F13 don't ask, F3 neither hints, syncs the compact window nor answers compactions (a holdout after `/clear` puts back the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from before ccwarden set it, since the variable is process-wide; a compaction still ends the junk "would" re-reads), and keep-warm doesn't ping; each logs a `would-…` event instead. The status line says `holdout`, and the session logs one line saying so when it starts.
@@ -406,7 +415,10 @@ It never blocks and adds nothing to context.
 | `sessionAlertUsd` / `sessionAlertPct` / `sessionAlertRepeat` | 5 / 20 / same step | F1b |
 | `coldMinTokens` | 50000 | F2 |
 | `limitHaiku` / `limitOther` | 120000 / 300000 (Sonnet, Opus, Fable) | F3 |
-| `compactMode` | `snapshot` (`summary` for manual `/compact <focus>`) | F3 |
+| `compactMode` | `worklog` (`snapshot`: no Haiku call; `summary`: the engine's summary; a manual `/compact <focus>` always uses the summary) | F3 |
+| `worklogModel` | `haiku` | F3 |
+| `worklogCapUsd` | `0.5` (per conversation; past it, the plain snapshot) | F3 |
+| `compactLoopMax` | `3` (compactions in one task with no typed prompt before the turn stops; `0` never stops) | F3 |
 | `compactAt` | 55 (% of the model limit) | §3 |
 | `junkGuard` | `observe` → `enforce` | F4 |
 | `readMaxLines` / `bashMaxChars` / `junkAllowlist` | 2000 / 30000 (the engine saves bigger output to a file itself, so the cut applies only below it) / `""` (comma-separated globs) | F4 |
@@ -484,6 +496,10 @@ T0 status, 2026-10-02. The "Types" column is what the v2.1.287 plugin API declar
 | 24 | **Read's default page (F4):** how much does a whole-file `Read` (no limit) return? | The Read result type has `truncatedByTokenCap` ("a whole-file read was auto-paginated because it exceeded the token cap (the content is a partial first page)") but no size. The Read tool's own description says it reads up to 2000 lines by default. | open: F4 estimates a denied whole Read as its first 2000 lines; an upper bound while the token cap is unknown |
 | 25 | **Compact window at `turn.start` (F3):** does the engine read `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for its auto-compaction check after the `turn.start` hooks run? | `turn.start` "fires when a model turn begins, before its first model call". Where the engine's compaction check falls is not stated. | open: after `/model` to a model with a lower limit, past that limit, look for `ccwarden: snapshot compaction (auto)` before the first answer |
 | 23 | **Clipboard on `file://` (F15):** does `navigator.clipboard.writeText` work in Chrome, Edge and Safari? | Browser behaviour. | **Chrome: yes** (2026-10-03, Windows): Copy summary put the Markdown on the clipboard. Edge, Safari: open; the fallback selects the text |
+| 35 | **Stop from a compaction (F3b):** does `$.turn.abort` from a `clock.after(0)` scheduled in a `session.compact` hook stop the turn, with the compacted conversation standing? | Not stated. | open: `compactLoopMax` 3 on a task that keeps compacting; the turn stops and the snapshot is kept |
+| 36 | **Work-log usage on `window` (F3b):** is a `$.model.complete` call counted in the 5h window, and does its result `usage` give the tokens to price? | Not stated. | open: `/cw` and the 5h figure on a window machine after a work-log compaction |
+| 37 | **Work-log timeout (F3b):** is `timeoutMs` 30000 enough for a 40k-token Haiku input at `effort: 'low'`? | Not stated. | open: the log says `Haiku $x` (written), or `plain snapshot: timed out` |
+| 38 | **Partial tail (F3b):** is a kept tail that starts at an assistant message accepted after the snapshot's user message? | Not stated. | open: a mid-turn compaction with a last turn over 15% of the limit; the next request is answered without an API error |
 
 ## 10. Gaps found in design review, and resolutions
 

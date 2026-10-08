@@ -125,7 +125,10 @@ Change them in `/config` under the ccwarden plugin. These are the ones you're mo
 | `billing` | `ask` | `metered`, `window`, or ask on the next start |
 | `sessionAlertUsd` / `sessionAlertPct` | `5` / `20` | Spend alert step |
 | `limitHaiku` / `limitOther` | `120000` / `300000` | Per-model context limits |
-| `compactMode` | `snapshot` | `summary` switches back to the engine's summary |
+| `compactMode` | `worklog` | Haiku writes the state of work at each compaction (~$0.03, capped by `worklogCapUsd`); `snapshot` without Haiku; `summary` the engine's summary |
+| `worklogModel` | `haiku` | The model that writes the work log |
+| `worklogCapUsd` | `0.5` | Work-log spend per conversation ($); past it, the plain snapshot. Starts over on `/clear` |
+| `compactLoopMax` | `3` | Compactions in one task with no new prompt before the turn is stopped; `0` never stops |
 | `junkGuard` | `observe` | `enforce` once `/ccwarden-junk` shows no false positives |
 | `subagentModel` | `haiku` | `subagentAllowlist` lists agent types that keep their own model |
 | `monthlyBudgetUsd` | `0` (off) | Turns on month tracking and budget toasts |
