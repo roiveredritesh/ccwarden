@@ -242,7 +242,7 @@ export function summarizeMetrics(text: string, session: string): MetricsSummary 
   for (const e of events) {
     const slot = ((days[dayKey(e.at)] ??= {})[e.feature] ??= { done: zero(), would: zero() })
     const t = e.would ? slot.would : slot.done
-    if (e.action !== 'outcome') t.count++
+    if (e.action !== 'outcome' && !e.action.startsWith('loop-')) t.count++ // a loop warning or stop isn't a compaction
     if (e.est === undefined) continue
     t.tokens += e.est.tokens
     t.usd += e.est.usd
