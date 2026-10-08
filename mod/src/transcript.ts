@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { slashed } from './paths'
-import { SNAPSHOT_TAG } from './snapshot'
+import { SNAPSHOT_TAG } from './turns'
 
 // Session facts for the snapshot (F3) and handoffs (F7): the user's verbatim
 // asks, the files edited, and the latest TodoWrite list. Ported from

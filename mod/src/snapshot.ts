@@ -1,6 +1,9 @@
 import type { SessionCompactTrigger, SessionMessage } from 'claude-code'
 import { relativeTo } from './paths'
 import type { Todo } from './transcript'
+import { isPrompt, SNAPSHOT_TAG } from './turns'
+
+export { SNAPSHOT_TAG }
 
 // F3 snapshot compaction. The mod answers `session.compact` in core's place
 // with a snapshot of the session's facts plus the last turns kept by their
@@ -23,8 +26,6 @@ export type SnapshotFacts = {
   lastAnswer?: string
 }
 
-/** Opens every snapshot message; transcript.ts drops it from the asks so snapshots don't nest. */
-export const SNAPSHOT_TAG = '[ccwarden snapshot]'
 export const SNAPSHOT_MAX_CHARS = 6_000
 const RECENT_ASKS = 5
 const MAX_FILES = 40
@@ -130,11 +131,6 @@ export function parseNumstat(stdout: string): Map<string, FileStat> {
 export function summaryInstructions(instructions: string | undefined, text: string): string {
   const focus = (instructions ?? '').trim()
   return `${focus === '' ? '' : `${focus}\n\n`}Keep these facts from the session verbatim in the summary:\n${text}`
-}
-
-function isPrompt(m: SessionMessage): boolean {
-  const text = m.text.trim()
-  return m.role === 'user' && (m.toolResults?.length ?? 0) === 0 && text !== '' && !text.startsWith('<') && !text.startsWith(SNAPSHOT_TAG)
 }
 
 function size(messages: readonly SessionMessage[]): number {
