@@ -9,7 +9,6 @@
 // resume:  warns when the resumed session's cache has expired, so the first turn
 //   re-caches the whole history.
 
-const path = require('path');
 const {
   EDIT_TOOLS,
   cleanupOldState,
@@ -67,7 +66,12 @@ function buildRestoreContext(entries, cwd, cfg) {
     sections.push(`## Unfinished todos\n${open.map((t) => `- [${t.status}] ${t.content}`).join('\n')}`);
   }
   if (files.length) {
-    const rel = files.map((f) => (cwd && f.startsWith(cwd + path.sep) ? path.relative(cwd, f) : f));
+    // Shown with forward slashes, relative to cwd when under it. Windows paths may come
+    // with either separator and any drive-letter case.
+    const slash = (p) => p.replace(/\\/g, '/');
+    const key = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+    const base = cwd ? `${slash(cwd).replace(/\/+$/, '')}/` : '';
+    const rel = files.map((f) => (base && key(slash(f)).startsWith(key(base)) ? slash(f).slice(base.length) : f));
     const shown = rel.slice(0, 40);
     const more = rel.length > shown.length ? `\n- …and ${rel.length - shown.length} more` : '';
     sections.push(`## Files edited this session (most recent first)\n${shown.map((f) => `- ${f}`).join('\n')}${more}`);

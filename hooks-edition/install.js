@@ -17,7 +17,7 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const TARGET = path.join(CLAUDE_DIR, 'ccwarden');
 const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 const FILES = ['lib.js', 'statusline.js', 'report.js', 'hooks/session-start.js', 'hooks/prompt-guard.js'];
-const MARK = `${path.sep}ccwarden${path.sep}`;
+const MARK = '/ccwarden/';
 
 function parseArgs(argv) {
   const a = { uninstall: false, dryRun: false, forceStatusline: false, compactWindow: null, coldGuard: null };
@@ -39,8 +39,12 @@ function parseArgs(argv) {
   return a;
 }
 
-const cmd = (file) => `node ${JSON.stringify(path.join(TARGET, file))}`;
-const isOurs = (command) => typeof command === 'string' && command.includes(MARK);
+// Forward slashes on every OS: node and every Windows shell take them, and quoting a
+// backslash path with JSON.stringify would double each backslash.
+const cmd = (file) => `node "${path.join(TARGET, file).split(path.sep).join('/')}"`;
+// Matches our commands whatever their separators, including older Windows installs
+// whose paths were written with doubled backslashes.
+const isOurs = (command) => typeof command === 'string' && command.replace(/\\+/g, '/').includes(MARK);
 
 function readSettings() {
   if (!fs.existsSync(SETTINGS)) return {};
