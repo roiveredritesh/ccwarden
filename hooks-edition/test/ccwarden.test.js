@@ -17,7 +17,7 @@ function tmpHome() {
 }
 
 function run(script, { home, input = '', args = [], env = {} }) {
-  const res = spawnSync(process.execPath, [path.join(ROOT, script), ...args], {
+  const res = spawnSync(process.execPath, [path.resolve(ROOT, script), ...args], {
     input: typeof input === 'string' ? input : JSON.stringify(input),
     env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '', ...env },
     encoding: 'utf8',
@@ -130,7 +130,7 @@ test('prompt-guard: block mode blocks once, then lets the resent prompt through'
   const home = tmpHome();
   const dir = writeConfig(home, { coldGuard: 'block' });
   seedState(home, 's', { ttl: '5m', expires_at: NOW - 400, recache_tokens_if_cold: 120000 });
-  const script = path.relative(ROOT, path.join(dir, 'hooks', 'prompt-guard.js'));
+  const script = path.join(dir, 'hooks', 'prompt-guard.js');
   const first = JSON.parse(run(script, { home, input: { session_id: 's', user_input: 'x' } }).out);
   assert.equal(first.decision, 'block');
   assert.match(first.reason, /Send the prompt again/);
@@ -215,7 +215,7 @@ test('session-start compact: respects maxRestoreChars', () => {
   const p = path.join(home, 't.jsonl');
   const long = 'x'.repeat(5000);
   fs.writeFileSync(p, [1, 2, 3, 4].map((i) => line({ type: 'user', message: { content: `${i} ${long}` } })).join('\n'));
-  const script = path.relative(ROOT, path.join(dir, 'hooks', 'session-start.js'));
+  const script = path.join(dir, 'hooks', 'session-start.js');
   const ctx = JSON.parse(run(script, { home, input: { source: 'compact', transcript_path: p } }).out).hookSpecificOutput
     .additionalContext;
   assert.ok(ctx.length <= 500, `length ${ctx.length}`);
@@ -338,7 +338,7 @@ test('install: merges into existing settings, is idempotent, and uninstalls clea
   const shown = spawnSync(s.statusLine.command, {
     shell: true,
     input: JSON.stringify(statusInput()),
-    env: { ...process.env, HOME: home, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '' },
     encoding: 'utf8',
   });
   assert.match(stripAnsi(shown.stdout), /57% 68k\/120k/, 'window falls back to config.json');
@@ -346,7 +346,12 @@ test('install: merges into existing settings, is idempotent, and uninstalls clea
 
   // the installed hook commands actually run
   const hookCmd = s.hooks.UserPromptSubmit[0].hooks[0].command;
-  const res = spawnSync(hookCmd, { shell: true, input: '{}', env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  const res = spawnSync(hookCmd, {
+    shell: true,
+    input: '{}',
+    env: { ...process.env, HOME: home, USERPROFILE: home },
+    encoding: 'utf8',
+  });
   assert.equal(res.status, 0, res.stderr);
 
   assert.equal(run('install.js', { home, args: ['--uninstall'] }).code, 0);
@@ -373,4 +378,20 @@ test('install: keeps a foreign statusline unless forced, refuses broken settings
   assert.match(bad.err, /not valid JSON/);
   assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{ broken');
   assert.equal(run('install.js', { home, args: ['--compact-window', '500k'] }).code, 1);
+});
+
+test('install: replaces Windows-style entries and writes commands with forward slashes', () => {
+  const { merge, unmerge } = require('../install.js');
+  const old = 'node "C:\\\\Users\\\\me\\\\.claude\\\\ccwarden\\\\hooks\\\\prompt-guard.js"';
+  const settings = {
+    hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: old }] }] },
+    statusLine: { type: 'command', command: 'node C:\\Users\\me\\.claude\\ccwarden\\statusline.js' },
+  };
+  const next = merge(settings, {}, []);
+  assert.equal(next.hooks.UserPromptSubmit.length, 1, 'the old entry is replaced, not duplicated');
+  for (const c of [next.hooks.UserPromptSubmit[0].hooks[0].command, next.statusLine.command]) {
+    assert.ok(!c.includes('\\'), c);
+    assert.match(c, /^node ".*\/ccwarden\/.*\.js"$/);
+  }
+  assert.deepEqual(unmerge(settings), {});
 });

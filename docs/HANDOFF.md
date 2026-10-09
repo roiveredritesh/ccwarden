@@ -58,7 +58,7 @@ Not built: the full §3 advisor (break-even rule, task-done detection, its butto
 
 | Piece | State |
 |---|---|
-| `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 16 node tests pass. CI runs on Linux and macOS (Windows path handling in the tests isn't portable yet). |
+| `hooks-edition/` | Done: status line, cold-cache prompt guard, post-compaction restore, transcript cache report, settings-merging installer. 17 node tests pass. CI runs on Linux, macOS and Windows. |
 | `mod/` | T1 foundation done: `userConfig` (SPEC §5), the `$.state` contract, the first-run billing question, the R9 toast budget and the ported transcript helpers. T2 done: F1 status line (model, ctx against the per-model limit, cache warm/cold with time left and rebuild cost, this chat's $ or share of the 5h window) and F1b alerts (`sessionAlertUsd`/`Pct`/`Repeat`, `alertTiming`, reset on `/clear`). T3 done: per-model limits and snapshot compaction. T4 done: the subagent guard. T5 done: the cold-cache guard. T6 done: the junk guard (ships in `observe`). T7 done: keep-warm (ships off until Q2). M2–M5 since (§1). It validates, type-checks (`tsc --noEmit`, locally), and passes 407 tests on terminal and desktop × metered and window; CI runs them. It has run live on the maintainer's Windows machine (terminal + Desktop) since 2026-10-02; the open live checks are in §1. |
 | `probe/` | T0 day-one probe (dev only, never shipped): `/cw-probe <check>` runs the live checks for SPEC §9. Validates, type-checks, and passes 8 tests on terminal and desktop. Run on the window machine (Q5, Q6, Q13 answered); still to run on the metered one (Q2). |
 | `docs/SPEC.md` | The product spec (draft 0.3): objective, billing modes, design rules, advisor, features F1–F15, milestones, open questions. §9 now records what the types answer. |
@@ -361,7 +361,7 @@ Risks to design around: a report that drops or misreads a detail makes the main 
   - whether the settings `env` reaches the status-line process (a `config.json` fallback exists)
   - whether the `UserPromptSubmit` `systemMessage` is displayed
   - whether `report.js`'s compaction marker is right (`compact_boundary` is also what ccstatusline counts)
-- **Windows:** hook commands are quoted absolute paths; the tests assume POSIX paths (CI excludes Windows).
+- **Windows:** fixed. `install.js` writes hook commands as `node "C:/…/ccwarden/…js"` (forward slashes; JSON-quoting doubled every backslash, so re-install duplicated entries and uninstall left them) and recognises older entries with any separators. `session-start.js` shows edited files relative to `cwd` with either separator. The tests no longer join a temp-dir script onto the repo path (they broke when the two sat on different drives). CI runs the hooks edition on Windows too.
 
 ## 9. Where to look
 
